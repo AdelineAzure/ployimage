@@ -1,0 +1,197 @@
+# 提交Imagine任务
+
+## OpenAPI Specification
+
+```yaml
+openapi: 3.0.1
+info:
+  title: ''
+  description: ''
+  version: 1.0.0
+paths:
+  /mj/submit/imagine:
+    post:
+      summary: 提交Imagine任务
+      deprecated: false
+      description: >-
+        通过 UniAgi Midjourney API 创建图像生成任务，支持与 Midjourney Discord Channel
+        相同的全部参数。
+
+
+        ### 使用流程
+
+        1. **提交任务** - 调用 API 创建生成任务
+
+        2. **获取任务 ID** - 接收返回的 `task_id`
+
+        3. **查询状态** - 使用查询接口实时跟踪任务进度
+
+
+        ## 🎬 视频生成功能（新增）
+
+
+        支持将静态图片转换为动态视频效果
+
+
+        ### 使用方法
+
+        在 prompt 中填写图片 URL，并添加参数：
+
+        --motion [low/high] --video 1
+
+
+        ### 参数说明
+
+        | 参数 | 值 | 说明 |
+
+        |------|-----|------|
+
+        | `--video` | 1 | 启用视频生成 |
+
+        | `--motion` | low / high | 动态效果强度 |
+
+
+        ### 示例
+
+        ```json
+
+        {
+            "prompt": "https://cdn.midjourney.com/xxx.png add a dog --motion high --video 1",
+            "base64": "",
+            "notifyHook": "",
+            "videoType": "vid_1.1_i2v_720",
+            "state": ""
+        }
+
+        视频任务新参数支持
+
+        loop：支持循环播放视频
+
+        endImage：支持自定义视频结束时显示的图像
+      tags:
+        - API 参考/Midjourney 图像生成
+      parameters:
+        - name: Authorization
+          in: header
+          description: ''
+          required: false
+          example: Bearer {{api-key}}
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                botType:
+                  type: string
+                  description: |
+                    bot类型，mj(默认)或niji
+                prompt:
+                  type: string
+                  description: |
+                    提示词
+                accountFilter:
+                  type: object
+                  properties:
+                    modes:
+                      type: array
+                      items:
+                        type: string
+                      description: 要调用turbo模式这里写turbo，url也写.具体可查看该目录下的快速教学。
+                  required:
+                    - modes
+                  x-apifox-orders:
+                    - modes
+                  description: |
+                    账号筛选
+                base64Array:
+                  type: array
+                  items:
+                    type: string
+                  description: 垫图base64数组
+                notifyHook:
+                  type: string
+                  description: |
+                    回调地址, 为空时使用全局notifyHook
+                state:
+                  type: string
+              required:
+                - botType
+                - prompt
+                - accountFilter
+              x-apifox-orders:
+                - botType
+                - prompt
+                - accountFilter
+                - base64Array
+                - notifyHook
+                - state
+            examples:
+              '1':
+                value:
+                  botType: MID_JOURNEY
+                  prompt: Cat
+                  accountFilter:
+                    modes:
+                      - FAST
+                summary: 图片
+              '2':
+                value:
+                  base64: ''
+                  notifyHook: ''
+                  prompt: >-
+                    https://cdn.midjourney.com/f9e3db60-f76c-48ca-a4e1-ce6545d9355d/0_0.png
+                    add a dog  --motion high  --video 1
+                  state: ''
+                summary: 生成video
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    description: 状态码
+                    type: integer
+                  description:
+                    description: 对状态码的可读描述信息
+                    type: string
+                  properties:
+                    description: 附加属性
+                    type: 'null'
+                  result:
+                    description: 操作的结果，通常是成功提交后返回的任务ID
+                    type: string
+                required:
+                  - code
+                  - description
+                  - properties
+                  - result
+                x-apifox-orders:
+                  - code
+                  - description
+                  - properties
+                  - result
+          headers: {}
+          x-apifox-name: Success
+      security: []
+      x-apifox-folder: API 参考/Midjourney 图像生成
+      x-apifox-status: released
+      x-run-in-apifox: https://app.apifox.com/web/project/6100640/apis/api-276386076-run
+components:
+  schemas: {}
+  securitySchemes:
+    Default:
+      in: header
+      type: apikey
+      name: ApiKey
+servers:
+  - url: https://api.deerapi.com
+    description: 正式环境
+security: []
+
+```
