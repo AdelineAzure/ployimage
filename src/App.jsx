@@ -21,6 +21,8 @@ const PROVIDER_COLORS = {
   ByteDance: { bg: "#fe2c55", text: "#fff" },
 };
 
+const LOCAL_STATE_KEY = "polyimage_local_state_v1";
+
 // ─── Cloudflare Worker Proxy Code ───
 const CF_WORKER_CODE = `// Deploy this as a Cloudflare Worker
 // Set DEERAPI_KEY as an environment variable in your Worker settings
@@ -106,6 +108,24 @@ function stripBase64Prefix(dataUrl) {
 function getMimeFromDataUrl(dataUrl) {
   const m = dataUrl?.match(/^data:(image\/[a-z+]+);base64,/);
   return m ? m[1] : "image/png";
+}
+
+function isAbortError(err) {
+  const msg = String(err?.message || "");
+  return err?.name === "AbortError" || /abort|cancel/i.test(msg);
+}
+
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    if (!signal) return;
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    if (signal.aborted) return onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function downloadDataUrl(dataUrl, filename) {
@@ -227,6 +247,20 @@ function buildWorkerImageProxyUrl(proxyUrl, rawUrl) {
   }
 }
 
+function toPersistableTurns(turns) {
+  return turns.slice(0, 30);
+}
+
+function toLightweightTurns(turns) {
+  return turns.slice(0, 30).map((t) => ({
+    ...t,
+    results: (t.results || []).map((r) => ({
+      ...r,
+      images: (r.images || []).filter((img) => typeof img === "string" && img.startsWith("http")).slice(0, 1),
+    })),
+  }));
+}
+
 function safeName(input) {
   return String(input || "unknown").replace(/[^a-zA-Z0-9._-]/g, "_");
 }
@@ -322,7 +356,8 @@ async function downloadAllAsZip(turns) {
 // ─── DeerAPI Call Functions ───
 
 // 1. OpenAI Chat Completions format (gpt-4o-image, gpt-5-image)
-async function callChatAPI(proxyUrl, model, prompt, imageBase64) {
+async function callChatAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
+  const { signal } = options;
   const content = [];
   if (prompt) content.push({ type: "text", text: prompt });
   if (imageBase64) {
@@ -340,6 +375,7 @@ async function callChatAPI(proxyUrl, model, prompt, imageBase64) {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Target-Path": "/v1/chat/completions" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!resp.ok) throw new Error(`API ${resp.status}: ${(await resp.text()).slice(0, 300)}`);
   const data = await resp.json();
@@ -367,7 +403,8 @@ async function callChatAPI(proxyUrl, model, prompt, imageBase64) {
 }
 
 // 2. OpenAI Images / Seedream format (gpt-image-1, gpt-image-1.5, seedream)
-async function callImagesAPI(proxyUrl, model, prompt, imageBase64) {
+async function callImagesAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
+  const { signal } = options;
   const isSeedream = model.provider === "ByteDance";
   const body = {
     model: model.id,
@@ -389,6 +426,7 @@ async function callImagesAPI(proxyUrl, model, prompt, imageBase64) {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Target-Path": "/v1/images/generations" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!resp.ok) throw new Error(`API ${resp.status}: ${(await resp.text()).slice(0, 300)}`);
   const data = await resp.json();
@@ -447,7 +485,8 @@ async function callImagesAPI(proxyUrl, model, prompt, imageBase64) {
 }
 
 // 3. Gemini generateContent format
-async function callGeminiAPI(proxyUrl, model, prompt, imageBase64) {
+async function callGeminiAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
+  const { signal } = options;
   const parts = [];
   if (prompt) parts.push({ text: prompt });
   if (!prompt && !imageBase64) parts.push({ text: "Generate a creative image" });
@@ -464,6 +503,7 @@ async function callGeminiAPI(proxyUrl, model, prompt, imageBase64) {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Target-Path": `/v1beta/models/${model.id}:generateContent` },
     body: JSON.stringify(body),
+    signal,
   });
   if (!resp.ok) throw new Error(`API ${resp.status}: ${(await resp.text()).slice(0, 300)}`);
   const data = await resp.json();
@@ -475,46 +515,72 @@ async function callGeminiAPI(proxyUrl, model, prompt, imageBase64) {
   return images;
 }
 // 4. Midjourney imagine + fetch（按接口文档，只显示 1 张）
-async function callMidjourneyAPI(proxyUrl, model, prompt, imageBase64) {
+async function callMidjourneyAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
+  const { signal } = options;
   if (!prompt) throw new Error("Midjourney 需要文字 prompt");
 
-  // 按文档要求构造请求体
-  const submitBody = {
-    botType: "MID_JOURNEY",
-    prompt,
-    accountFilter: {
-      modes: ["FAST"],
-    },
-  };
-  // 如果有参考图，按文档用 base64Array 传入
-  if (imageBase64) {
-    submitBody.base64Array = [stripBase64Prefix(imageBase64)];
+  function extractTaskId(payload) {
+    if (!payload) return null;
+    const candidate = payload.result;
+    if (typeof candidate === "string") return candidate;
+    if (typeof candidate === "object" && candidate) {
+      return candidate.taskId || candidate.task_id || candidate.id || candidate.uuid || null;
+    }
+    return (
+      payload.taskId ||
+      payload.task_id ||
+      payload.id ||
+      payload.uuid ||
+      payload.properties?.taskId ||
+      payload.properties?.task_id ||
+      payload.data?.taskId ||
+      payload.data?.task_id ||
+      null
+    );
   }
 
-  const submitResp = await fetch(proxyUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Target-Path": "/mj/submit/imagine",
-    },
-    body: JSON.stringify(submitBody),
-  });
-  if (!submitResp.ok) throw new Error(`API ${submitResp.status}: ${(await submitResp.text()).slice(0, 300)}`);
-  const submitData = await submitResp.json();
-  const taskId = submitData?.result || submitData?.taskId || submitData?.id;
-  if (!taskId) throw new Error("Midjourney 未返回任务 ID");
+  async function submitWithBotType(botType) {
+    const submitBody = {
+      botType,
+      prompt,
+      accountFilter: { modes: ["FAST"] },
+    };
+    if (imageBase64) submitBody.base64Array = [stripBase64Prefix(imageBase64)];
+
+    const submitResp = await fetch(proxyUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Target-Path": "/mj/submit/imagine",
+      },
+      body: JSON.stringify(submitBody),
+      signal,
+    });
+    if (!submitResp.ok) throw new Error(`API ${submitResp.status}: ${(await submitResp.text()).slice(0, 300)}`);
+    const submitData = await submitResp.json();
+    return { submitData, taskId: extractTaskId(submitData) };
+  }
+
+  let submitData;
+  let taskId;
+  ({ submitData, taskId } = await submitWithBotType("MID_JOURNEY"));
+  if (!taskId) {
+    ({ submitData, taskId } = await submitWithBotType("mj"));
+  }
+  if (!taskId) throw new Error(`Midjourney 未返回任务 ID: ${JSON.stringify(submitData).slice(0, 500)}`);
 
   const maxWaitMs = 480_000;
   const intervalMs = 5_000;
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
-    await new Promise((r) => setTimeout(r, intervalMs));
+    await sleep(intervalMs, signal);
 
     const fetchResp = await fetch(proxyUrl, {
       method: "GET",
       headers: {
         "X-Target-Path": `/mj/task/${taskId}/fetch`,
       },
+      signal,
     });
     if (!fetchResp.ok) throw new Error(`API ${fetchResp.status}: ${(await fetchResp.text()).slice(0, 300)}`);
     const taskRaw = await fetchResp.json();
@@ -553,7 +619,8 @@ async function callMidjourneyAPI(proxyUrl, model, prompt, imageBase64) {
 }
 
 // 5. NanoBanana via replicate
-async function callReplicateNanoBananaAPI(proxyUrl, model, prompt, imageBase64) {
+async function callReplicateNanoBananaAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
+  const { signal } = options;
   if (!prompt) throw new Error("NanoBanana 需要文字 prompt");
 
   const models = "nanobanana";
@@ -574,6 +641,7 @@ async function callReplicateNanoBananaAPI(proxyUrl, model, prompt, imageBase64) 
       "X-Target-Path": `/replicate/v1/models/${models}/predictions`,
     },
     body: JSON.stringify(submitBody),
+    signal,
   });
   if (!submitResp.ok) throw new Error(`API ${submitResp.status}: ${(await submitResp.text()).slice(0, 300)}`);
   const submitData = await submitResp.json();
@@ -584,13 +652,14 @@ async function callReplicateNanoBananaAPI(proxyUrl, model, prompt, imageBase64) 
   const intervalMs = 3_000;
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
-    await new Promise((r) => setTimeout(r, intervalMs));
+    await sleep(intervalMs, signal);
 
     const fetchResp = await fetch(proxyUrl, {
       method: "GET",
       headers: {
         "X-Target-Path": `/replicate/v1/predictions/${predictionId}`,
       },
+      signal,
     });
     if (!fetchResp.ok) throw new Error(`API ${fetchResp.status}: ${(await fetchResp.text()).slice(0, 300)}`);
     const prediction = await fetchResp.json();
@@ -608,18 +677,18 @@ async function callReplicateNanoBananaAPI(proxyUrl, model, prompt, imageBase64) 
   throw new Error("NanoBanana 任务超时");
 }
 
-async function generateImage(proxyUrl, model, prompt, imageBase64) {
+async function generateImage(proxyUrl, model, prompt, imageBase64, options = {}) {
   switch (model.apiType) {
     case "chat":
-      return callChatAPI(proxyUrl, model, prompt, imageBase64);
+      return callChatAPI(proxyUrl, model, prompt, imageBase64, options);
     case "images":
-      return callImagesAPI(proxyUrl, model, prompt, imageBase64);
+      return callImagesAPI(proxyUrl, model, prompt, imageBase64, options);
     case "gemini":
-      return callGeminiAPI(proxyUrl, model, prompt, imageBase64);
+      return callGeminiAPI(proxyUrl, model, prompt, imageBase64, options);
     case "midjourney":
-      return callMidjourneyAPI(proxyUrl, model, prompt, imageBase64);
+      return callMidjourneyAPI(proxyUrl, model, prompt, imageBase64, options);
     case "replicate":
-      return callReplicateNanoBananaAPI(proxyUrl, model, prompt, imageBase64);
+      return callReplicateNanoBananaAPI(proxyUrl, model, prompt, imageBase64, options);
     default:
       throw new Error(`Unknown apiType: ${model.apiType}`);
   }
@@ -675,10 +744,17 @@ function ImagePreviewModal({ src, onClose }) {
   );
 }
 
-function ResultColumn({ result, onPreview }) {
+function ResultColumn({ result, onPreview, onCancel }) {
   const model = IMAGE_MODELS.find((m) => m.id === result.modelId);
   const prov = PROVIDER_COLORS[model?.provider] || { bg: "#666" };
-  const sc = result.status === "success" ? "#22c55e" : result.status === "loading" ? "#eab308" : "#ef4444";
+  const sc =
+    result.status === "success"
+      ? "#22c55e"
+      : result.status === "loading"
+      ? "#eab308"
+      : result.status === "cancelled"
+      ? "#9ca3af"
+      : "#ef4444";
   return (
     <div style={S.resultCol}>
       <div style={S.resultHeader}>
@@ -688,23 +764,18 @@ function ResultColumn({ result, onPreview }) {
           {result.status === "loading" ? "⏳" : result.status === "success" ? "✓" : "✗"} {result.status}
         </span>
       </div>
-      {result.status === "loading" && <div style={S.loadingArea}><div style={S.spinner} /><p style={{ color: "#888", fontSize: 13, marginTop: 12 }}>Generating...</p></div>}
+      {result.status === "loading" && (
+        <div style={S.loadingArea}>
+          <div style={S.spinner} />
+          <p style={{ color: "#888", fontSize: 13, marginTop: 12 }}>Generating...</p>
+          <button style={{ ...S.dlBtn, marginTop: 10, borderRadius: 8, width: 120 }} onClick={onCancel}>Stop</button>
+        </div>
+      )}
       {result.status === "error" && <div style={S.errArea}><p style={{ color: "#ef4444", fontSize: 13, wordBreak: "break-word" }}>{result.error}</p></div>}
+      {result.status === "cancelled" && <div style={S.errArea}><p style={{ color: "#9ca3af", fontSize: 13 }}>Cancelled by user</p></div>}
       {result.status === "success" && result.images?.length > 0 && (
         <div style={S.imgGrid}>{result.images.map((img, i) => (
-          <div key={i} style={S.imgCard}>
-            <img src={img} alt={`Gen ${i + 1}`} style={S.thumb} onClick={() => onPreview(img)} />
-            <button
-              style={S.dlBtn}
-              onClick={() =>
-                img.startsWith("data:image/")
-                  ? downloadDataUrl(img, `${model?.name || "img"}_${i + 1}.png`)
-                  : downloadImageUrl(img, `${model?.name || "img"}_${i + 1}.png`)
-              }
-            >
-              ↓ Save
-            </button>
-          </div>
+          <ImageCard key={i} img={img} modelName={model?.name || "img"} index={i + 1} onPreview={onPreview} />
         ))}</div>
       )}
       {result.status === "success" && (!result.images || !result.images.length) && <div style={S.errArea}><p style={{ color: "#f59e0b", fontSize: 13 }}>No images returned.</p></div>}
@@ -712,7 +783,43 @@ function ResultColumn({ result, onPreview }) {
   );
 }
 
-function TurnPanel({ turn, onPreview }) {
+function ImageCard({ img, modelName, index, onPreview }) {
+  const [src, setSrc] = useState(img);
+  const [triedProxy, setTriedProxy] = useState(false);
+
+  useEffect(() => {
+    setSrc(img);
+    setTriedProxy(false);
+  }, [img]);
+
+  const onImgError = useCallback(() => {
+    if (triedProxy) return;
+    const proxyFromGlobal = typeof window !== "undefined" ? window.__proxyUrl : "";
+    const proxied = buildWorkerImageProxyUrl(proxyFromGlobal, src);
+    if (proxied && proxied !== src) {
+      setTriedProxy(true);
+      setSrc(proxied);
+    }
+  }, [src, triedProxy]);
+
+  return (
+    <div style={S.imgCard}>
+      <img src={src} alt={`Gen ${index}`} style={S.thumb} onClick={() => onPreview(src)} onError={onImgError} />
+      <button
+        style={S.dlBtn}
+        onClick={() =>
+          src.startsWith("data:image/")
+            ? downloadDataUrl(src, `${modelName}_${index}.png`)
+            : downloadImageUrl(src, `${modelName}_${index}.png`)
+        }
+      >
+        ↓ Save
+      </button>
+    </div>
+  );
+}
+
+function TurnPanel({ turn, onPreview, onCancelModel }) {
   return (
     <section style={{ marginBottom: 20 }}>
       <div style={{ marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -732,7 +839,14 @@ function TurnPanel({ turn, onPreview }) {
         </div>
       )}
       <div style={{ display: "grid", gap: 16, gridTemplateColumns: turn.results.length === 1 ? "1fr" : turn.results.length === 2 ? "1fr 1fr" : "1fr 1fr 1fr" }}>
-        {turn.results.map((r, i) => <ResultColumn key={`${turn.id}-${r.modelId}-${i}`} result={r} onPreview={onPreview} />)}
+        {turn.results.map((r, i) => (
+          <ResultColumn
+            key={`${turn.id}-${r.modelId}-${i}`}
+            result={r}
+            onPreview={onPreview}
+            onCancel={() => onCancelModel?.(turn.id, r.modelId)}
+          />
+        ))}
       </div>
     </section>
   );
@@ -750,12 +864,49 @@ export default function App() {
   const [historyLimit, setHistoryLimit] = useState(4);
   const [previewImage, setPreviewImage] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [proxyUrl, setProxyUrl] = useState("");
+  const [proxyUrl, setProxyUrl] = useState("https://a.adelineazures.workers.dev/");
   const fileRef = useRef(null);
   const seqRef = useRef(1);
+  const controllersRef = useRef({});
 
-  useEffect(() => { try { const s = window.__proxyUrl; if (s) setProxyUrl(s); } catch(e){} }, []);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LOCAL_STATE_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (Array.isArray(saved.turns)) setTurns(saved.turns);
+        if (typeof saved.activeTurnId === "number") setActiveTurnId(saved.activeTurnId);
+        if (typeof saved.historyLimit === "number") setHistoryLimit(saved.historyLimit);
+        if (Array.isArray(saved.selectedModels) && saved.selectedModels.length) setSelectedModels(saved.selectedModels);
+        if (typeof saved.proxyUrl === "string" && saved.proxyUrl.trim()) setProxyUrl(saved.proxyUrl);
+        if (typeof saved.nextSeq === "number" && Number.isFinite(saved.nextSeq)) seqRef.current = saved.nextSeq;
+      } else {
+        const s = window.__proxyUrl;
+        if (s) setProxyUrl(s);
+      }
+    } catch {}
+  }, []);
   useEffect(() => { window.__proxyUrl = proxyUrl; }, [proxyUrl]);
+  useEffect(() => {
+    const state = {
+      turns: toPersistableTurns(turns),
+      activeTurnId,
+      historyLimit,
+      selectedModels,
+      proxyUrl,
+      nextSeq: seqRef.current,
+    };
+    try {
+      localStorage.setItem(LOCAL_STATE_KEY, JSON.stringify(state));
+    } catch {
+      try {
+        localStorage.setItem(
+          LOCAL_STATE_KEY,
+          JSON.stringify({ ...state, turns: toLightweightTurns(turns) })
+        );
+      } catch {}
+    }
+  }, [turns, activeTurnId, historyLimit, selectedModels, proxyUrl]);
 
   const toggleModel = useCallback((id) => {
     setSelectedModels((prev) =>
@@ -803,6 +954,29 @@ export default function App() {
     setTurns((prev) => [turn, ...prev]);
   }, [proxyUrl, selectedModels, prompt, uploadedImage]);
 
+  const cancelModelTask = useCallback((turnId, modelId) => {
+    const key = `${turnId}:${modelId}`;
+    const ctl = controllersRef.current[key];
+    if (ctl) {
+      try { ctl.abort(); } catch {}
+      delete controllersRef.current[key];
+    }
+    setTurns((prev) =>
+      prev.map((t) =>
+        t.id !== turnId
+          ? t
+          : {
+              ...t,
+              results: t.results.map((r) =>
+                r.modelId === modelId && r.status === "loading"
+                  ? { ...r, status: "cancelled", error: "Cancelled by user" }
+                  : r
+              ),
+            }
+      )
+    );
+  }, []);
+
   useEffect(() => {
     if (isProcessing) return;
     const queued = turns.filter((t) => t.status === "queued").sort((a, b) => a.seq - b.seq);
@@ -816,8 +990,13 @@ export default function App() {
       await Promise.allSettled(
         next.selectedModelIds.map(async (mid) => {
           const model = IMAGE_MODELS.find((m) => m.id === mid);
+          const key = `${next.id}:${mid}`;
+          const controller = new AbortController();
+          controllersRef.current[key] = controller;
           try {
-            const images = await generateImage(next.proxyUrl, model, next.prompt, next.referenceImage);
+            const images = await generateImage(next.proxyUrl, model, next.prompt, next.referenceImage, {
+              signal: controller.signal,
+            });
             setTurns((prev) =>
               prev.map((t) =>
                 t.id !== next.id
@@ -835,10 +1014,18 @@ export default function App() {
                   ? t
                   : {
                       ...t,
-                      results: t.results.map((r) => (r.modelId === mid ? { ...r, status: "error", error: err.message } : r)),
+                      results: t.results.map((r) =>
+                        r.modelId === mid
+                          ? isAbortError(err)
+                            ? { ...r, status: "cancelled", error: "Cancelled by user" }
+                            : { ...r, status: "error", error: err.message }
+                          : r
+                      ),
                     }
               )
             );
+          } finally {
+            delete controllersRef.current[key];
           }
         })
       );
@@ -920,7 +1107,7 @@ export default function App() {
             <h3 style={{ fontSize: 12, fontFamily: mono, fontWeight: 600, letterSpacing: 1.2, textTransform: "uppercase", color: "#888", margin: "0 0 8px" }}>
               Current Dialog
             </h3>
-            <TurnPanel turn={activeTurn} onPreview={setPreviewImage} />
+            <TurnPanel turn={activeTurn} onPreview={setPreviewImage} onCancelModel={cancelModelTask} />
           </section>
         )}
 
@@ -929,10 +1116,10 @@ export default function App() {
             <h3 style={{ fontSize: 12, fontFamily: mono, fontWeight: 600, letterSpacing: 1.2, textTransform: "uppercase", color: "#888", margin: "0 0 8px" }}>
               History Dialogs
             </h3>
-            <div style={{ maxHeight: 540, overflowY: "auto", borderRadius: 10, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(0,0,0,0.4)", padding: 12 }}>
+            <div style={{ borderRadius: 10, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(0,0,0,0.4)", padding: 12 }}>
               {visibleHistory.map((turn) => (
                 <div key={turn.id} style={{ padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                  <TurnPanel turn={turn} onPreview={setPreviewImage} />
+                  <TurnPanel turn={turn} onPreview={setPreviewImage} onCancelModel={cancelModelTask} />
                 </div>
               ))}
               {hasMoreHistory && (

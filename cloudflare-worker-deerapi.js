@@ -12,41 +12,76 @@
 //   5. Copy the worker URL (e.g. https://imgproxy.YOUR.workers.dev)
 //      and paste it into the app's Settings panel (⚙)
 // ============================================================
-// 
-// This proxy supports ALL DeerAPI image generation endpoints:
-//   - /v1/chat/completions    (gpt-4o-image, gpt-5-image, etc.)
-//   - /v1/images/generations  (gpt-image-1, seedream, etc.)
-//   - /v1beta/models/...:generateContent  (Gemini image models)
 //
-// The frontend specifies which path to use via X-Target-Path header.
-// Auth format differs: Gemini uses plain key, others use Bearer token.
+// This proxy supports DeerAPI image generation endpoints:
+//   - /v1/chat/completions
+//   - /v1/images/generations
+//   - /v1beta/models/...:generateContent
+//   - /mj/...
+//
+// Frontend uses X-Target-Path to choose upstream API path.
 // ============================================================
 
 export default {
   async fetch(request, env) {
     const method = request.method.toUpperCase();
+    const url = new URL(request.url);
 
-    // ── CORS Preflight ──
+    // CORS preflight
     if (method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders() });
     }
 
-    // ── Allow only GET / POST for application logic ──
-    if (method !== "POST" && method !== "GET") {
-      return json({ error: "Method not allowed" }, 405);
-    }
-
-    // ── Validate Key ──
     if (!env.DEERAPI_KEY) {
       return json({ error: "DEERAPI_KEY not configured in Worker environment" }, 500);
     }
 
     try {
-      // Read target API path from header (sent by frontend)
+      // Image proxy mode for signed URLs and hotlink-restricted URLs.
+      const imageUrl = request.headers.get("X-Image-Url") || url.searchParams.get("image_url");
+      if (imageUrl) {
+        if (method !== "GET") return json({ error: "Image proxy only supports GET" }, 405);
+
+        let parsed;
+        try {
+          parsed = new URL(imageUrl);
+        } catch {
+          return json({ error: "Invalid image URL" }, 400);
+        }
+        if (!/^https?:$/.test(parsed.protocol)) {
+          return json({ error: "Unsupported URL protocol" }, 400);
+        }
+
+        const imgResp = await fetch(parsed.toString(), { method: "GET", redirect: "follow" });
+        const imgType = imgResp.headers.get("Content-Type") || "application/octet-stream";
+        const imgData = await imgResp.arrayBuffer();
+
+        return new Response(imgData, {
+          status: imgResp.status,
+          headers: {
+            "Content-Type": imgType,
+            ...corsHeaders(),
+          },
+        });
+      }
+
+      // Worker preview health check
+      if (method === "GET" && url.pathname === "/" && !request.headers.get("X-Target-Path")) {
+        return json({ ok: true, service: "deerapi-proxy" });
+      }
+
       const targetPath = request.headers.get("X-Target-Path") || "/v1/chat/completions";
+      // Midjourney task polling uses GET (e.g. /mj/task/{id}/fetch).
+      // Most other DeerAPI generation endpoints use POST.
+      const isAllowedGetPath =
+        /^\/mj\/task\/[^/]+\/fetch(?:\?.*)?$/.test(targetPath) ||
+        /^\/replicate\/v1\/predictions\/[^/]+(?:\?.*)?$/.test(targetPath);
+      if (method !== "POST" && !(method === "GET" && isAllowedGetPath)) {
+        return json({ error: "Method not allowed" }, 405);
+      }
+
       const body = method === "POST" ? await request.text() : undefined;
 
-      // Gemini endpoints use plain key auth; OpenAI-compatible use Bearer
       const isGemini = targetPath.includes("/v1beta/");
       const authHeader = isGemini ? env.DEERAPI_KEY : `Bearer ${env.DEERAPI_KEY}`;
 
@@ -60,7 +95,6 @@ export default {
       });
 
       const data = await resp.text();
-
       return new Response(data, {
         status: resp.status,
         headers: {
@@ -78,7 +112,7 @@ function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-Target-Path",
+    "Access-Control-Allow-Headers": "Content-Type, X-Target-Path, X-Image-Url",
   };
 }
 

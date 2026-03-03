@@ -244,3 +244,177 @@ servers:
 security: []
 
 ```
+
+
+
+# seededit 图像编辑
+
+## OpenAPI Specification
+
+```yaml
+openapi: 3.0.1
+info:
+  title: ''
+  description: ''
+  version: 1.0.0
+paths:
+  /v1/images/edits:
+    post:
+      summary: seededit 图像编辑
+      deprecated: false
+      description: https://www.volcengine.com/docs/82379/1666946
+      tags:
+        - API 参考/图像生成/豆包生图
+      parameters:
+        - name: Authorization
+          in: header
+          description: ''
+          required: false
+          example: Bearer {{api-key}}
+          schema:
+            type: string
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                model:
+                  description: |
+                    doubao-seededit-3-0-i2i-250628
+                  example: doubao-seededit-3-0-i2i-250628
+                  type: string
+                image:
+                  format: binary
+                  type: string
+                  description: |-
+                    传入的图像需满足以下条件：
+                    图像格式：jpeg、png。
+                    宽高比（宽/高）：在(1/3, 3)范围内。
+                    长边长度（像素）> 14。
+                    大小：不超过10MB。
+                  example: MQ==/test.png
+                prompt:
+                  description: 描述
+                  example: Put on glasses
+                  type: string
+                response_format:
+                  type: string
+                  enum:
+                    - url
+                    - b64_json
+                  x-apifox-enum:
+                    - value: url
+                      name: ''
+                      description: ''
+                    - value: b64_json
+                      name: ''
+                      description: ''
+                  description: '"url" / "b64_json".'
+                  example: url
+                size:
+                  description: 生成的图像的宽度和高度像素。1k,2k,4k
+                  example: 1k
+                  type: string
+                seed:
+                  type: integer
+                  default: -1
+                  description: >-
+                    用于控制模型生成内容随机性的随机数种子。取值范围为[-1, 2^31-1]，即[-1,
+                    2147483647]之间的整数。若未提供，算法将自动生成随机数作为种子。若需保持生成结果一致性，可为种子参数使用相同数值。
+                  example: -1
+                guidance_scale:
+                  type: number
+                  description: >-
+                    文本描述和输入图像对生成图像的影响程度。该值为[1,
+                    10]之间的浮点数。数值越大，文本描述的影响越强，输入图像的影响越弱。
+                  example: 0
+                watermark:
+                  type: boolean
+                  default: true
+                  description: |-
+                    是否为生成的图像添加水印。
+                    false：不添加水印。
+                    true：在图像右下角添加带有“AI生成”字样的水印标识。
+                  example: ''
+              required:
+                - image
+                - prompt
+            examples: {}
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  model:
+                    type: string
+                  created:
+                    type: integer
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        url:
+                          type: string
+                      x-apifox-orders:
+                        - url
+                  usage:
+                    type: object
+                    properties:
+                      generated_images:
+                        type: integer
+                      output_tokens:
+                        type: integer
+                      total_tokens:
+                        type: integer
+                    required:
+                      - generated_images
+                      - output_tokens
+                      - total_tokens
+                    x-apifox-orders:
+                      - generated_images
+                      - output_tokens
+                      - total_tokens
+                required:
+                  - model
+                  - created
+                  - data
+                  - usage
+                x-apifox-orders:
+                  - model
+                  - created
+                  - data
+                  - usage
+              example:
+                model: doubao-seededit-3-0-i2i-250628
+                created: 1754362166
+                data:
+                  - url: >-
+                      https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/doubao-seededit-3-0-i2i/0217543621421631fbc1dc94a39b9f5db9ceb0764a498997ae731.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=AKLTYWJkZTExNjA1ZDUyNDc3YzhjNTM5OGIyNjBhNDcyOTQ%2F20250805%2Fcn-beijing%2Ftos%2Frequest&X-Tos-Date=20250805T024926Z&X-Tos-Expires=86400&X-Tos-Signature=54a120958a858fb561910c10660740d9bd32c1025a6fc77e324b8f24fee47065&X-Tos-SignedHeaders=host&x-tos-process=image%2Fwatermark%2Cimage_YXNzZXRzL3dhdGVybWFyay5wbmc_eC10b3MtcHJvY2Vzcz1pbWFnZS9yZXNpemUsUF8xNg%3D%3D
+                usage:
+                  generated_images: 1
+                  output_tokens: 4096
+                  total_tokens: 4096
+          headers: {}
+          x-apifox-name: success
+      security: []
+      x-apifox-folder: API 参考/图像生成/豆包生图
+      x-apifox-status: testing
+      x-run-in-apifox: https://app.apifox.com/web/project/6100640/apis/api-350704607-run
+components:
+  schemas: {}
+  securitySchemes:
+    Default:
+      in: header
+      type: apikey
+      name: ApiKey
+servers:
+  - url: https://api.deerapi.com
+    description: 正式环境
+security: []
+
+```
