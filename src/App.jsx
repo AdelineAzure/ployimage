@@ -12,7 +12,7 @@ const IMAGE_MODELS = [
   { id: "gpt-image-1.5", name: "GPT‑1.5 Image", shortName: "GPT-1.5", provider: "OpenAI", apiType: "images", badge: "HOT" },
   // NanoBanana 系列：本质调用 Gemini 图像模型
   { id: "gemini-2.5-flash-image", name: "NanoBanana", shortName: "Nano", provider: "Google", apiType: "gemini", badge: "HOT" },
-  { id: "nano-banana-pro-all", name: "NanoBanana Pro", shortName: "Nano Pro", provider: "Google", apiType: "gemini", badge: "PRO" },
+  { id: "gemini-3-pro-image", name: "NanoBanana Pro", shortName: "Nano Pro", provider: "Google", apiType: "gemini", badge: "PRO" },
 ];
 
 const PROVIDER_COLORS = {
@@ -27,7 +27,7 @@ const DEFAULT_SELECTED_MODELS = [
   "doubao-seedream-4-0-250828",
   "doubao-seedream-4-5-251128",
   "gemini-2.5-flash-image",
-  "nano-banana-pro-all",
+  "gemini-3-pro-image",
 ];
 const DEFAULT_MODEL_COUNTS = Object.fromEntries(IMAGE_MODELS.map((m) => [m.id, 1]));
 const COUNT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -60,6 +60,8 @@ const DEFAULT_TEMPLATES = Array.from({ length: MAX_TEMPLATES }, (_, index) => ({
   body: "",
   backup: "",
 }));
+const NANO_PRO_OFFICIAL_MODEL_ID = "gemini-3-pro-image";
+const NANO_PRO_LEGACY_MODEL_IDS = ["nano-banana-pro-all", "gemini-3-pro-preview"];
 
 // ─── Cloudflare Worker Proxy Code ───
 const CF_WORKER_CODE = `// Deploy this as a Cloudflare Worker
@@ -289,6 +291,18 @@ function normalizeAspectRatio(value) {
   return ASPECT_RATIO_OPTIONS.some((option) => option.value === normalized)
     ? normalized
     : DEFAULT_ASPECT_RATIO;
+}
+
+function normalizeModelId(id) {
+  if (typeof id !== "string") return id;
+  if (NANO_PRO_LEGACY_MODEL_IDS.includes(id)) return NANO_PRO_OFFICIAL_MODEL_ID;
+  return id;
+}
+
+function getGeminiModelCandidates(id) {
+  const normalized = normalizeModelId(id);
+  if (normalized !== NANO_PRO_OFFICIAL_MODEL_ID) return [normalized];
+  return [NANO_PRO_OFFICIAL_MODEL_ID, ...NANO_PRO_LEGACY_MODEL_IDS];
 }
 
 function mergePromptWithAspectRatio(prompt, aspectRatio, model) {
@@ -818,7 +832,7 @@ async function loadTurnsFromLocalFolder(rootHandle) {
           } catch {}
         }
         loadedResults.push({
-          modelId: r.modelId || "unknown-model",
+          modelId: normalizeModelId(r.modelId || "unknown-model"),
           modelName: r.modelName || r.modelId || "Unknown",
           promptKey: getResultPromptKey(r),
           promptLabel:
@@ -849,8 +863,23 @@ async function loadTurnsFromLocalFolder(rootHandle) {
         apiKey: normalizeApiKey(meta.apiKey),
         aspectRatio: normalizeAspectRatio(meta.aspectRatio ?? meta.geminiAspectRatio),
         referenceImage,
-        selectedModelIds: Array.isArray(meta.selectedModelIds) ? meta.selectedModelIds : loadedResults.map((r) => r.modelId),
-        modelCounts: meta.modelCounts || {},
+        selectedModelIds: Array.isArray(meta.selectedModelIds)
+          ? meta.selectedModelIds.map((id) => normalizeModelId(id))
+          : loadedResults.map((r) => r.modelId),
+        modelCounts:
+          meta.modelCounts && typeof meta.modelCounts === "object"
+            ? {
+                ...meta.modelCounts,
+                ...(typeof meta.modelCounts["nano-banana-pro-all"] === "number" &&
+                typeof meta.modelCounts[NANO_PRO_OFFICIAL_MODEL_ID] !== "number"
+                  ? { [NANO_PRO_OFFICIAL_MODEL_ID]: meta.modelCounts["nano-banana-pro-all"] }
+                  : null),
+                ...(typeof meta.modelCounts["gemini-3-pro-preview"] === "number" &&
+                typeof meta.modelCounts[NANO_PRO_OFFICIAL_MODEL_ID] !== "number"
+                  ? { [NANO_PRO_OFFICIAL_MODEL_ID]: meta.modelCounts["gemini-3-pro-preview"] }
+                  : null),
+              }
+            : {},
         proxyUrl: "",
         status: "done",
         results: loadedResults,
@@ -1264,36 +1293,43 @@ async function callGeminiAPI(proxyUrl, model, prompt, imageBase64, options = {})
   }
 
   let lastErr = null;
-  const maxAttempts = 3;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const resp = await fetch(proxyUrl, {
-      method: "POST",
-      headers: buildProxyHeaders(`/v1beta/models/${model.id}:generateContent`, apiBaseUrl, apiKey, { "Content-Type": "application/json" }),
-      body: JSON.stringify(body),
-      signal,
-    });
-    if (resp.ok) {
-      const data = await resp.json();
-      const extracted = extractGeminiImages(data);
-      if (extracted.length) {
-        const resolved = await Promise.all(extracted.map((u) => proxyFetchImageAsDataUrl(proxyUrl, u)));
-        const finalImages = resolved
-          .map((v) => normalizeImageValue(v, apiBaseUrl))
-          .filter(Boolean)
-          .map((v) => buildWorkerImageProxyUrl(proxyUrl, v) || v);
-        if (finalImages.length) return finalImages;
+  const modelCandidates = getGeminiModelCandidates(model.id);
+  for (let modelIndex = 0; modelIndex < modelCandidates.length; modelIndex += 1) {
+    const currentModelId = modelCandidates[modelIndex];
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const resp = await fetch(proxyUrl, {
+        method: "POST",
+        headers: buildProxyHeaders(`/v1beta/models/${currentModelId}:generateContent`, apiBaseUrl, apiKey, { "Content-Type": "application/json" }),
+        body: JSON.stringify(body),
+        signal,
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const extracted = extractGeminiImages(data);
+        if (extracted.length) {
+          const resolved = await Promise.all(extracted.map((u) => proxyFetchImageAsDataUrl(proxyUrl, u)));
+          const finalImages = resolved
+            .map((v) => normalizeImageValue(v, apiBaseUrl))
+            .filter(Boolean)
+            .map((v) => buildWorkerImageProxyUrl(proxyUrl, v) || v);
+          if (finalImages.length) return finalImages;
+        }
+        lastErr = new Error("API 200: No images returned");
+        if (attempt < maxAttempts) {
+          await sleep(1000 * attempt, signal);
+          continue;
+        }
+        break;
       }
-      lastErr = new Error("API 200: No images returned");
-      if (attempt < maxAttempts) {
-        await sleep(1000 * attempt, signal);
-        continue;
-      }
-      break;
+      const text = (await resp.text()).slice(0, 300);
+      lastErr = new Error(`API ${resp.status}: ${text}`);
+      const channelUnavailable = /无可用渠道|更换分组尝试/i.test(text);
+      const canTryFallbackModel = channelUnavailable && modelIndex < modelCandidates.length - 1;
+      if (canTryFallbackModel) break;
+      if (resp.status !== 524 || attempt >= maxAttempts) break;
+      await sleep(1000 * attempt, signal);
     }
-    const text = (await resp.text()).slice(0, 300);
-    lastErr = new Error(`API ${resp.status}: ${text}`);
-    if (resp.status !== 524 || attempt >= maxAttempts) break;
-    await sleep(1000 * attempt, signal);
   }
   throw lastErr || new Error("Gemini request failed");
 }
@@ -1911,17 +1947,46 @@ export default function App() {
       const raw = localStorage.getItem(LOCAL_STATE_KEY);
       if (raw) {
         const saved = JSON.parse(raw);
-        if (Array.isArray(saved.turns)) setTurns(saved.turns);
+        if (Array.isArray(saved.turns)) {
+          const migratedTurns = saved.turns.map((turn) => ({
+            ...turn,
+            selectedModelIds: Array.isArray(turn?.selectedModelIds) ? turn.selectedModelIds.map((id) => normalizeModelId(id)) : turn?.selectedModelIds,
+            modelCounts:
+              turn?.modelCounts && typeof turn.modelCounts === "object"
+                ? {
+                    ...turn.modelCounts,
+                    ...(typeof turn.modelCounts["nano-banana-pro-all"] === "number" &&
+                    typeof turn.modelCounts[NANO_PRO_OFFICIAL_MODEL_ID] !== "number"
+                      ? { [NANO_PRO_OFFICIAL_MODEL_ID]: turn.modelCounts["nano-banana-pro-all"] }
+                      : null),
+                    ...(typeof turn.modelCounts["gemini-3-pro-preview"] === "number" &&
+                    typeof turn.modelCounts[NANO_PRO_OFFICIAL_MODEL_ID] !== "number"
+                      ? { [NANO_PRO_OFFICIAL_MODEL_ID]: turn.modelCounts["gemini-3-pro-preview"] }
+                      : null),
+                  }
+                : turn?.modelCounts,
+            results: Array.isArray(turn?.results)
+              ? turn.results.map((result) => ({
+                  ...result,
+                  modelId: normalizeModelId(result?.modelId),
+                }))
+              : turn?.results,
+          }));
+          setTurns(migratedTurns);
+        }
         if (typeof saved.activeTurnId === "number") setActiveTurnId(saved.activeTurnId);
         if (typeof saved.historyLimit === "number") setHistoryLimit(saved.historyLimit);
         if (Array.isArray(saved.selectedModels) && saved.selectedModels.length) {
-          const migrated = saved.selectedModels.map((id) => (id === "gemini-3-pro-image" ? "nano-banana-pro-all" : id));
+          const migrated = saved.selectedModels.map((id) => normalizeModelId(id));
           setSelectedModels(migrated);
         }
         if (saved.modelCounts && typeof saved.modelCounts === "object") {
           const migratedCounts = { ...saved.modelCounts };
-          if (typeof migratedCounts["gemini-3-pro-image"] === "number" && typeof migratedCounts["nano-banana-pro-all"] !== "number") {
-            migratedCounts["nano-banana-pro-all"] = migratedCounts["gemini-3-pro-image"];
+          if (typeof migratedCounts["nano-banana-pro-all"] === "number" && typeof migratedCounts[NANO_PRO_OFFICIAL_MODEL_ID] !== "number") {
+            migratedCounts[NANO_PRO_OFFICIAL_MODEL_ID] = migratedCounts["nano-banana-pro-all"];
+          }
+          if (typeof migratedCounts["gemini-3-pro-preview"] === "number" && typeof migratedCounts[NANO_PRO_OFFICIAL_MODEL_ID] !== "number") {
+            migratedCounts[NANO_PRO_OFFICIAL_MODEL_ID] = migratedCounts["gemini-3-pro-preview"];
           }
           setModelCounts((prev) => ({ ...prev, ...migratedCounts }));
         }
