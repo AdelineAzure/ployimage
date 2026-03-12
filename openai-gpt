@@ -1,0 +1,556 @@
+# Chat Completions
+
+## OpenAPI Specification
+
+```yaml
+openapi: 3.0.1
+info:
+  title: ''
+  description: ''
+  version: 1.0.0
+paths:
+  /v1/chat/completions:
+    post:
+      summary: Chat Completions
+      deprecated: false
+      description: >-
+        ## 概述
+
+
+        `chat/completions` 是目前 LLM 最常见的 API 接口，通过**由多条消息组成的对话列表**作为输入，获取模型响应结果。
+
+
+        ### 重要说明
+
+
+        ⚠️ **模型差异性**  
+
+        不同模型供应商支持的请求参数和返回的响应字段可能存在差异。我们强烈建议您查阅相应模型供应商的官方文档以了解完整的参数列表和使用方法。
+
+
+        ⚠️ **响应透传原则**  
+
+        **DeerAPI 通常情况下不会修改逆向格式之外的模型响应结果**，确保您能获得与原始 API 一致的响应内容。
+
+
+        ⚠️ **OpenAI Pro 模型限制**  
+
+        对于 OpenAI Pro 系列模型，请使用
+        [`responses`](https://apidoc.deerapi.com/responses) 接口。
+
+
+        ### 参考文档
+
+
+        如果您想了解更多关于 `chat/completions` 接口的详细信息，建议参考 [OpenAI
+        官方文档](https://platform.openai.com/docs/api-reference/chat)。
+
+
+        **OpenAI 相关指南：**
+
+
+        - [快速入门](https://platform.openai.com/docs/quickstart?api-mode=chat)
+
+        - [文本输入输出](https://platform.openai.com/docs/guides/text?api-mode=chat)
+
+        - [图像输入](https://platform.openai.com/docs/guides/images?api-mode=chat)
+
+        - [音频输入输出](https://platform.openai.com/docs/guides/audio?api-mode=chat)
+
+        -
+        [结构化输出](https://platform.openai.com/docs/guides/structured-outputs?api-mode=chat)
+
+        -
+        [函数调用](https://platform.openai.com/docs/guides/function-calling?api-mode=chat)
+
+        -
+        [对话状态管理](https://platform.openai.com/docs/guides/conversation-state?api-mode=chat)
+
+
+        ---
+
+
+
+        ## API 参考
+
+
+        ### 请求参数
+
+
+        #### 必需参数
+
+
+        **`model`** _string_ **required**  
+
+        指定用于生成响应的模型 ID。
+
+
+        ```json
+
+        {
+          "model": "gpt-4"
+        }
+
+        ```
+
+
+        **`messages`** _array_ **required**  
+
+        对话消息列表，包含角色和内容。每条消息需包含：
+
+
+        - **`role`** _string_ - 消息的角色，可选值：
+          - `system` - 系统消息，用于设置助手行为
+          - `user` - 用户消息
+          - `assistant` - 助手的历史回复
+
+        - **`content`** _string_ - 消息的具体内容
+
+
+        ```json
+
+        {
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是一个专业的 AI 助手"
+            },
+            {
+              "role": "user",
+              "content": "什么是机器学习？"
+            }
+          ]
+        }
+
+        ```
+
+
+        #### 可选参数
+
+
+        **`stream`** _boolean_ **optional**  
+
+        是否启用流式响应。设置为 `true` 时，响应将以 Server-Sent Events (SSE) 的形式逐块返回。
+
+
+        - 默认值：`false`
+
+
+        ```json
+
+        {
+          "stream": true
+        }
+
+        ```
+
+
+        **`temperature`** _number_ **optional**  
+
+        控制响应的随机性，范围 0-2。
+
+
+        - 较低值（如 0.2）：更确定、更聚焦
+
+        - 较高值（如 1.8）：更随机、更有创意
+
+
+        **`max_tokens`** _integer_ **optional**  
+
+        限制生成的最大 token 数量。
+
+
+        **`top_p`** _number_ **optional**  
+
+        核采样参数，范围 0-1。建议不要同时调整 `temperature` 和 `top_p`。
+
+
+        ---
+
+
+
+        ## 常见问题
+
+
+        ### 如何处理速率限制？
+
+
+        遇到 `429 Too Many Requests` 时，建议实现指数退避重试：
+
+
+        ```python
+
+        import time
+
+        import random
+
+
+        def chat_with_retry(messages, max_retries=3):
+            for i in range(max_retries):
+                try:
+                    response = client.chat.completions.create(
+                        model="gpt-4",
+                        messages=messages
+                    )
+                    return response
+                except RateLimitError:
+                    if i < max_retries - 1:
+                        wait_time = (2 ** i) + random.random()
+                        time.sleep(wait_time)
+                    else:
+                        raise
+        ```
+
+
+        ### 如何维护对话上下文？
+
+
+        将完整的对话历史包含在 `messages` 数组中：
+
+
+        ```python
+
+        conversation_history = [
+            {"role": "system", "content": "你是一个helpful助手"},
+            {"role": "user", "content": "什么是 Python？"},
+            {"role": "assistant", "content": "Python 是一种编程语言..."},
+            {"role": "user", "content": "它有什么优势？"}
+        ]
+
+        ```
+
+
+        ### finish_reason 的含义？
+
+
+        | 值               | 含义                 |
+
+        | ---------------- | -------------------- |
+
+        | `stop`           | 自然结束             |
+
+        | `length`         | 达到 max_tokens 限制 |
+
+        | `content_filter` | 触发内容过滤         |
+
+        | `function_call`  | 模型调用了函数       |
+
+
+        ### 如何控制成本？
+
+
+        1. 使用 `max_tokens` 限制输出长度
+
+        2. 选择合适的模型（如 gpt-5-mini 更经济）
+
+        3. 精简 prompt，避免冗余上下文
+
+        4. 监控 `usage` 字段的 token 消耗
+      tags:
+        - API 参考/OpenAI格式
+      parameters:
+        - name: Authorization
+          in: header
+          description: ''
+          required: true
+          example: Bearer {{api-key}}
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+                  description: >-
+                    要使用的模型的 ID。有关哪些模型适用于聊天 API
+                    的详细信息，请参阅模型端点兼容性表:https://platform.openai.com/docs/models/model-endpoint-compatibility
+                messages:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      role:
+                        type: string
+                        description: 消息发送者的角色
+                      content:
+                        type: string
+                        description: 消息的具体内容
+                    x-apifox-orders:
+                      - role
+                      - content
+                  description: >
+                    以聊天格式:https://platform.openai.com/docs/guides/text?api-mode=chat生成聊天完成的消息。
+                stream:
+                  type: boolean
+                  description: >
+                    如果设置，将发送部分消息增量，就像在 ChatGPT 中一样。当令牌可用时，令牌将作为纯数据服务器发送事件data:
+                    [DONE]发送，流由消息终止。有关示例代码，请参阅 OpenAI Cookbook 。
+                temperature:
+                  type: integer
+                  description: >-
+                    使用什么采样温度，介于 0 和 1 之间。较高的值（如 0.8）将使输出更加随机，而较低的值（如
+                    0.2）将使输出更加集中和确定。 我们通常建议改变这个或top_p但不是两者。
+                     gpt-5-chat-latest：支持自定义温度参数，取值范围 0-1（含 0 和 1），可按需灵活调整。
+                     其他 GPT-5 系列模型：温度参数固定为 1，您可直接设置为 1 或选择不传（系统将默认按 1 处理）。
+                top_p:
+                  type: integer
+                  description: >-
+                    一种替代温度采样的方法，称为核采样，其中模型考虑具有 top_p 概率质量的标记的结果。所以 0.1 意味着只考虑构成前
+                    10% 概率质量的标记。 我们通常建议改变这个或temperature但不是两者。
+                'n':
+                  type: integer
+                  description: |
+                    为每个输入消息生成多少个聊天完成选项。
+                stop:
+                  type: string
+                  description: |
+                    API 将停止生成更多令牌的最多 4 个序列。
+                max_tokens:
+                  type: integer
+                  description: >
+                    聊天完成时生成的最大令牌数。 输入标记和生成标记的总长度受模型上下文长度的限制。-调用 GPT-5
+                    系列模型(除去gpt-5-chat-latest)**max_tokens**字段应改为
+                    **max_completion_tokens**  
+                presence_penalty:
+                  type: number
+                  description: >-
+                    -2.0 和 2.0 之间的数字。正值会根据到目前为止是否出现在文本中来惩罚新标记，从而增加模型谈论新主题的可能性。
+                    查看有关频率和存在惩罚的更多信息:https://platform.openai.com/docs/api-reference/parameter-details
+                frequency_penalty:
+                  type: number
+                  description: >-
+                    -2.0 和 2.0 之间的数字。正值会根据到目前为止是否出现在文本中来惩罚新标记，从而增加模型谈论新主题的可能性。
+                    查看有关频率和存在惩罚的更多信息:https://platform.openai.com/docs/api-reference/parameter-details
+                logit_bias:
+                  type: 'null'
+                  description: >
+                    修改指定标记出现在完成中的可能性。 接受一个 json 对象，该对象将标记（由标记器中的标记 ID 指定）映射到从
+                    -100 到 100 的关联偏差值。从数学上讲，偏差会在采样之前添加到模型生成的 logits
+                    中。确切的效果因模型而异，但 -1 和 1 之间的值应该会减少或增加选择的可能性；像 -100 或 100
+                    这样的值应该导致相关令牌的禁止或独占选择。
+                user:
+                  type: string
+                  description: >-
+                    代表您的最终用户的唯一标识符，可以帮助 OpenAI
+                    监控和检测滥用行为。了解更多:https://platform.openai.com/docs/guides/safety-best-practices/end-user-ids
+              required:
+                - model
+                - messages
+              x-apifox-orders:
+                - model
+                - messages
+                - stream
+                - temperature
+                - top_p
+                - 'n'
+                - stop
+                - max_tokens
+                - presence_penalty
+                - frequency_penalty
+                - logit_bias
+                - user
+            examples:
+              '1':
+                value:
+                  model: gpt-5.2
+                  messages:
+                    - role: system
+                      content: You are a helpful assistant.
+                    - role: user
+                      content: Hello!
+                summary: Default
+              '2':
+                value:
+                  model: gpt-4.1
+                  messages:
+                    - role: user
+                      content:
+                        - type: text
+                          text: What is in this image?
+                        - type: image_url
+                          image_url:
+                            url: https://picsum.photos/1920/1080
+                  max_tokens: 300
+                summary: 输入图像
+              '3':
+                value:
+                  model: gpt-5
+                  messages:
+                    - role: system
+                      content: You are a helpful assistant.
+                    - role: user
+                      content: Hello!
+                  stream: true
+                summary: 流式响应
+              '4':
+                value:
+                  model: gpt-4.1
+                  messages:
+                    - role: user
+                      content: What is the weather like in Boston today?
+                  tools:
+                    - type: function
+                      function:
+                        name: get_current_weather
+                        description: Get the current weather in a given location
+                        parameters:
+                          type: object
+                          properties:
+                            location:
+                              type: string
+                              description: The city and state, e.g. San Francisco, CA
+                            unit:
+                              type: string
+                              enum:
+                                - celsius
+                                - fahrenheit
+                          required:
+                            - location
+                  tool_choice: auto
+                summary: 函数调用
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    description: 本次API请求的唯一标识符。
+                  object:
+                    type: string
+                    description: 返回对象的类型，
+                  created:
+                    type: integer
+                    description: 请求处理完成时的Unix时间戳
+                  model:
+                    type: string
+                    description: 本次请求所使用的具体模型名称。
+                  system_fingerprint:
+                    type: string
+                    description: 系统指纹，代表了模型运行所使用的后端配置。
+                  choices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        index:
+                          type: integer
+                          description: 该结果在列表中的索引，从 0 开始。
+                        message:
+                          type: object
+                          properties:
+                            content:
+                              type: string
+                              description: 模型返回的文本内容。
+                            role:
+                              type: string
+                              description: 消息的角色，对于模型的回复，
+                          required:
+                            - content
+                            - role
+                          x-apifox-orders:
+                            - content
+                            - role
+                          description: 模型生成的消息内容对象。
+                        finish_reason:
+                          type: string
+                          description: 模型停止生成的原因。
+                      x-apifox-orders:
+                        - index
+                        - message
+                        - finish_reason
+                    description: 个包含模型生成结果的列表。如果请求时指定了 n > 1，这里可能会包含多个结果对象。
+                  usage:
+                    type: object
+                    properties:
+                      completion_tokens:
+                        type: integer
+                        description: 模型生成的消息（completion）所消耗的 token 数量。
+                      completion_tokens_details:
+                        type: object
+                        properties: {}
+                        x-apifox-orders: []
+                        description: ' 关于 completion_tokens 的详细信息'
+                      prompt_tokens:
+                        type: integer
+                        description: 用户输入的提示（prompt）所消耗的 token 数量。
+                      prompt_tokens_details:
+                        type: object
+                        properties: {}
+                        x-apifox-orders: []
+                        description: 关于 prompt_tokens 的详细信息
+                      total_tokens:
+                        type: integer
+                        description: 本次请求消耗的总 token 数量
+                    required:
+                      - completion_tokens
+                      - completion_tokens_details
+                      - prompt_tokens
+                      - prompt_tokens_details
+                      - total_tokens
+                    x-apifox-orders:
+                      - completion_tokens
+                      - completion_tokens_details
+                      - prompt_tokens
+                      - prompt_tokens_details
+                      - total_tokens
+                    description: 本次请求的 token 使用量统计。
+                required:
+                  - id
+                  - object
+                  - created
+                  - model
+                  - system_fingerprint
+                  - choices
+                  - usage
+                x-apifox-orders:
+                  - id
+                  - object
+                  - created
+                  - model
+                  - system_fingerprint
+                  - choices
+                  - usage
+              example:
+                id: chatcmpl-AreYSBEwmzB0kY3GxzBEhE1Olct83
+                object: chat.completion
+                created: 1737350640
+                model: gpt-4o-2024-08-06
+                system_fingerprint: fp_f3927aa00d
+                choices:
+                  - index: 0
+                    message:
+                      content: Hello! How can I assist you today?
+                      role: assistant
+                    finish_reason: stop
+                usage:
+                  completion_tokens: 9
+                  completion_tokens_details: {}
+                  prompt_tokens: 9
+                  prompt_tokens_details: {}
+                  total_tokens: 18
+          headers: {}
+          x-apifox-name: Successful Response
+      security: []
+      x-apifox-folder: API 参考/OpenAI格式
+      x-apifox-status: released
+      x-run-in-apifox: https://app.apifox.com/web/project/6100640/apis/api-276386060-run
+components:
+  schemas: {}
+  securitySchemes:
+    Default:
+      in: header
+      type: apikey
+      name: ApiKey
+servers:
+  - url: https://api.deerapi.com
+    description: 正式环境
+security: []
+
+```

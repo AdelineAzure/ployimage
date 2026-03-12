@@ -32,10 +32,6 @@ export default {
       return new Response(null, { headers: corsHeaders() });
     }
 
-    if (!env.DEERAPI_KEY) {
-      return json({ error: "DEERAPI_KEY not configured in Worker environment" }, 500);
-    }
-
     try {
       // Image proxy mode for signed URLs and hotlink-restricted URLs.
       const imageUrl = request.headers.get("X-Image-Url") || url.searchParams.get("image_url");
@@ -67,10 +63,14 @@ export default {
 
       // Worker preview health check
       if (method === "GET" && url.pathname === "/" && !request.headers.get("X-Target-Path")) {
-        return json({ ok: true, service: "deerapi-proxy" });
+        return json({ ok: true, service: "deerapi-proxy", defaultUpstream: DEFAULT_UPSTREAM_BASE });
       }
 
       const targetPath = request.headers.get("X-Target-Path") || "/v1/chat/completions";
+      const upstreamBase = resolveUpstreamBase(request.headers.get("X-Upstream-Base"));
+      if (!upstreamBase) {
+        return json({ error: "Invalid X-Upstream-Base" }, 400);
+      }
       // Midjourney task polling uses GET (e.g. /mj/task/{id}/fetch).
       // Most other DeerAPI generation endpoints use POST.
       const isAllowedGetPath =
@@ -82,10 +82,17 @@ export default {
 
       const body = method === "POST" ? await request.text() : undefined;
 
-      const isGemini = targetPath.includes("/v1beta/");
-      const authHeader = isGemini ? env.DEERAPI_KEY : `Bearer ${env.DEERAPI_KEY}`;
+      const requestApiKey = (request.headers.get("X-Api-Key") || "").trim();
+      const fallbackApiKey = (env.DEERAPI_KEY || "").trim();
+      const apiKey = requestApiKey || fallbackApiKey;
+      if (!apiKey) {
+        return json({ error: "API key missing. Provide X-Api-Key or configure DEERAPI_KEY." }, 400);
+      }
 
-      const resp = await fetch(`https://api.deerapi.com${targetPath}`, {
+      const isGemini = targetPath.includes("/v1beta/");
+      const authHeader = isGemini ? apiKey : `Bearer ${apiKey}`;
+
+      const resp = await fetch(`${upstreamBase}${targetPath}`, {
         method,
         headers: {
           "Content-Type": "application/json",
@@ -112,8 +119,21 @@ function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-Target-Path, X-Image-Url",
+    "Access-Control-Allow-Headers": "Content-Type, X-Target-Path, X-Image-Url, X-Upstream-Base, X-Api-Key",
   };
+}
+
+const DEFAULT_UPSTREAM_BASE = "https://api.deerapi.com";
+
+function resolveUpstreamBase(value) {
+  if (!value) return DEFAULT_UPSTREAM_BASE;
+  try {
+    const url = new URL(value);
+    if (!/^https?:$/i.test(url.protocol)) return null;
+    return `${url.origin}${url.pathname}`.replace(/\/+$/, "");
+  } catch {
+    return null;
+  }
 }
 
 function json(obj, status = 200) {

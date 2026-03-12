@@ -568,7 +568,7 @@ export default function App() {
 
         {results.length > 0 && (
           <section style={{ animation: "fadeIn 0.3s ease" }}>
-            <div style={{ display: "grid", gap: 16, gridTemplateColumns: results.length === 1 ? "1fr" : results.length === 2 ? "1fr 1fr" : "1fr 1fr 1fr" }}>
+            <div style={{ display: "grid", gap: 16, gridTemplateColumns: results.length === 1 ? "1fr" : "1fr 1fr" }}>
               {results.map((r, i) => <ResultColumn key={r.modelId + i} result={r} onPreview={setPreviewImage} />)}
             </div>
           </section>

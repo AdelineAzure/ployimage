@@ -78,7 +78,45 @@ https://your-worker-name.your-subdomain.workers.dev
 
 在网页右上角点击 `⚙`，打开配置弹窗，在「Cloudflare Worker Proxy URL」输入这个地址并保存即可。
 
-## 5. 项目结构简要说明
+## 5. 用户使用说明
+
+### 5.1 基础出图流程
+
+1. 打开页面后先点 `⚙` 填写 Worker 地址。
+2. （可选）点右上角 `API` 填写 DeerAPI Key 并点 `Save`。
+3. 输入提示词，按需上传参考图。
+4. 选择模型和每个模型的出图数量。
+5. 点击 `⬡ Enqueue Task` 或 `⬡ Enqueue Compare Tasks` 运行任务。
+
+### 5.2 GPT 助手怎么用
+
+> GPT 助手只改写 `{{ }}` 中间的内容，不会直接生图。
+
+1. 在导航栏点击 `GPT Prompt`。
+2. 填写“GPT 改写规则”并点 `Save`。
+3. 在提示词里写占位符，例如：`一个 {{情绪随机}} 的女孩在 {{天气随机}} 的街头`。
+4. 点击提示词区域上方的人形按钮 `👤`。
+5. GPT 会自动改写 `{{ }}` 内文本，完成后按钮自动恢复为未运行状态。
+
+### 5.3 GPT 助手是否支持识图？
+
+支持。  
+当你上传了参考图后，点击 `👤` 时会把当前输入图一并发送给 GPT 作为视觉参考（但 GPT 助手本身不生图）。
+
+### 5.4 GPT 助手配置存储规则
+
+- `GPT Prompt` 的配置文件与模板一样，保存在你选择的 History Folder 中。
+- 文件名为：`gpt-assist.json`。
+- 必须先选择 History Folder，才能保存 GPT Prompt。
+- GPT 调用会读取当前输入图作为上下文，但**不会把输入图写入** `gpt-assist.json`。
+
+### 5.5 Prompt Compare 模式下的 GPT 助手
+
+- `PROMPTS` 模式下会同时检查两列输入框。
+- 哪个输入框包含 `{{ }}`，就改写哪个。
+- 没有 `{{ }}` 的输入框不会被改动。
+
+## 6. 项目结构简要说明
 
 - `index.html`：入口 HTML 文件，挂载点为 `#root`。
 - `src/main.jsx`：前端入口文件，挂载 React 应用。
