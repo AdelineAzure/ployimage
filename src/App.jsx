@@ -1896,7 +1896,7 @@ export default function App() {
   const [historyLimit, setHistoryLimit] = useState(4);
   const [previewImage, setPreviewImage] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [proxyUrl, setProxyUrl] = useState("https://a.adelineazures.workers.dev/");
+  const [proxyUrl, setProxyUrl] = useState("https://img-proxy.adelineazures.workers.dev");
   const [historyDirHandle, setHistoryDirHandle] = useState(null);
   const [historyDirName, setHistoryDirName] = useState("");
   const [historyFolderMsg, setHistoryFolderMsg] = useState("");
