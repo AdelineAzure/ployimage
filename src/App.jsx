@@ -346,6 +346,31 @@ function applyPlaceholderReplacements(input = "", replacements = []) {
   });
 }
 
+function clearPlaceholderValues(input = "") {
+  const text = typeof input === "string" ? input : "";
+  return text.replace(/\{\{[^{}]*\}\}/g, "{{}}");
+}
+
+function splitPromptByPlaceholders(input = "") {
+  const text = typeof input === "string" ? input : "";
+  const chunks = [];
+  const regex = /\{\{([^{}]*)\}\}/g;
+  let last = 0;
+  let match = regex.exec(text);
+  while (match) {
+    if (match.index > last) {
+      chunks.push({ type: "text", value: text.slice(last, match.index) });
+    }
+    chunks.push({ type: "placeholder", value: typeof match[1] === "string" ? match[1] : "" });
+    last = match.index + match[0].length;
+    match = regex.exec(text);
+  }
+  if (last < text.length) {
+    chunks.push({ type: "text", value: text.slice(last) });
+  }
+  return chunks;
+}
+
 function assistantMessageToText(content) {
   if (typeof content === "string") return content.trim();
   if (!Array.isArray(content)) return "";
@@ -1538,6 +1563,233 @@ async function generateImage(proxyUrl, model, prompt, imageBase64, options = {})
 }
 
 // ─── Components ───
+function PromptTextWithChips({ text }) {
+  const chunks = splitPromptByPlaceholders(text);
+  if (!chunks.length) return <span>(no prompt)</span>;
+  return (
+    <>
+      {chunks.map((chunk, idx) => (
+        chunk.type === "placeholder"
+          ? <span key={`ph-${idx}`} style={S.promptChipReadonly}>{chunk.value || " "}</span>
+          : <span key={`tx-${idx}`}>{chunk.value}</span>
+      ))}
+    </>
+  );
+}
+
+function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placeholder, rows = 4, editorRef }) {
+  const rootRef = useRef(null);
+  const selfUpdateRef = useRef(false);
+  const internalValueRef = useRef(typeof value === "string" ? value : "");
+  const activeChipRef = useRef(null);
+  const zeroWidth = "\u200b";
+
+  const setChipEditingState = useCallback((chip, editing) => {
+    if (!chip) return;
+    chip.contentEditable = editing ? "true" : "false";
+    chip.style.background = editing ? "rgba(59,130,246,0.34)" : "rgba(59,130,246,0.24)";
+    chip.style.borderColor = editing ? "rgba(147,197,253,0.95)" : "rgba(96,165,250,0.65)";
+  }, []);
+
+  const deactivateAllChips = useCallback(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const chips = root.querySelectorAll('[data-placeholder-chip="1"]');
+    chips.forEach((chip) => setChipEditingState(chip, false));
+    activeChipRef.current = null;
+  }, [setChipEditingState]);
+
+  const renderValueToDom = useCallback((nextValue) => {
+    const root = rootRef.current;
+    if (!root) return;
+    root.innerHTML = "";
+    const chunks = splitPromptByPlaceholders(nextValue);
+    if (!chunks.length) return;
+    chunks.forEach((chunk) => {
+      if (chunk.type === "placeholder") {
+        const span = document.createElement("span");
+        span.setAttribute("data-placeholder-chip", "1");
+        span.style.background = "rgba(59,130,246,0.24)";
+        span.style.color = "#bfdbfe";
+        span.style.border = "1px solid rgba(96,165,250,0.65)";
+        span.style.borderRadius = "6px";
+        span.style.padding = "1px 6px";
+        span.style.display = "inline-block";
+        span.style.minWidth = "12px";
+        span.style.margin = "0 1px";
+        span.contentEditable = "false";
+        span.textContent = chunk.value || zeroWidth;
+        root.appendChild(span);
+        return;
+      }
+      root.appendChild(document.createTextNode(chunk.value));
+    });
+  }, []);
+
+  const serializeDomToValue = useCallback(() => {
+    const root = rootRef.current;
+    if (!root) return "";
+    const out = [];
+    const walk = (node) => {
+      if (!node) return;
+      if (node.nodeType === Node.TEXT_NODE) {
+        out.push(node.textContent || "");
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const element = node;
+      if (element.hasAttribute("data-placeholder-chip")) {
+        const raw = (element.textContent || "").replaceAll(zeroWidth, "");
+        out.push(`{{${raw}}}`);
+        return;
+      }
+      const tag = element.tagName;
+      if (tag === "BR") {
+        out.push("\n");
+        return;
+      }
+      const childNodes = Array.from(element.childNodes);
+      childNodes.forEach((child) => walk(child));
+      if (tag === "DIV" || tag === "P") out.push("\n");
+    };
+    Array.from(root.childNodes).forEach((child) => walk(child));
+    return out.join("").replace(/\n{3,}/g, "\n\n");
+  }, []);
+
+  const moveCaretInside = useCallback((element) => {
+    if (!element) return;
+    const selection = window.getSelection();
+    if (!selection) return;
+    const range = document.createRange();
+    const textNode = element.firstChild;
+    if (!textNode) {
+      element.appendChild(document.createTextNode(zeroWidth));
+    }
+    const target = element.firstChild;
+    const len = target?.textContent?.length || 0;
+    range.setStart(target, len);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }, []);
+
+  const insertPlaceholderAtCaret = useCallback(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    root.focus();
+    deactivateAllChips();
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount) {
+      renderValueToDom(`${internalValueRef.current}{{}}`);
+      internalValueRef.current = `${internalValueRef.current}{{}}`;
+      onChange?.(internalValueRef.current);
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    if (!root.contains(range.startContainer)) {
+      const end = document.createRange();
+      end.selectNodeContents(root);
+      end.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(end);
+    }
+    const placeholderChip = document.createElement("span");
+    placeholderChip.setAttribute("data-placeholder-chip", "1");
+    placeholderChip.style.background = "rgba(59,130,246,0.24)";
+    placeholderChip.style.color = "#bfdbfe";
+    placeholderChip.style.border = "1px solid rgba(96,165,250,0.65)";
+    placeholderChip.style.borderRadius = "6px";
+    placeholderChip.style.padding = "1px 6px";
+    placeholderChip.style.display = "inline-block";
+    placeholderChip.style.minWidth = "12px";
+    placeholderChip.style.margin = "0 1px";
+    placeholderChip.contentEditable = "false";
+    placeholderChip.textContent = zeroWidth;
+
+    const liveRange = selection.getRangeAt(0);
+    liveRange.deleteContents();
+    liveRange.insertNode(placeholderChip);
+    const after = document.createRange();
+    after.setStartAfter(placeholderChip);
+    after.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(after);
+    const next = serializeDomToValue();
+    internalValueRef.current = next;
+    selfUpdateRef.current = true;
+    onChange?.(next);
+  }, [deactivateAllChips, onChange, renderValueToDom, serializeDomToValue]);
+
+  useEffect(() => {
+    if (selfUpdateRef.current) {
+      selfUpdateRef.current = false;
+      return;
+    }
+    const normalized = typeof value === "string" ? value : "";
+    if (normalized === internalValueRef.current) return;
+    internalValueRef.current = normalized;
+    renderValueToDom(normalized);
+  }, [renderValueToDom, value]);
+
+  useEffect(() => {
+    renderValueToDom(internalValueRef.current);
+  }, [renderValueToDom]);
+
+  const handleClick = useCallback((event) => {
+    const root = rootRef.current;
+    if (!root) return;
+    const target = event.target instanceof Element ? event.target : null;
+    const chip = target?.closest?.('[data-placeholder-chip="1"]');
+    if (chip && root.contains(chip)) {
+      deactivateAllChips();
+      setChipEditingState(chip, true);
+      activeChipRef.current = chip;
+      moveCaretInside(chip);
+      return;
+    }
+    deactivateAllChips();
+  }, [deactivateAllChips, moveCaretInside, setChipEditingState]);
+
+  useEffect(() => {
+    if (!editorRef) return;
+    editorRef.current = {
+      insertPlaceholder: insertPlaceholderAtCaret,
+    };
+    return () => {
+      if (editorRef.current?.insertPlaceholder === insertPlaceholderAtCaret) {
+        editorRef.current = null;
+      }
+    };
+  }, [editorRef, insertPlaceholderAtCaret]);
+
+  const handleInput = useCallback(() => {
+    const next = serializeDomToValue();
+    internalValueRef.current = next;
+    selfUpdateRef.current = true;
+    onChange?.(next);
+  }, [onChange, serializeDomToValue]);
+
+  return (
+    <div
+      ref={rootRef}
+      contentEditable
+      suppressContentEditableWarning
+      onInput={handleInput}
+      onKeyDown={onKeyDown}
+      onClick={handleClick}
+      onBlur={(event) => {
+        const nextFocus = event.relatedTarget;
+        if (!nextFocus || !(nextFocus instanceof Node) || !rootRef.current?.contains(nextFocus)) {
+          deactivateAllChips();
+        }
+      }}
+      onFocus={onFocus}
+      data-placeholder={placeholder}
+      style={{ ...S.tokenEditor, minHeight: Math.max(104, rows * 24) }}
+    />
+  );
+}
+
 function SettingsModal({ show, onClose, proxyUrl, setProxyUrl }) {
   const [showWorkerCode, setShowWorkerCode] = useState(false);
   if (!show) return null;
@@ -1843,7 +2095,9 @@ function TurnPanel({ turn, onPreview, onCancelModel, onDelete, onReuse, onHide, 
           {promptVariants.map((variant) => (
             <div key={variant.key} style={S.turnPromptCard}>
               {isCompareMode && <div style={S.turnPromptBadge}>{variant.label}</div>}
-              <div style={S.turnPromptText}>{variant.prompt || "(no prompt)"}</div>
+              <div style={S.turnPromptText}>
+                {variant.prompt ? <PromptTextWithChips text={variant.prompt} /> : "(no prompt)"}
+              </div>
             </div>
           ))}
         </div>
@@ -1938,9 +2192,25 @@ export default function App() {
   const [historyFolderMsg, setHistoryFolderMsg] = useState("");
   const [hiddenTurnIds, setHiddenTurnIds] = useState([]);
   const fileRef = useRef(null);
+  const activePromptFieldRef = useRef("single");
+  const promptInputRef = useRef(null);
+  const compareAInputRef = useRef(null);
+  const compareBInputRef = useRef(null);
   const seqRef = useRef(1);
   const controllersRef = useRef({});
   const savingToFolderRef = useRef(new Set());
+
+  const insertPlaceholderChip = useCallback(() => {
+    if (taskMode === "compare") {
+      if (activePromptFieldRef.current === "b") {
+        compareBInputRef.current?.insertPlaceholder?.();
+        return;
+      }
+      compareAInputRef.current?.insertPlaceholder?.();
+      return;
+    }
+    promptInputRef.current?.insertPlaceholder?.();
+  }, [taskMode]);
 
   useEffect(() => {
     try {
@@ -2334,7 +2604,13 @@ export default function App() {
     seqRef.current += 1;
     setActiveTurnId(turn.id);
     setTurns((prev) => [turn, ...prev]);
-  }, [proxyUrl, selectedModels, modelCounts, taskMode, prompt, comparePrompts, apiBaseUrl, apiKey, aspectRatio, uploadedImage]);
+    if (taskMode === "compare") {
+      compareAEditor.setText((prev) => clearPlaceholderValues(prev), { record: false });
+      compareBEditor.setText((prev) => clearPlaceholderValues(prev), { record: false });
+    } else {
+      promptEditor.setText((prev) => clearPlaceholderValues(prev), { record: false });
+    }
+  }, [proxyUrl, selectedModels, modelCounts, taskMode, prompt, comparePrompts, apiBaseUrl, apiKey, aspectRatio, uploadedImage, compareAEditor, compareBEditor, promptEditor]);
 
   const cancelModelTask = useCallback((turnId, modelId, promptKey = "single") => {
     const key = `${turnId}:${modelId}:${promptKey}`;
@@ -2686,6 +2962,14 @@ export default function App() {
                   {taskMode === "compare" && <span style={S.inputHint}>Shared image, dual prompt runs</span>}
                   <button
                     type="button"
+                    style={S.placeholderBtn}
+                    onClick={insertPlaceholderChip}
+                    title="插入占位框 {{ }}"
+                  >
+                    【】
+                  </button>
+                  <button
+                    type="button"
                     style={{ ...S.gptAssistBtn, opacity: canRunGptAssist ? 1 : 0.5, cursor: canRunGptAssist ? "pointer" : "not-allowed" }}
                     onClick={runGptAssist}
                     disabled={!canRunGptAssist}
@@ -2698,32 +2982,35 @@ export default function App() {
               {taskMode === "compare" ? (
                 <div style={S.comparePromptGrid}>
                   <div>
-                    <textarea
-                      style={S.textarea}
+                    <TokenPromptInput
                       value={comparePrompts.a}
-                      onChange={(e) => updateComparePrompt("a", e.target.value)}
+                      onChange={(next) => updateComparePrompt("a", next)}
                       onKeyDown={compareAEditor.handleKeyDown}
+                      onFocus={() => { activePromptFieldRef.current = "a"; }}
+                      editorRef={compareAInputRef}
                       placeholder="Describe prompt A..."
                       rows={4}
                     />
                   </div>
                   <div>
-                    <textarea
-                      style={S.textarea}
+                    <TokenPromptInput
                       value={comparePrompts.b}
-                      onChange={(e) => updateComparePrompt("b", e.target.value)}
+                      onChange={(next) => updateComparePrompt("b", next)}
                       onKeyDown={compareBEditor.handleKeyDown}
+                      onFocus={() => { activePromptFieldRef.current = "b"; }}
+                      editorRef={compareBInputRef}
                       placeholder="Describe prompt B..."
                       rows={4}
                     />
                   </div>
                 </div>
               ) : (
-                <textarea
-                  style={S.textarea}
+                <TokenPromptInput
                   value={prompt}
-                  onChange={(e) => promptEditor.setText(e.target.value)}
+                  onChange={(next) => promptEditor.setText(next)}
                   onKeyDown={promptEditor.handleKeyDown}
+                  onFocus={() => { activePromptFieldRef.current = "single"; }}
+                  editorRef={promptInputRef}
                   placeholder="Describe the image you want to generate..."
                   rows={4}
                 />
@@ -2944,6 +3231,11 @@ export default function App() {
         * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+        [contenteditable="true"][data-placeholder]:empty::before {
+          content: attr(data-placeholder);
+          color: #6b7280;
+          pointer-events: none;
+        }
       `}</style>
     </div>
   );
@@ -2974,9 +3266,11 @@ const S = {
   promptHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 8, flexWrap: "wrap" },
   promptHeadActions: { display: "flex", alignItems: "center", gap: 8 },
   inputHint: { fontSize: 12, color: "#71717a", fontFamily: mono },
-  gptAssistBtn: { width: 16, height: 16, borderRadius: 4, border: "1px solid rgba(125,211,252,0.45)", background: "rgba(125,211,252,0.12)", color: "#7dd3fc", fontFamily: mono, fontSize: 10, lineHeight: "14px", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },
+  placeholderBtn: { height: 20, minWidth: 26, borderRadius: 5, border: "1px solid rgba(96,165,250,0.72)", background: "rgba(59,130,246,0.18)", color: "#bfdbfe", fontFamily: mono, fontSize: 10, lineHeight: "18px", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 5px" },
+  gptAssistBtn: { width: 20, height: 20, borderRadius: 5, border: "1px solid rgba(96,165,250,0.72)", background: "rgba(59,130,246,0.18)", color: "#bfdbfe", fontFamily: mono, fontSize: 11, lineHeight: "18px", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },
   comparePromptGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 },
   textarea: { width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "14px 16px", color: "#e4e4e7", fontFamily: sans, fontSize: 14, resize: "vertical", outline: "none", lineHeight: 1.6 },
+  tokenEditor: { width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "14px 16px", color: "#e4e4e7", fontFamily: sans, fontSize: 14, outline: "none", lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word" },
   dropZone: { width: "100%", height: 120, borderRadius: 10, border: "1px dashed rgba(255,255,255,0.12)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer" },
   uploadedBox: { position: "relative", width: "100%", height: 120, borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)" },
   uploadedThumb: { width: "100%", height: "100%", objectFit: "cover" },
@@ -3048,6 +3342,7 @@ const S = {
   turnPromptCard: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.03)", padding: "12px 14px" },
   turnPromptBadge: { display: "inline-flex", alignItems: "center", padding: "2px 8px", borderRadius: 999, background: "rgba(250,204,21,0.12)", color: "#facc15", fontSize: 10, fontFamily: mono, marginBottom: 8 },
   turnPromptText: { fontSize: 13, color: "#e4e4e7", whiteSpace: "pre-wrap", lineHeight: 1.5 },
+  promptChipReadonly: { background: "rgba(59,130,246,0.24)", color: "#bfdbfe", border: "1px solid rgba(96,165,250,0.65)", borderRadius: 6, padding: "1px 6px", display: "inline-block", margin: "0 1px" },
   turnCompareResultsGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 },
   turnResultGroup: { marginTop: 16 },
   turnResultGroupHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10, flexWrap: "wrap" },
