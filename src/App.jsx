@@ -2511,6 +2511,8 @@ function ResultColumn({
 }) {
   const model = IMAGE_MODELS.find((m) => m.id === result.modelId);
   const visibleImages = Array.isArray(result.images) ? result.images : [];
+  const generatedCount = visibleImages.length;
+  const requestedCount = Math.max(1, Number(result?.requestedCount) || 1);
   const prov = PROVIDER_COLORS[model?.provider] || { bg: "#666" };
   const sc =
     result.status === "success"
@@ -2538,13 +2540,15 @@ function ResultColumn({
       {result.status === "loading" && (
         <div style={S.loadingArea}>
           <div style={S.spinner} />
-          <p style={{ color: "#888", fontSize: 13, marginTop: 12 }}>Generating...</p>
+          <p style={{ color: "#888", fontSize: 13, marginTop: 12 }}>
+            Generating... {generatedCount}/{requestedCount}
+          </p>
           <button style={{ ...S.dlBtn, marginTop: 10, borderRadius: 8, width: 120 }} onClick={onCancel}>Stop</button>
         </div>
       )}
       {result.status === "error" && <div style={S.errArea}><p style={{ color: "#ef4444", fontSize: 13, wordBreak: "break-word" }}>{result.error}</p></div>}
       {result.status === "cancelled" && <div style={S.errArea}><p style={{ color: "#9ca3af", fontSize: 13 }}>Cancelled by user</p></div>}
-      {result.status === "success" && visibleImages.length > 0 && (
+      {(result.status === "success" || result.status === "loading") && visibleImages.length > 0 && (
         <div style={compactImages ? S.imgGridCompact : S.imgGrid}>{visibleImages.map((img, i) => (
           <ImageCard
             key={i}
@@ -2636,6 +2640,7 @@ function TurnPanel({
   canSyncTemplate,
   selectedImageKeys,
   onToggleImageSelect,
+  compactStyleHistory = false,
 }) {
   const promptVariants = getTurnPromptVariants(turn);
   const turnMode = getTurnMode(turn);
@@ -2667,6 +2672,17 @@ function TurnPanel({
           return String(a.modelId).localeCompare(String(b.modelId));
         })
     : [];
+  const styleModelId = selectedModelIds[0] || styleResults[0]?.modelId || "";
+  const styleModelName = IMAGE_MODELS.find((model) => model.id === styleModelId)?.name || styleModelId || "-";
+  const styleRequestedCount = styleResults[0]?.requestedCount || (styleModelId ? Number(turn?.modelCounts?.[styleModelId]) || 1 : 0);
+  const styleGeneratedCount = styleResults.reduce(
+    (sum, result) => sum + (Array.isArray(result?.images) ? result.images.length : 0),
+    0
+  );
+  const styleSuccessCount = styleResults.filter((result) => result.status === "success").length;
+  const styleErrorCount = styleResults.filter((result) => result.status === "error").length;
+  const styleCancelledCount = styleResults.filter((result) => result.status === "cancelled").length;
+  const styleLoadingCount = styleResults.filter((result) => result.status === "loading").length;
   const resultsByVariant = promptVariants.map((variant) => ({
     variant,
     groupResults: (turn.results || [])
@@ -2704,120 +2720,151 @@ function TurnPanel({
           {onDelete && <button style={{ ...S.turnActionBtn, color: "#fca5a5", borderColor: "rgba(252,165,165,0.4)" }} onClick={() => onDelete(turn.id)}>Delete</button>}
         </div>
       </div>
-      <div style={S.turnPromptRow}>
-        <div
-          style={{
-            ...S.turnPromptCards,
-            gridTemplateColumns: isCompareMode ? "repeat(2, minmax(0, 1fr))" : "1fr",
-          }}
-        >
-          {isStyleMode ? (
-            <div style={S.turnPromptCard}>
-              <div style={S.turnPromptText}>
-                {styleBasePrompt ? <PromptTextWithChips text={styleBasePrompt} /> : "(no prompt)"}
-              </div>
-            </div>
-          ) : (
-            promptVariants.map((variant) => (
-              <div key={variant.key} style={S.turnPromptCard}>
-                {isCompareMode && <div style={S.turnPromptBadge}>{variant.label}</div>}
-                <div style={S.turnPromptText}>
-                  {variant.prompt ? <PromptTextWithChips text={variant.prompt} /> : "(no prompt)"}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-        {(turn.referenceImage || styleReferenceImages.length > 0) && (
-          <div style={S.turnRefImageStack}>
-            {turn.referenceImage && (
-              <button
-                type="button"
-                style={S.turnRefImageBtn}
-                onClick={() => onPreview?.(turn.referenceImage)}
-                title="Preview reference image"
-              >
-                <img src={turn.referenceImage} alt="Reference" style={S.turnRefImage} />
-              </button>
-            )}
-            {styleReferenceImages.map((image, index) => (
-              <button
-                key={`style-ref-${turn.id}-${index}`}
-                type="button"
-                style={S.turnRefImageBtn}
-                onClick={() => onPreview?.(image)}
-                title={`Preview style image ${index + 1}`}
-              >
-                <img src={image} alt={`Style ${index + 1}`} style={S.turnRefImage} />
-              </button>
-            ))}
+      {isStyleMode && compactStyleHistory ? (
+        <div style={S.styleHistorySummary}>
+          <div style={S.styleSummaryItem}>
+            <span style={S.styleSummaryKey}>Model</span>
+            <span style={S.styleSummaryVal}>{styleModelName}</span>
           </div>
-        )}
-      </div>
-      {isStyleMode ? (
-        <div
-          style={{
-            ...S.turnStyleResultsGrid,
-            gridTemplateColumns: `repeat(${Math.min(6, Math.max(1, styleResults.length))}, minmax(0, 1fr))`,
-          }}
-        >
-          {styleResults.map((result, index) => (
-            <ResultColumn
-              key={`${turn.id}-${result.modelId}-${getResultPromptKey(result)}-${index}`}
-              result={result}
-              onPreview={onPreview}
-              onCancel={() => onCancelModel?.(turn.id, result.modelId, getResultPromptKey(result))}
-              turnId={turn.id}
-              turnSeq={turn.seq}
-              selectedImageKeys={selectedImageKeys}
-              onToggleImageSelect={onToggleImageSelect}
-              showPromptBadge={false}
-            />
-          ))}
+          <div style={S.styleSummaryItem}>
+            <span style={S.styleSummaryKey}>Per Task</span>
+            <span style={S.styleSummaryVal}>x{styleRequestedCount || 0}</span>
+          </div>
+          <div style={S.styleSummaryItem}>
+            <span style={S.styleSummaryKey}>Generated</span>
+            <span style={S.styleSummaryVal}>{styleGeneratedCount}</span>
+          </div>
+          <div style={S.styleSummaryItem}>
+            <span style={S.styleSummaryKey}>Success</span>
+            <span style={S.styleSummaryVal}>{styleSuccessCount}/{styleResults.length || 0}</span>
+          </div>
+          <div style={S.styleSummaryItem}>
+            <span style={S.styleSummaryKey}>Failed</span>
+            <span style={S.styleSummaryVal}>{styleErrorCount + styleCancelledCount}</span>
+          </div>
+          <div style={S.styleSummaryItem}>
+            <span style={S.styleSummaryKey}>Running</span>
+            <span style={S.styleSummaryVal}>{styleLoadingCount}</span>
+          </div>
         </div>
       ) : (
-        <div
-          style={
-            isCompareMode
-              ? { ...S.turnCompareResultsGrid, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }
-              : undefined
-          }
-        >
-          {resultsByVariant.map(({ variant, groupResults }) => {
-          return (
-            <div key={variant.key} style={isMultiPromptMode ? S.turnResultGroup : undefined}>
-              {isCompareMode && (
-                <div style={S.turnResultGroupHead}>
-                  <span style={S.turnPromptBadge}>{variant.label}</span>
-                  <span style={S.turnResultMeta}>{groupResults.length} model tasks</span>
+        <>
+          <div style={S.turnPromptRow}>
+            <div
+              style={{
+                ...S.turnPromptCards,
+                gridTemplateColumns: isCompareMode ? "repeat(2, minmax(0, 1fr))" : "1fr",
+              }}
+            >
+              {isStyleMode ? (
+                <div style={S.turnPromptCard}>
+                  <div style={S.turnPromptText}>
+                    {styleBasePrompt ? <PromptTextWithChips text={styleBasePrompt} /> : "(no prompt)"}
+                  </div>
                 </div>
+              ) : (
+                promptVariants.map((variant) => (
+                  <div key={variant.key} style={S.turnPromptCard}>
+                    {isCompareMode && <div style={S.turnPromptBadge}>{variant.label}</div>}
+                    <div style={S.turnPromptText}>
+                      {variant.prompt ? <PromptTextWithChips text={variant.prompt} /> : "(no prompt)"}
+                    </div>
+                  </div>
+                ))
               )}
-              <div
-                style={{
-                  display: "grid",
-                  gap: 16,
-                  gridTemplateColumns: isCompareMode
-                    ? `repeat(${Math.min(2, Math.max(1, groupResults.length))}, minmax(0, 1fr))`
-                    : `repeat(${Math.min(4, Math.max(1, groupResults.length))}, minmax(0, 1fr))`,
-                }}
-              >
-                {groupResults.map((r, i) => (
-                  <ResultColumn
-                    key={`${turn.id}-${r.modelId}-${getResultPromptKey(r)}-${i}`}
-                    result={r}
-                    onPreview={onPreview}
-                    onCancel={() => onCancelModel?.(turn.id, r.modelId, getResultPromptKey(r))}
-                    turnId={turn.id}
-                    turnSeq={turn.seq}
-                    selectedImageKeys={selectedImageKeys}
-                    onToggleImageSelect={onToggleImageSelect}
-                  />
+            </div>
+            {(turn.referenceImage || styleReferenceImages.length > 0) && (
+              <div style={S.turnRefImageStack}>
+                {turn.referenceImage && (
+                  <button
+                    type="button"
+                    style={S.turnRefImageBtn}
+                    onClick={() => onPreview?.(turn.referenceImage)}
+                    title="Preview reference image"
+                  >
+                    <img src={turn.referenceImage} alt="Reference" style={S.turnRefImage} />
+                  </button>
+                )}
+                {styleReferenceImages.map((image, index) => (
+                  <button
+                    key={`style-ref-${turn.id}-${index}`}
+                    type="button"
+                    style={S.turnRefImageBtn}
+                    onClick={() => onPreview?.(image)}
+                    title={`Preview style image ${index + 1}`}
+                  >
+                    <img src={image} alt={`Style ${index + 1}`} style={S.turnRefImage} />
+                  </button>
                 ))}
               </div>
+            )}
+          </div>
+          {isStyleMode ? (
+            <div
+              style={{
+                ...S.turnStyleResultsGrid,
+                gridTemplateColumns: `repeat(${Math.min(6, Math.max(1, styleResults.length))}, minmax(0, 1fr))`,
+              }}
+            >
+              {styleResults.map((result, index) => (
+                <ResultColumn
+                  key={`${turn.id}-${result.modelId}-${getResultPromptKey(result)}-${index}`}
+                  result={result}
+                  onPreview={onPreview}
+                  onCancel={() => onCancelModel?.(turn.id, result.modelId, getResultPromptKey(result))}
+                  turnId={turn.id}
+                  turnSeq={turn.seq}
+                  selectedImageKeys={selectedImageKeys}
+                  onToggleImageSelect={onToggleImageSelect}
+                  showPromptBadge={false}
+                />
+              ))}
             </div>
-          );
-          })}
-        </div>
+          ) : (
+            <div
+              style={
+                isCompareMode
+                  ? { ...S.turnCompareResultsGrid, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }
+                  : undefined
+              }
+            >
+              {resultsByVariant.map(({ variant, groupResults }) => {
+              return (
+                <div key={variant.key} style={isMultiPromptMode ? S.turnResultGroup : undefined}>
+                  {isCompareMode && (
+                    <div style={S.turnResultGroupHead}>
+                      <span style={S.turnPromptBadge}>{variant.label}</span>
+                      <span style={S.turnResultMeta}>{groupResults.length} model tasks</span>
+                    </div>
+                  )}
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: 16,
+                      gridTemplateColumns: isCompareMode
+                        ? `repeat(${Math.min(2, Math.max(1, groupResults.length))}, minmax(0, 1fr))`
+                        : `repeat(${Math.min(4, Math.max(1, groupResults.length))}, minmax(0, 1fr))`,
+                    }}
+                  >
+                    {groupResults.map((r, i) => (
+                      <ResultColumn
+                        key={`${turn.id}-${r.modelId}-${getResultPromptKey(r)}-${i}`}
+                        result={r}
+                        onPreview={onPreview}
+                        onCancel={() => onCancelModel?.(turn.id, r.modelId, getResultPromptKey(r))}
+                        turnId={turn.id}
+                        turnSeq={turn.seq}
+                        selectedImageKeys={selectedImageKeys}
+                        onToggleImageSelect={onToggleImageSelect}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+              })}
+            </div>
+          )}
+        </>
       )}
     </section>
   );
@@ -3819,6 +3866,28 @@ export default function App() {
         };
       });
 
+      const patchTaskResult = (task, updater) => {
+        setTurns((prev) =>
+          prev.map((turn) =>
+            turn.id !== next.id
+              ? turn
+              : {
+                  ...turn,
+                  results: turn.results.map((result) => {
+                    if (!isSameResultTask(result, task.modelId, task.promptKey)) return result;
+                    const base = {
+                      ...result,
+                      promptLabel: task.promptLabel,
+                      promptText: task.promptText,
+                    };
+                    if (typeof updater === "function") return updater(base);
+                    return { ...base, ...updater };
+                  }),
+                }
+          )
+        );
+      };
+
       await Promise.allSettled(
         queuedTasks.map(async (task) => {
           const model = IMAGE_MODELS.find((m) => m.id === task.modelId);
@@ -3829,44 +3898,53 @@ export default function App() {
           const controller = new AbortController();
           controllersRef.current[key] = controller;
           try {
-            const images = await generateImage(next.proxyUrl, model, task.promptText, next.referenceImage, {
-              signal: controller.signal,
-              count: task.requestedCount || next.modelCounts?.[task.modelId] || 1,
-              apiBaseUrl: next.apiBaseUrl || DEFAULT_API_BASE_URL,
-              apiKey: next.apiKey || DEFAULT_API_KEY,
-              aspectRatio: normalizeAspectRatio(next.aspectRatio ?? next.geminiAspectRatio),
-              imageInputs: turnImageInputs,
+            const requestedCount = Math.max(1, Number(task.requestedCount || next.modelCounts?.[task.modelId] || 1));
+            let partialImages = [];
+            let lastNonAbortError = null;
+
+            for (let index = 0; index < requestedCount; index += 1) {
+              try {
+                const generated = await generateImage(next.proxyUrl, model, task.promptText, next.referenceImage, {
+                  signal: controller.signal,
+                  count: 1,
+                  apiBaseUrl: next.apiBaseUrl || DEFAULT_API_BASE_URL,
+                  apiKey: next.apiKey || DEFAULT_API_KEY,
+                  aspectRatio: normalizeAspectRatio(next.aspectRatio ?? next.geminiAspectRatio),
+                  imageInputs: turnImageInputs,
+                });
+                const nextImage = Array.isArray(generated) && generated.length ? generated[0] : null;
+                if (!nextImage) {
+                  lastNonAbortError = new Error("No images returned");
+                  continue;
+                }
+                partialImages = [...partialImages, nextImage];
+                patchTaskResult(task, (current) => ({
+                  ...current,
+                  status: "loading",
+                  error: null,
+                  images: [...(Array.isArray(current.images) ? current.images : []), nextImage],
+                }));
+              } catch (err) {
+                if (isAbortError(err)) throw err;
+                lastNonAbortError = err;
+              }
+            }
+
+            if (!partialImages.length) {
+              throw lastNonAbortError || new Error("No images returned");
+            }
+
+            patchTaskResult(task, {
+              status: "success",
+              error: null,
+              images: partialImages,
             });
-            setTurns((prev) =>
-              prev.map((t) =>
-                t.id !== next.id
-                  ? t
-                  : {
-                      ...t,
-                      results: t.results.map((r) =>
-                        isSameResultTask(r, task.modelId, task.promptKey)
-                          ? { ...r, promptLabel: task.promptLabel, promptText: task.promptText, status: "success", images }
-                          : r
-                      ),
-                    }
-              )
-            );
           } catch (err) {
-            setTurns((prev) =>
-              prev.map((t) =>
-                t.id !== next.id
-                  ? t
-                  : {
-                      ...t,
-                      results: t.results.map((r) =>
-                        isSameResultTask(r, task.modelId, task.promptKey)
-                          ? isAbortError(err)
-                            ? { ...r, promptLabel: task.promptLabel, promptText: task.promptText, status: "cancelled", error: "Cancelled by user" }
-                            : { ...r, promptLabel: task.promptLabel, promptText: task.promptText, status: "error", error: err.message }
-                          : r
-                      ),
-                    }
-              )
+            patchTaskResult(
+              task,
+              isAbortError(err)
+                ? (current) => ({ ...current, status: "cancelled", error: "Cancelled by user" })
+                : (current) => ({ ...current, status: "error", error: err?.message || "Unknown error" })
             );
           } finally {
             delete controllersRef.current[key];
@@ -4393,6 +4471,7 @@ export default function App() {
               canSyncTemplate={templatesEnabled && (getTurnMode(activeTurn) === "style" ? !!activeStyleTemplateId : !!activeTemplateId)}
               selectedImageKeys={selectedImageKeys}
               onToggleImageSelect={toggleImageSelection}
+              compactStyleHistory={false}
             />
           </section>
         )}
@@ -4416,6 +4495,7 @@ export default function App() {
                     canSyncTemplate={templatesEnabled && (getTurnMode(turn) === "style" ? !!activeStyleTemplateId : !!activeTemplateId)}
                     selectedImageKeys={selectedImageKeys}
                     onToggleImageSelect={toggleImageSelection}
+                    compactStyleHistory={getTurnMode(turn) === "style"}
                   />
                 </div>
               ))}
@@ -4588,7 +4668,7 @@ const S = {
   modelChip: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 8px", borderRadius: 7, border: "1px solid", color: "#e4e4e7", fontSize: 12, fontFamily: sans, transition: "all 0.15s", width: "100%", minHeight: 34 },
   dot: { width: 6, height: 6, borderRadius: 3, flexShrink: 0 },
   chipName: { fontWeight: 500, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 90 },
-  check: { marginLeft: "auto", color: THEME_PRIMARY, fontWeight: 700, fontSize: 14 },
+  check: { marginLeft: "auto", color: "#10a37f", fontWeight: 700, fontSize: 14 },
   countRow: { display: "flex", alignItems: "center", gap: 4 },
   countLabel: { fontSize: 11, color: "#999", fontFamily: mono, width: 10, textAlign: "center" },
   countSelect: { width: 58, height: 34, padding: "4px 6px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.14)", background: "rgba(255,255,255,0.04)", color: "#e4e4e7", fontFamily: mono, fontSize: 12, outline: "none" },
@@ -4617,7 +4697,7 @@ const S = {
   imgCardSelected: { borderColor: "rgba(59,130,246,0.9)", boxShadow: "0 0 0 1px rgba(59,130,246,0.35) inset" },
   imageSelectBtn: { position: "absolute", top: 8, right: 8, zIndex: 3, width: 24, height: 24, borderRadius: 12, border: "1px solid rgba(226,232,240,0.7)", background: "rgba(15,23,42,0.72)", color: "#e2e8f0", fontFamily: mono, fontSize: 12, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 },
   imageSelectBtnCompact: { top: 4, right: 4, width: 16, height: 16, borderRadius: 8, fontSize: 10 },
-  imageSelectBtnActive: { borderColor: "rgba(59,130,246,0.9)", background: "rgba(37,99,235,0.92)", color: "#dbeafe" },
+  imageSelectBtnActive: { borderColor: "rgba(16,163,127,0.9)", background: "rgba(5,150,105,0.92)", color: "#dcfce7" },
   imageThemeTag: { position: "absolute", left: 8, top: 8, zIndex: 2, maxWidth: "70%", padding: "2px 7px", borderRadius: 999, fontSize: 10, fontFamily: mono, color: THEME_PRIMARY_TEXT, background: "rgba(6,78,59,0.82)", border: `1px solid ${THEME_PRIMARY_BORDER}`, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   imageThemeTagCompact: { left: 4, top: 4, maxWidth: "75%", padding: "1px 5px", fontSize: 9, borderRadius: 999 },
   thumb: { width: "100%", aspectRatio: "4 / 3", objectFit: "contain", cursor: "pointer", display: "block", background: "#0b0b0d" },
@@ -4648,6 +4728,10 @@ const S = {
   turnPromptBadge: { display: "inline-flex", alignItems: "center", padding: "2px 8px", borderRadius: 999, background: THEME_GOLD_SOFT, color: THEME_GOLD, fontSize: 10, fontFamily: mono, marginBottom: 8 },
   turnPromptText: { fontSize: 13, color: "#e4e4e7", whiteSpace: "pre-wrap", lineHeight: 1.5 },
   promptChipReadonly: { background: "rgba(59,130,246,0.18)", color: THEME_PRIMARY_TEXT, border: "1px solid rgba(59,130,246,0.62)", borderRadius: 6, padding: "1px 6px", display: "inline-block", margin: "0 1px" },
+  styleHistorySummary: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: 10, display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 8 },
+  styleSummaryItem: { borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(0,0,0,0.24)", padding: "8px 10px", display: "grid", gap: 4 },
+  styleSummaryKey: { fontSize: 10, color: "#71717a", fontFamily: mono, textTransform: "uppercase", letterSpacing: 0.4 },
+  styleSummaryVal: { fontSize: 12, color: "#e4e4e7", fontFamily: mono, fontWeight: 600 },
   turnCompareResultsGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 },
   turnStyleResultsGrid: { display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 10 },
   turnResultGroup: { marginTop: 16 },
