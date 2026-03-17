@@ -50,8 +50,14 @@ const DEFAULT_API_BASE_URL = "https://api.deerapi.com";
 const DEFAULT_API_KEY = "";
 const DEFAULT_GPT_ASSIST_MODEL = "gpt-4o-mini";
 const DEFAULT_GPT_ASSIST_PROMPT = "你是一个提示词优化助手。你只改写 {{ }} 里的内容，保持用户原有写作风格、长度和随机感，不要改动大括号外的任何字符。";
+const PROMPT_EDITOR_MIN_HEIGHT = 104;
 const MAX_TEMPLATES = 8;
+const MAX_STYLE_TEMPLATES = 2;
+const STYLE_THEME_SLOTS = 12;
+const MAX_STYLE_REFERENCE_IMAGES = 4;
+const MAX_STYLE_SELECTED_IMAGES = 15;
 const TEMPLATE_FILE_NAME = "templates.json";
+const STYLE_TEMPLATE_FILE_NAME = "style-templates.json";
 const GPT_ASSIST_FILE_NAME = "gpt-assist.json";
 const API_CONFIG_FILE_NAME = "api-config.json";
 const DEFAULT_TEMPLATES = Array.from({ length: MAX_TEMPLATES }, (_, index) => ({
@@ -60,6 +66,12 @@ const DEFAULT_TEMPLATES = Array.from({ length: MAX_TEMPLATES }, (_, index) => ({
   body: "",
   backup: "",
 }));
+const DEFAULT_STYLE_TEMPLATES = Array.from({ length: MAX_STYLE_TEMPLATES }, (_, index) => ({
+  id: `style-template-${index + 1}`,
+  title: `Style ${index + 1}`,
+  body: "",
+}));
+const DEFAULT_STYLE_THEMES = Array.from({ length: STYLE_THEME_SLOTS }, () => "");
 const NANO_PRO_OFFICIAL_MODEL_ID = "gemini-3-pro-image";
 const NANO_PRO_LEGACY_MODEL_IDS = ["nano-banana-pro-all", "gemini-3-pro-preview"];
 
@@ -339,16 +351,22 @@ function extractPlaceholderTokens(input = "") {
 function applyPlaceholderReplacements(input = "", replacements = []) {
   const text = typeof input === "string" ? input : "";
   let cursor = 0;
-  return text.replace(/\{\{([^{}]*)\}\}/g, () => {
+  return text.replace(/\{\{([^{}]*)\}\}/g, (_, original) => {
     const next = replacements[cursor];
     cursor += 1;
-    return `{{${typeof next === "string" ? next.trim() : ""}}}`;
+    const fallback = typeof original === "string" ? original : "";
+    return `{{${typeof next === "string" ? next.trim() : fallback}}}`;
   });
 }
 
 function clearPlaceholderValues(input = "") {
   const text = typeof input === "string" ? input : "";
   return text.replace(/\{\{[^{}]*\}\}/g, "{{}}");
+}
+
+function expandPlaceholderValues(input = "") {
+  const text = typeof input === "string" ? input : "";
+  return text.replace(/\{\{([^{}]*)\}\}/g, (_, inner) => String(inner ?? "").trim());
 }
 
 function splitPromptByPlaceholders(input = "") {
@@ -403,6 +421,119 @@ function parseJsonFromText(rawText = "") {
     } catch {}
   }
   return null;
+}
+
+function normalizeImageInputs(imageBase64, imageInputs = []) {
+  const collected = [];
+  if (typeof imageBase64 === "string" && imageBase64.trim()) collected.push(imageBase64.trim());
+  if (Array.isArray(imageInputs)) {
+    imageInputs.forEach((item) => {
+      if (typeof item === "string" && item.trim()) collected.push(item.trim());
+    });
+  }
+  return Array.from(new Set(collected));
+}
+
+function injectThemeIntoPrompt(basePrompt = "", theme = "") {
+  const promptText = typeof basePrompt === "string" ? basePrompt : "";
+  const themeText = typeof theme === "string" ? theme.trim() : "";
+  if (!themeText) return promptText;
+  if (!promptText.trim()) return promptText;
+  if (/\{\{[^{}]*\}\}/.test(promptText)) {
+    return promptText.replace(/\{\{[^{}]*\}\}/, themeText);
+  }
+  return `${promptText}\nTheme: ${themeText}`;
+}
+
+function buildStylePromptVariants(basePrompt = "", themes = []) {
+  const cleanedBase = typeof basePrompt === "string" ? basePrompt : "";
+  const cleanedThemes = (Array.isArray(themes) ? themes : [])
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean)
+    .slice(0, STYLE_THEME_SLOTS);
+  if (!cleanedBase.trim() || !cleanedThemes.length) {
+    return [normalizePromptVariant({ key: "single", label: "PROMPT", prompt: cleanedBase }, 0)];
+  }
+  return cleanedThemes.map((theme, index) =>
+    normalizePromptVariant({
+      key: `theme-${index + 1}`,
+      label: theme,
+      prompt: injectThemeIntoPrompt(cleanedBase, theme),
+    }, index + 1)
+  );
+}
+
+function formatAtlasFolderName(items = []) {
+  const themes = Array.from(
+    new Set(
+      (Array.isArray(items) ? items : [])
+        .map((item) => (typeof item?.theme === "string" ? item.theme.trim() : ""))
+        .filter(Boolean)
+    )
+  );
+  const themePart = themes.slice(0, 3).map((item) => safeName(item)).filter(Boolean).join("_");
+  return themePart ? `atlas-${Date.now()}-${themePart}` : `atlas-${Date.now()}`;
+}
+
+function buildAtlasImageFileStem(item, index = 0) {
+  const theme = safeName(item?.theme || `theme_${index + 1}`);
+  const model = safeName(item?.modelName || item?.modelId || "model");
+  return `${String(index + 1).padStart(2, "0")}_${theme}_${model}`;
+}
+
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    if (/^https?:\/\//i.test(src)) image.crossOrigin = "anonymous";
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = src;
+  });
+}
+
+async function createAtlasThumbnailDataUrl(imageSources = [], options = {}) {
+  const sources = (Array.isArray(imageSources) ? imageSources : [])
+    .filter((item) => typeof item === "string" && item.trim())
+    .slice(0, MAX_STYLE_SELECTED_IMAGES);
+  if (!sources.length) return null;
+
+  const rows = Math.max(1, Number(options.rows) || 3);
+  const cols = Math.max(1, Math.ceil(sources.length / rows));
+  const cellWidth = Math.max(120, Number(options.cellWidth) || 256);
+  const cellHeight = Math.max(120, Number(options.cellHeight) || 256);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = cols * cellWidth;
+  canvas.height = rows * cellHeight;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  ctx.fillStyle = "#0b1220";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let index = 0; index < sources.length; index += 1) {
+    const src = sources[index];
+    try {
+      const image = await loadImageElement(src);
+      const row = index % rows;
+      const col = Math.floor(index / rows);
+      const x = col * cellWidth;
+      const y = row * cellHeight;
+      const scale = Math.min(cellWidth / image.width, cellHeight / image.height);
+      const drawWidth = Math.max(1, Math.floor(image.width * scale));
+      const drawHeight = Math.max(1, Math.floor(image.height * scale));
+      const dx = x + Math.floor((cellWidth - drawWidth) / 2);
+      const dy = y + Math.floor((cellHeight - drawHeight) / 2);
+      ctx.fillStyle = "#05070f";
+      ctx.fillRect(x, y, cellWidth, cellHeight);
+      ctx.drawImage(image, dx, dy, drawWidth, drawHeight);
+      ctx.strokeStyle = "rgba(125, 211, 252, 0.35)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, y + 0.5, cellWidth - 1, cellHeight - 1);
+    } catch {}
+  }
+
+  return canvas.toDataURL("image/png");
 }
 
 function buildProxyHeaders(targetPath, apiBaseUrl, apiKey, extraHeaders = {}) {
@@ -579,12 +710,15 @@ function normalizePromptVariant(variant, index = 0) {
   };
 }
 
-function getComposerPromptVariants(taskMode, prompt, comparePrompts) {
+function getComposerPromptVariants(taskMode, prompt, comparePrompts, styleThemes = []) {
   if (taskMode === "compare") {
     return [
       normalizePromptVariant({ key: "a", label: "PROMPT A", prompt: comparePrompts?.a || "" }, 1),
       normalizePromptVariant({ key: "b", label: "PROMPT B", prompt: comparePrompts?.b || "" }, 2),
     ];
+  }
+  if (taskMode === "style") {
+    return buildStylePromptVariants(prompt, styleThemes);
   }
   return [normalizePromptVariant({ key: "single", label: "PROMPT", prompt: prompt || "" }, 0)];
 }
@@ -597,7 +731,9 @@ function getTurnPromptVariants(turn) {
 }
 
 function getTurnMode(turn) {
+  if (turn?.mode === "style") return "style";
   if (turn?.mode === "compare") return "compare";
+  if (turn?.mode === "single") return "single";
   return getTurnPromptVariants(turn).length > 1 ? "compare" : "single";
 }
 
@@ -652,6 +788,41 @@ function normalizeTemplates(input) {
   return DEFAULT_TEMPLATES.map((preset, index) => {
     const found = list.find((item) => item?.id === preset.id);
     return normalizeTemplate(found || preset, index);
+  });
+}
+
+function normalizeStyleTemplate(input, index = 0) {
+  const fallbackId = `style-template-${index + 1}`;
+  const id = typeof input?.id === "string" && input.id ? input.id : fallbackId;
+  const title = typeof input?.title === "string" && input.title.trim()
+    ? input.title.trim()
+    : `Style ${index + 1}`;
+  return {
+    id,
+    title,
+    body: typeof input?.body === "string" ? input.body : "",
+  };
+}
+
+function normalizeStyleTemplates(input) {
+  const list = Array.isArray(input) ? input : [];
+  return DEFAULT_STYLE_TEMPLATES.map((preset, index) => {
+    const found = list.find((item) => item?.id === preset.id);
+    return normalizeStyleTemplate(found || preset, index);
+  });
+}
+
+function pickStyleTemplateId(templates, preferredId) {
+  if (!templates.length) return null;
+  if (typeof preferredId === "string" && preferredId && templates.some((item) => item.id === preferredId)) return preferredId;
+  return null;
+}
+
+function normalizeStyleThemes(input) {
+  const list = Array.isArray(input) ? input : [];
+  return DEFAULT_STYLE_THEMES.map((_, index) => {
+    const next = list[index];
+    return typeof next === "string" ? next : "";
   });
 }
 
@@ -743,17 +914,45 @@ async function saveTurnToLocalFolder(rootHandle, turn) {
       }
     }
   }
+  const styleReferenceImageFiles = [];
+  const styleReferenceImages = Array.isArray(turn.styleReferenceImages) ? turn.styleReferenceImages : [];
+  for (let index = 0; index < Math.min(styleReferenceImages.length, MAX_STYLE_REFERENCE_IMAGES); index += 1) {
+    const image = styleReferenceImages[index];
+    if (typeof image !== "string" || !image) continue;
+    const fromData = dataUrlToBytes(image);
+    if (fromData) {
+      const fileName = `style_reference_${index + 1}.${fromData.ext}`;
+      await writeBinaryFile(turnDir, fileName, fromData.bytes);
+      styleReferenceImageFiles.push(fileName);
+      continue;
+    }
+    if (/^https?:\/\//i.test(image)) {
+      try {
+        const remote = await fetchImageBytes(image);
+        const fileName = `style_reference_${index + 1}.${remote.ext}`;
+        await writeBinaryFile(turnDir, fileName, remote.bytes);
+        styleReferenceImageFiles.push(fileName);
+      } catch {
+        const fileName = `style_reference_${index + 1}.txt`;
+        await writeTextFile(turnDir, fileName, image);
+        styleReferenceImageFiles.push(fileName);
+      }
+    }
+  }
   const manifest = {
     id: turn.id,
     seq: turn.seq,
     createdAt: turn.createdAt,
     mode: getTurnMode(turn),
     prompt: turn.prompt || promptVariants[0]?.prompt || "",
+    styleBasePrompt: typeof turn.styleBasePrompt === "string" ? turn.styleBasePrompt : "",
+    styleThemes: normalizeStyleThemes(turn.styleThemes),
     promptVariants,
     apiBaseUrl: resolveApiBaseUrl(turn.apiBaseUrl),
     apiKey: normalizeApiKey(turn.apiKey),
     aspectRatio: normalizeAspectRatio(turn.aspectRatio ?? turn.geminiAspectRatio),
     referenceImageFile,
+    styleReferenceImageFiles,
     selectedModelIds: turn.selectedModelIds || [],
     modelCounts: turn.modelCounts || {},
     status: turn.status || "done",
@@ -838,6 +1037,29 @@ async function loadTurnsFromLocalFolder(rootHandle) {
           }
         } catch {}
       }
+      const styleReferenceImages = [];
+      if (Array.isArray(meta.styleReferenceImageFiles)) {
+        for (const fileName of meta.styleReferenceImageFiles.slice(0, MAX_STYLE_REFERENCE_IMAGES)) {
+          if (typeof fileName !== "string" || !fileName) continue;
+          try {
+            const fh = await entryHandle.getFileHandle(fileName);
+            const f = await fh.getFile();
+            if (/\.txt$/i.test(fileName)) {
+              const textUrl = (await f.text()).trim();
+              if (textUrl) styleReferenceImages.push(textUrl);
+            } else {
+              const dataUrl = await fileToDataUrlFromFile(f);
+              if (typeof dataUrl === "string") styleReferenceImages.push(dataUrl);
+            }
+          } catch {}
+        }
+      } else if (Array.isArray(meta.styleReferenceImages)) {
+        meta.styleReferenceImages
+          .map((item) => (typeof item === "string" ? item : ""))
+          .filter(Boolean)
+          .slice(0, MAX_STYLE_REFERENCE_IMAGES)
+          .forEach((item) => styleReferenceImages.push(item));
+      }
       const loadedResults = [];
 
       const metaResults = Array.isArray(meta.results) ? meta.results : [];
@@ -881,13 +1103,24 @@ async function loadTurnsFromLocalFolder(rootHandle) {
         id: meta.id || Date.now() + Math.floor(Math.random() * 1000),
         seq: Number(meta.seq) || 0,
         createdAt: Number(meta.createdAt) || Date.now(),
-        mode: meta.mode === "compare" || promptVariants.length > 1 ? "compare" : "single",
+        mode:
+          meta.mode === "style"
+            ? "style"
+            : meta.mode === "compare" || promptVariants.length > 1
+            ? "compare"
+            : "single",
         prompt: meta.prompt || promptVariants[0]?.prompt || "",
+        styleBasePrompt:
+          typeof meta.styleBasePrompt === "string"
+            ? meta.styleBasePrompt
+            : meta.prompt || promptVariants[0]?.prompt || "",
+        styleThemes: normalizeStyleThemes(meta.styleThemes),
         promptVariants,
         apiBaseUrl: resolveApiBaseUrl(meta.apiBaseUrl),
         apiKey: normalizeApiKey(meta.apiKey),
         aspectRatio: normalizeAspectRatio(meta.aspectRatio ?? meta.geminiAspectRatio),
         referenceImage,
+        styleReferenceImages,
         selectedModelIds: Array.isArray(meta.selectedModelIds)
           ? meta.selectedModelIds.map((id) => normalizeModelId(id))
           : loadedResults.map((r) => r.modelId),
@@ -938,6 +1171,38 @@ async function saveTemplatesToLocalFolder(rootHandle, templates, activeTemplateI
   await writeTextFile(
     rootHandle,
     TEMPLATE_FILE_NAME,
+    JSON.stringify(
+      {
+        activeTemplateId: safeActiveId,
+        templates: normalized,
+      },
+      null,
+      2
+    )
+  );
+}
+
+async function loadStyleTemplatesFromLocalFolder(rootHandle) {
+  try {
+    const fileHandle = await rootHandle.getFileHandle(STYLE_TEMPLATE_FILE_NAME);
+    const file = await fileHandle.getFile();
+    const raw = JSON.parse(await file.text());
+    const templates = normalizeStyleTemplates(raw?.templates);
+    const activeTemplateId = pickStyleTemplateId(templates, raw?.activeTemplateId);
+    return { templates, activeTemplateId };
+  } catch (err) {
+    if (String(err?.name || "") === "NotFoundError") return null;
+    const templates = normalizeStyleTemplates(DEFAULT_STYLE_TEMPLATES);
+    return { templates, activeTemplateId: templates[0]?.id || null };
+  }
+}
+
+async function saveStyleTemplatesToLocalFolder(rootHandle, templates, activeTemplateId) {
+  const normalized = normalizeStyleTemplates(templates);
+  const safeActiveId = pickStyleTemplateId(normalized, activeTemplateId);
+  await writeTextFile(
+    rootHandle,
+    STYLE_TEMPLATE_FILE_NAME,
     JSON.stringify(
       {
         activeTemplateId: safeActiveId,
@@ -1144,11 +1409,12 @@ async function callChatAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
   const { signal } = options;
   const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl);
   const apiKey = normalizeApiKey(options.apiKey);
+  const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
   const content = [];
   if (prompt) content.push({ type: "text", text: prompt });
-  if (imageBase64) {
-    content.push({ type: "image_url", image_url: { url: imageBase64 } });
-  }
+  imageInputs.forEach((image) => {
+    content.push({ type: "image_url", image_url: { url: image } });
+  });
   if (!content.length) content.push({ type: "text", text: "Generate a creative image" });
 
   const body = {
@@ -1192,6 +1458,8 @@ async function callImagesAPI(proxyUrl, model, prompt, imageBase64, options = {})
   const { signal, count = 1 } = options;
   const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl);
   const apiKey = normalizeApiKey(options.apiKey);
+  const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
+  const primaryImage = imageInputs[0] || "";
   const isSeedream = model.provider === "ByteDance";
   const body = {
     model: model.id,
@@ -1205,8 +1473,8 @@ async function callImagesAPI(proxyUrl, model, prompt, imageBase64, options = {})
     body.watermark = true;
     body.guidance_scale = 3;
   }
-  if (imageBase64 && isSeedream) {
-    body.image = imageBase64;
+  if (primaryImage && isSeedream) {
+    body.image = primaryImage;
   }
 
   const data = await postJsonWithRetry(proxyUrl, "/v1/images/generations", body, {
@@ -1276,12 +1544,18 @@ async function callGeminiAPI(proxyUrl, model, prompt, imageBase64, options = {})
   const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl);
   const apiKey = normalizeApiKey(options.apiKey);
   const aspectRatio = normalizeAspectRatio(options.aspectRatio);
+  const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
   const parts = [];
   if (prompt) parts.push({ text: prompt });
-  if (!prompt && !imageBase64) parts.push({ text: "Generate a creative image" });
-  if (imageBase64) {
-    parts.push({ inlineData: { mimeType: getMimeFromDataUrl(imageBase64), data: stripBase64Prefix(imageBase64) } });
-  }
+  if (!prompt && !imageInputs.length) parts.push({ text: "Generate a creative image" });
+  imageInputs.forEach((image) => {
+    const mimeType = getMimeFromDataUrl(image);
+    const data = stripBase64Prefix(image);
+    parts.push({
+      inlineData: { mimeType, data },
+      inline_data: { mime_type: mimeType, data },
+    });
+  });
 
   const generationConfig = { responseModalities: ["IMAGE"] };
   if (aspectRatio !== "auto") {
@@ -1363,6 +1637,7 @@ async function callMidjourneyAPI(proxyUrl, model, prompt, imageBase64, options =
   const { signal, count = 1 } = options;
   const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl);
   const apiKey = normalizeApiKey(options.apiKey);
+  const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
   if (!prompt) throw new Error("Midjourney 需要文字 prompt");
 
   function extractTaskId(payload) {
@@ -1391,7 +1666,7 @@ async function callMidjourneyAPI(proxyUrl, model, prompt, imageBase64, options =
       prompt,
       accountFilter: { modes: ["FAST"] },
     };
-    if (imageBase64) submitBody.base64Array = [stripBase64Prefix(imageBase64)];
+    if (imageInputs.length) submitBody.base64Array = imageInputs.map((item) => stripBase64Prefix(item)).filter(Boolean);
 
     const submitResp = await fetch(proxyUrl, {
       method: "POST",
@@ -1401,21 +1676,38 @@ async function callMidjourneyAPI(proxyUrl, model, prompt, imageBase64, options =
       body: JSON.stringify(submitBody),
       signal,
     });
-    if (!submitResp.ok) throw new Error(`API ${submitResp.status}: ${(await submitResp.text()).slice(0, 300)}`);
-    const submitData = await submitResp.json();
-    return { submitData, taskId: extractTaskId(submitData) };
+    const rawText = await submitResp.text();
+    let submitData = null;
+    try {
+      submitData = rawText ? JSON.parse(rawText) : null;
+    } catch {}
+    return {
+      ok: submitResp.ok,
+      status: submitResp.status,
+      text: rawText,
+      submitData,
+      taskId: extractTaskId(submitData),
+    };
   }
 
   const requested = Math.max(1, Number(count) || 1);
   const allImages = [];
   for (let idx = 0; idx < requested; idx += 1) {
-    let submitData;
-    let taskId;
-    ({ submitData, taskId } = await submitWithBotType("MID_JOURNEY"));
-    if (!taskId) {
-      ({ submitData, taskId } = await submitWithBotType("mj"));
+    let submitData = null;
+    let taskId = null;
+    let submitError = null;
+    for (const botType of ["mj", "MID_JOURNEY"]) {
+      const submit = await submitWithBotType(botType);
+      submitData = submit.submitData;
+      taskId = submit.taskId;
+      if (submit.ok && taskId) break;
+      const bodyText = (typeof submit.text === "string" ? submit.text : "").slice(0, 300);
+      submitError = new Error(`API ${submit.status}: ${bodyText || JSON.stringify(submit.submitData || {})}`);
     }
-    if (!taskId) throw new Error(`Midjourney 未返回任务 ID: ${JSON.stringify(submitData).slice(0, 500)}`);
+    if (!taskId) {
+      if (submitError) throw submitError;
+      throw new Error(`Midjourney 未返回任务 ID: ${JSON.stringify(submitData).slice(0, 500)}`);
+    }
 
     const maxWaitMs = 480_000;
     const intervalMs = 5_000;
@@ -1471,6 +1763,8 @@ async function callReplicateNanoBananaAPI(proxyUrl, model, prompt, imageBase64, 
   const { signal, count = 1 } = options;
   const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl);
   const apiKey = normalizeApiKey(options.apiKey);
+  const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
+  const primaryImage = imageInputs[0] || "";
   if (!prompt) throw new Error("NanoBanana 需要文字 prompt");
 
   const models = "nanobanana";
@@ -1481,8 +1775,8 @@ async function callReplicateNanoBananaAPI(proxyUrl, model, prompt, imageBase64, 
       num_outputs: Math.max(1, Number(count) || 1),
     },
   };
-  if (imageBase64) {
-    submitBody.input.image = imageBase64;
+  if (primaryImage) {
+    submitBody.input.image = primaryImage;
   }
 
   const submitResp = await fetch(proxyUrl, {
@@ -1528,35 +1822,55 @@ async function callReplicateNanoBananaAPI(proxyUrl, model, prompt, imageBase64, 
 async function generateImage(proxyUrl, model, prompt, imageBase64, options = {}) {
   const requested = Math.max(1, Number(options.count) || 1);
   const aspectRatio = normalizeAspectRatio(options.aspectRatio);
+  const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
+  const primaryImage = imageInputs[0] || "";
+  const expandedPrompt = expandPlaceholderValues(prompt || "");
   const promptWithAspectRatio =
     model.apiType === "gemini"
-      ? (prompt || "").trim()
-      : mergePromptWithAspectRatio(prompt, aspectRatio, model);
-  const nextOptions = { ...options, aspectRatio };
+      ? expandedPrompt.trim()
+      : mergePromptWithAspectRatio(expandedPrompt, aspectRatio, model);
+  const nextOptions = { ...options, aspectRatio, imageInputs };
   switch (model.apiType) {
     case "chat": {
       const all = [];
       for (let i = 0; i < requested; i += 1) {
-        const one = await callChatAPI(proxyUrl, model, promptWithAspectRatio, imageBase64, nextOptions);
+        const one = await callChatAPI(proxyUrl, model, promptWithAspectRatio, primaryImage, nextOptions);
         if (Array.isArray(one) && one.length) all.push(...one.slice(0, 1));
       }
       return all;
     }
     case "images":
-      return callImagesAPI(proxyUrl, model, promptWithAspectRatio, imageBase64, { ...nextOptions, count: requested });
+      return callImagesAPI(proxyUrl, model, promptWithAspectRatio, primaryImage, { ...nextOptions, count: requested });
     case "gemini": {
-      // Gemini image responses only support one candidate per request.
       const all = [];
-      for (let i = 0; i < requested; i += 1) {
-        const one = await callGeminiAPI(proxyUrl, model, promptWithAspectRatio, imageBase64, nextOptions);
-        if (Array.isArray(one) && one.length) all.push(...one.slice(0, 1));
+      let lastErr = null;
+      let attempts = 0;
+      const maxAttempts = Math.max(3, requested * 3);
+      while (all.length < requested && attempts < maxAttempts) {
+        attempts += 1;
+        try {
+          const one = await callGeminiAPI(proxyUrl, model, promptWithAspectRatio, primaryImage, nextOptions);
+          if (Array.isArray(one) && one.length) {
+            all.push(...one.slice(0, 1));
+            continue;
+          }
+          lastErr = new Error("API 200: No images returned");
+        } catch (err) {
+          lastErr = err;
+          const message = String(err?.message || "");
+          const retryable = /No images returned|API 429|API 503|temporarily unavailable|RESOURCE_EXHAUSTED|overloaded|timeout/i.test(message);
+          if (!retryable || attempts >= maxAttempts) throw err;
+        }
       }
-      return all;
+      if (all.length) {
+        return all.slice(0, requested);
+      }
+      throw lastErr || new Error("Gemini request failed");
     }
     case "midjourney":
-      return callMidjourneyAPI(proxyUrl, model, promptWithAspectRatio, imageBase64, { ...nextOptions, count: requested });
+      return callMidjourneyAPI(proxyUrl, model, promptWithAspectRatio, primaryImage, { ...nextOptions, count: requested });
     case "replicate":
-      return callReplicateNanoBananaAPI(proxyUrl, model, promptWithAspectRatio, imageBase64, { ...nextOptions, count: requested });
+      return callReplicateNanoBananaAPI(proxyUrl, model, promptWithAspectRatio, primaryImage, { ...nextOptions, count: requested });
     default:
       throw new Error(`Unknown apiType: ${model.apiType}`);
   }
@@ -1673,6 +1987,54 @@ function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placeholder, ro
     selection.addRange(range);
   }, []);
 
+  const syncValueFromDom = useCallback(() => {
+    const root = rootRef.current;
+    if (root) {
+      const chips = root.querySelectorAll('[data-placeholder-chip="1"]');
+      chips.forEach((chip) => {
+        if (!chip.textContent || chip.textContent.length === 0) {
+          chip.textContent = zeroWidth;
+        }
+      });
+    }
+    const next = serializeDomToValue();
+    internalValueRef.current = next;
+    selfUpdateRef.current = true;
+    onChange?.(next);
+  }, [onChange, serializeDomToValue]);
+
+  const findChipBeforeCaret = useCallback((range) => {
+    const root = rootRef.current;
+    if (!root || !range) return null;
+    const container = range.startContainer;
+    const offset = range.startOffset;
+
+    const isChip = (node) =>
+      node &&
+      node.nodeType === Node.ELEMENT_NODE &&
+      node.hasAttribute &&
+      node.hasAttribute("data-placeholder-chip");
+
+    if (container === root) {
+      const prev = root.childNodes[offset - 1];
+      return isChip(prev) ? prev : null;
+    }
+
+    if (container.nodeType === Node.TEXT_NODE) {
+      if (offset > 0) return null;
+      const prev = container.previousSibling;
+      if (isChip(prev)) return prev;
+      return null;
+    }
+
+    if (container.nodeType === Node.ELEMENT_NODE) {
+      const prev = container.childNodes[offset - 1];
+      return isChip(prev) ? prev : null;
+    }
+
+    return null;
+  }, []);
+
   const insertPlaceholderAtCaret = useCallback(() => {
     const root = rootRef.current;
     if (!root) return;
@@ -1720,6 +2082,52 @@ function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placeholder, ro
     onChange?.(next);
   }, [deactivateAllChips, onChange, renderValueToDom, serializeDomToValue]);
 
+  const handleEditorKeyDown = useCallback((event) => {
+    const root = rootRef.current;
+    const selection = window.getSelection();
+    const range = selection && selection.rangeCount ? selection.getRangeAt(0) : null;
+
+    if (root && range && selection && selection.isCollapsed) {
+      const startNode = range.startContainer.nodeType === Node.ELEMENT_NODE
+        ? range.startContainer
+        : range.startContainer.parentElement;
+      const currentChip = startNode?.closest?.('[data-placeholder-chip="1"]');
+
+      if ((event.key === "Backspace" || event.key === "Delete") && currentChip && root.contains(currentChip)) {
+        const text = (currentChip.textContent || "").replaceAll(zeroWidth, "");
+        if (text.length <= 1) {
+          event.preventDefault();
+          currentChip.textContent = zeroWidth;
+          moveCaretInside(currentChip);
+          syncValueFromDom();
+          return;
+        }
+      }
+
+      if (event.key === "Backspace" && !currentChip) {
+        const chipBeforeCaret = findChipBeforeCaret(range);
+        if (chipBeforeCaret && root.contains(chipBeforeCaret)) {
+          event.preventDefault();
+          const parent = chipBeforeCaret.parentNode;
+          if (parent) {
+            const index = Array.from(parent.childNodes).indexOf(chipBeforeCaret);
+            chipBeforeCaret.remove();
+            const nextRange = document.createRange();
+            const safeOffset = Math.max(0, Math.min(index, parent.childNodes.length));
+            nextRange.setStart(parent, safeOffset);
+            nextRange.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(nextRange);
+            syncValueFromDom();
+          }
+          return;
+        }
+      }
+    }
+
+    onKeyDown?.(event);
+  }, [findChipBeforeCaret, moveCaretInside, onKeyDown, syncValueFromDom, zeroWidth]);
+
   useEffect(() => {
     if (selfUpdateRef.current) {
       selfUpdateRef.current = false;
@@ -1763,11 +2171,8 @@ function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placeholder, ro
   }, [editorRef, insertPlaceholderAtCaret]);
 
   const handleInput = useCallback(() => {
-    const next = serializeDomToValue();
-    internalValueRef.current = next;
-    selfUpdateRef.current = true;
-    onChange?.(next);
-  }, [onChange, serializeDomToValue]);
+    syncValueFromDom();
+  }, [syncValueFromDom]);
 
   return (
     <div
@@ -1775,7 +2180,7 @@ function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placeholder, ro
       contentEditable
       suppressContentEditableWarning
       onInput={handleInput}
-      onKeyDown={onKeyDown}
+      onKeyDown={handleEditorKeyDown}
       onClick={handleClick}
       onBlur={(event) => {
         const nextFocus = event.relatedTarget;
@@ -1785,7 +2190,7 @@ function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placeholder, ro
       }}
       onFocus={onFocus}
       data-placeholder={placeholder}
-      style={{ ...S.tokenEditor, minHeight: Math.max(104, rows * 24) }}
+      style={{ ...S.tokenEditor, minHeight: Math.max(PROMPT_EDITOR_MIN_HEIGHT, rows * 24) }}
     />
   );
 }
@@ -1880,6 +2285,17 @@ function GptAssistModal({ show, onClose, prompt, draftPrompt, setDraftPrompt, on
 }
 
 function TemplateEditorModal({ show, onClose, draft, setDraft, onSave, canSave }) {
+  const bodyEditorRef = useRef(null);
+  const backupEditorRef = useRef(null);
+
+  const insertPlaceholderInTemplate = useCallback((field) => {
+    if (field === "backup") {
+      backupEditorRef.current?.insertPlaceholder?.();
+      return;
+    }
+    bodyEditorRef.current?.insertPlaceholder?.();
+  }, []);
+
   if (!show) return null;
   return (
     <div style={S.modalOverlay} onClick={onClose}>
@@ -1895,19 +2311,25 @@ function TemplateEditorModal({ show, onClose, draft, setDraft, onSave, canSave }
           onChange={(e) => setDraft((prev) => ({ ...prev, title: e.target.value }))}
           placeholder="Template title"
         />
-        <label style={{ ...S.fieldLabel, marginTop: 14 }}>Body</label>
-        <textarea
-          style={S.textarea}
+        <div style={{ ...S.templateFieldHead, marginTop: 14 }}>
+          <label style={{ ...S.fieldLabel, marginBottom: 0 }}>Body</label>
+          <button type="button" style={S.placeholderBtn} onClick={() => insertPlaceholderInTemplate("body")} title="插入占位框 {{ }}">【】</button>
+        </div>
+        <TokenPromptInput
           value={draft.body}
-          onChange={(e) => setDraft((prev) => ({ ...prev, body: e.target.value }))}
+          onChange={(next) => setDraft((prev) => ({ ...prev, body: next }))}
+          editorRef={bodyEditorRef}
           placeholder="Main template content"
           rows={4}
         />
-        <label style={{ ...S.fieldLabel, marginTop: 14 }}>Backup</label>
-        <textarea
-          style={S.textarea}
+        <div style={{ ...S.templateFieldHead, marginTop: 14 }}>
+          <label style={{ ...S.fieldLabel, marginBottom: 0 }}>Backup</label>
+          <button type="button" style={S.placeholderBtn} onClick={() => insertPlaceholderInTemplate("backup")} title="插入占位框 {{ }}">【】</button>
+        </div>
+        <TokenPromptInput
           value={draft.backup}
-          onChange={(e) => setDraft((prev) => ({ ...prev, backup: e.target.value }))}
+          onChange={(next) => setDraft((prev) => ({ ...prev, backup: next }))}
+          editorRef={backupEditorRef}
           placeholder="Backup template content"
           rows={4}
         />
@@ -1920,6 +2342,107 @@ function TemplateEditorModal({ show, onClose, draft, setDraft, onSave, canSave }
             Save
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function StyleTemplateEditorModal({ show, onClose, draft, setDraft, onSave, canSave }) {
+  const bodyEditorRef = useRef(null);
+  if (!show) return null;
+  return (
+    <div style={S.modalOverlay} onClick={onClose}>
+      <div style={S.settingsModal} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>Style Template</h2>
+          <button onClick={onClose} style={S.closeBtn}>✕</button>
+        </div>
+        <label style={S.fieldLabel}>Title</label>
+        <input
+          style={S.proxyInput}
+          value={draft.title}
+          onChange={(e) => setDraft((prev) => ({ ...prev, title: e.target.value }))}
+          placeholder="Style template title"
+        />
+        <div style={{ ...S.templateFieldHead, marginTop: 14 }}>
+          <label style={{ ...S.fieldLabel, marginBottom: 0 }}>Body</label>
+          <button type="button" style={S.placeholderBtn} onClick={() => bodyEditorRef.current?.insertPlaceholder?.()} title="插入占位框 {{ }}">【】</button>
+        </div>
+        <TokenPromptInput
+          value={draft.body}
+          onChange={(next) => setDraft((prev) => ({ ...prev, body: next }))}
+          editorRef={bodyEditorRef}
+          placeholder="Style template prompt"
+          rows={5}
+        />
+        <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
+          <button
+            style={{ ...S.apiSaveBtn, opacity: canSave ? 1 : 0.5, cursor: canSave ? "pointer" : "not-allowed" }}
+            onClick={onSave}
+            disabled={!canSave}
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InputImagesModal({ show, onClose, title, images, maxCount, onUploadFiles, onRemoveAt }) {
+  const fileInputRef = useRef(null);
+  if (!show) return null;
+  const slots = Array.from({ length: Math.max(1, Number(maxCount) || 1) }, (_, index) => images[index] || null);
+
+  return (
+    <div style={S.modalOverlay} onClick={onClose}>
+      <div style={S.settingsModal} onClick={(event) => event.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>{title || "Images"}</h2>
+          <button onClick={onClose} style={S.closeBtn}>✕</button>
+        </div>
+        <div
+          style={{
+            ...S.modalInputImagesGrid,
+            gridTemplateColumns: slots.length === 1 ? "1fr" : "repeat(2, minmax(0, 1fr))",
+          }}
+        >
+          {slots.map((image, index) =>
+            image ? (
+              <div key={`modal-image-${index}`} style={S.modalInputImageCell}>
+                <img src={image} alt={`Input ${index + 1}`} style={S.modalInputImageThumb} />
+                <button type="button" style={S.modalInputImageRemoveBtn} onClick={() => onRemoveAt(index)}>✕</button>
+              </div>
+            ) : (
+              <div key={`modal-empty-${index}`} style={S.modalInputImageEmpty}>Empty</div>
+            )
+          )}
+        </div>
+        <div style={S.modalInputImagesActions}>
+          <button
+            type="button"
+            style={S.apiSaveBtn}
+            onClick={() => fileInputRef.current?.click()}
+            disabled={images.length >= slots.length}
+          >
+            Upload Images
+          </button>
+          <button type="button" style={S.apiSaveBtn} onClick={onClose}>
+            Done
+          </button>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          style={{ display: "none" }}
+          onChange={async (event) => {
+            const files = Array.from(event.target.files || []);
+            if (files.length) await onUploadFiles(files);
+            event.target.value = "";
+          }}
+        />
       </div>
     </div>
   );
@@ -1975,8 +2498,19 @@ function ImagePreviewModal({ src, onClose }) {
   );
 }
 
-function ResultColumn({ result, onPreview, onCancel }) {
+function ResultColumn({
+  result,
+  onPreview,
+  onCancel,
+  turnId,
+  turnSeq,
+  selectedImageKeys,
+  onToggleImageSelect,
+  compactImages = false,
+  showPromptBadge = true,
+}) {
   const model = IMAGE_MODELS.find((m) => m.id === result.modelId);
+  const visibleImages = Array.isArray(result.images) ? result.images : [];
   const prov = PROVIDER_COLORS[model?.provider] || { bg: "#666" };
   const sc =
     result.status === "success"
@@ -1991,7 +2525,7 @@ function ResultColumn({ result, onPreview, onCancel }) {
       <div style={S.resultHeader}>
         <span style={{ ...S.dot, background: prov.bg, width: 8, height: 8 }} />
         <span style={S.resultName}>{model?.name || result.modelId}</span>
-        {getResultPromptKey(result) !== "single" && (
+        {showPromptBadge && getResultPromptKey(result) !== "single" && (
           <span style={{ ...S.statusBadge, background: "rgba(59,130,246,0.14)", color: "#93c5fd" }}>
             {result.promptLabel || getResultPromptKey(result)}
           </span>
@@ -2010,17 +2544,41 @@ function ResultColumn({ result, onPreview, onCancel }) {
       )}
       {result.status === "error" && <div style={S.errArea}><p style={{ color: "#ef4444", fontSize: 13, wordBreak: "break-word" }}>{result.error}</p></div>}
       {result.status === "cancelled" && <div style={S.errArea}><p style={{ color: "#9ca3af", fontSize: 13 }}>Cancelled by user</p></div>}
-      {result.status === "success" && result.images?.length > 0 && (
-        <div style={S.imgGrid}>{result.images.map((img, i) => (
-          <ImageCard key={i} img={img} fileStem={buildResultFileStem(result)} index={i + 1} onPreview={onPreview} />
-        ))}</div>
+      {result.status === "success" && visibleImages.length > 0 && (
+        <div style={compactImages ? S.imgGridCompact : S.imgGrid}>{visibleImages.map((img, i) => (
+          <ImageCard
+            key={i}
+            img={img}
+            fileStem={buildResultFileStem(result)}
+            index={i + 1}
+            onPreview={onPreview}
+            label={result.promptLabel || ""}
+            compact={compactImages}
+            selected={selectedImageKeys?.has?.(`${turnId}:${result.modelId}:${getResultPromptKey(result)}:${i + 1}`)}
+            onToggleSelect={() =>
+              onToggleImageSelect?.({
+                key: `${turnId}:${result.modelId}:${getResultPromptKey(result)}:${i + 1}`,
+                image: img,
+                turnId,
+                turnSeq,
+                modelId: result.modelId,
+                modelName: result.modelName || model?.name || result.modelId,
+                promptKey: getResultPromptKey(result),
+                theme: result.promptLabel || "",
+                fileStem: buildResultFileStem(result),
+                index: i + 1,
+              })
+            }
+          />
+        ))}
+        </div>
       )}
-      {result.status === "success" && (!result.images || !result.images.length) && <div style={S.errArea}><p style={{ color: "#f59e0b", fontSize: 13 }}>No images returned.</p></div>}
+      {result.status === "success" && !visibleImages.length && <div style={S.errArea}><p style={{ color: "#f59e0b", fontSize: 13 }}>No images returned.</p></div>}
     </div>
   );
 }
 
-function ImageCard({ img, fileStem, index, onPreview }) {
+function ImageCard({ img, fileStem, index, onPreview, label, selected, onToggleSelect, compact = false }) {
   const [src, setSrc] = useState(img);
   const [triedProxy, setTriedProxy] = useState(false);
 
@@ -2040,32 +2598,93 @@ function ImageCard({ img, fileStem, index, onPreview }) {
   }, [src, triedProxy]);
 
   return (
-    <div style={S.imgCard}>
-      <img src={src} alt={`Gen ${index}`} style={S.thumb} onClick={() => onPreview(src)} onError={onImgError} />
+    <div style={{ ...S.imgCard, ...(compact ? S.imgCardCompact : null), ...(selected ? S.imgCardSelected : null) }}>
       <button
-        style={S.dlBtn}
-        onClick={() =>
-          src.startsWith("data:image/")
-            ? downloadDataUrl(src, `${fileStem}_${index}.png`)
-            : downloadImageUrl(src, `${fileStem}_${index}.png`)
-        }
+        type="button"
+        style={{ ...S.imageSelectBtn, ...(compact ? S.imageSelectBtnCompact : null), ...(selected ? S.imageSelectBtnActive : null) }}
+        onClick={onToggleSelect}
+        title={selected ? "Unselect" : "Select"}
       >
-        ↓ Save
+        {selected ? "●" : "○"}
       </button>
+      {!!label && <div style={{ ...S.imageThemeTag, ...(compact ? S.imageThemeTagCompact : null) }}>{label}</div>}
+      <img src={src} alt={`Gen ${index}`} style={compact ? S.thumbCompact : S.thumb} onClick={() => onPreview(src)} onError={onImgError} />
+      {!compact && (
+        <button
+          style={S.dlBtn}
+          onClick={() =>
+            src.startsWith("data:image/")
+              ? downloadDataUrl(src, `${fileStem}_${index}.png`)
+              : downloadImageUrl(src, `${fileStem}_${index}.png`)
+          }
+        >
+          ↓ Save
+        </button>
+      )}
     </div>
   );
 }
 
-function TurnPanel({ turn, onPreview, onCancelModel, onDelete, onReuse, onHide, onSyncTemplate, canSyncTemplate }) {
+function TurnPanel({
+  turn,
+  onPreview,
+  onCancelModel,
+  onDelete,
+  onReuse,
+  onHide,
+  onSyncTemplate,
+  canSyncTemplate,
+  selectedImageKeys,
+  onToggleImageSelect,
+}) {
   const promptVariants = getTurnPromptVariants(turn);
-  const isCompareMode = getTurnMode(turn) === "compare";
+  const turnMode = getTurnMode(turn);
+  const isCompareMode = turnMode === "compare";
+  const isStyleMode = turnMode === "style";
+  const isMultiPromptMode = promptVariants.length > 1;
+  const styleBasePrompt =
+    typeof turn?.styleBasePrompt === "string"
+      ? turn.styleBasePrompt
+      : turn?.prompt || promptVariants[0]?.prompt || "";
   const selectedModelIds = Array.isArray(turn?.selectedModelIds) ? turn.selectedModelIds : [];
+  const styleReferenceImages = Array.isArray(turn?.styleReferenceImages) ? turn.styleReferenceImages : [];
+  const modelOrder = new Map(selectedModelIds.map((id, index) => [id, index]));
+  const promptVariantOrder = new Map(promptVariants.map((variant, index) => [variant.key, index]));
+  const styleResults = isStyleMode
+    ? (turn.results || [])
+        .slice()
+        .sort((a, b) => {
+          const ai = modelOrder.has(a.modelId) ? modelOrder.get(a.modelId) : Number.MAX_SAFE_INTEGER;
+          const bi = modelOrder.has(b.modelId) ? modelOrder.get(b.modelId) : Number.MAX_SAFE_INTEGER;
+          if (ai !== bi) return ai - bi;
+          const ak = promptVariantOrder.has(getResultPromptKey(a))
+            ? promptVariantOrder.get(getResultPromptKey(a))
+            : Number.MAX_SAFE_INTEGER;
+          const bk = promptVariantOrder.has(getResultPromptKey(b))
+            ? promptVariantOrder.get(getResultPromptKey(b))
+            : Number.MAX_SAFE_INTEGER;
+          if (ak !== bk) return ak - bk;
+          return String(a.modelId).localeCompare(String(b.modelId));
+        })
+    : [];
+  const resultsByVariant = promptVariants.map((variant) => ({
+    variant,
+    groupResults: (turn.results || [])
+      .filter((result) => getResultPromptKey(result) === variant.key)
+      .sort((a, b) => {
+        const ai = modelOrder.has(a.modelId) ? modelOrder.get(a.modelId) : Number.MAX_SAFE_INTEGER;
+        const bi = modelOrder.has(b.modelId) ? modelOrder.get(b.modelId) : Number.MAX_SAFE_INTEGER;
+        if (ai !== bi) return ai - bi;
+        return String(a.modelId).localeCompare(String(b.modelId));
+      }),
+  })).filter((item) => item.groupResults.length > 0);
   return (
     <section style={{ marginBottom: 20 }}>
       <div style={{ marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ fontSize: 12, color: "#a1a1aa", fontFamily: mono }}>
           #{turn.seq} · {new Date(turn.createdAt).toLocaleString()} · {turn.status}
           {isCompareMode && <span style={S.turnModeBadge}>Compare</span>}
+          {isStyleMode && <span style={S.turnModeBadge}>Style</span>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ fontSize: 12, color: "#71717a", fontFamily: mono }}>
@@ -2092,58 +2711,114 @@ function TurnPanel({ turn, onPreview, onCancelModel, onDelete, onReuse, onHide, 
             gridTemplateColumns: isCompareMode ? "repeat(2, minmax(0, 1fr))" : "1fr",
           }}
         >
-          {promptVariants.map((variant) => (
-            <div key={variant.key} style={S.turnPromptCard}>
-              {isCompareMode && <div style={S.turnPromptBadge}>{variant.label}</div>}
+          {isStyleMode ? (
+            <div style={S.turnPromptCard}>
               <div style={S.turnPromptText}>
-                {variant.prompt ? <PromptTextWithChips text={variant.prompt} /> : "(no prompt)"}
+                {styleBasePrompt ? <PromptTextWithChips text={styleBasePrompt} /> : "(no prompt)"}
               </div>
             </div>
-          ))}
+          ) : (
+            promptVariants.map((variant) => (
+              <div key={variant.key} style={S.turnPromptCard}>
+                {isCompareMode && <div style={S.turnPromptBadge}>{variant.label}</div>}
+                <div style={S.turnPromptText}>
+                  {variant.prompt ? <PromptTextWithChips text={variant.prompt} /> : "(no prompt)"}
+                </div>
+              </div>
+            ))
+          )}
         </div>
-        {turn.referenceImage && (
-          <button
-            type="button"
-            style={S.turnRefImageBtn}
-            onClick={() => onPreview?.(turn.referenceImage)}
-            title="Preview reference image"
-          >
-            <img src={turn.referenceImage} alt="Reference" style={S.turnRefImage} />
-          </button>
+        {(turn.referenceImage || styleReferenceImages.length > 0) && (
+          <div style={S.turnRefImageStack}>
+            {turn.referenceImage && (
+              <button
+                type="button"
+                style={S.turnRefImageBtn}
+                onClick={() => onPreview?.(turn.referenceImage)}
+                title="Preview reference image"
+              >
+                <img src={turn.referenceImage} alt="Reference" style={S.turnRefImage} />
+              </button>
+            )}
+            {styleReferenceImages.map((image, index) => (
+              <button
+                key={`style-ref-${turn.id}-${index}`}
+                type="button"
+                style={S.turnRefImageBtn}
+                onClick={() => onPreview?.(image)}
+                title={`Preview style image ${index + 1}`}
+              >
+                <img src={image} alt={`Style ${index + 1}`} style={S.turnRefImage} />
+              </button>
+            ))}
+          </div>
         )}
       </div>
-      <div style={isCompareMode ? S.turnCompareResultsGrid : undefined}>
-        {promptVariants.map((variant) => {
-        const groupResults = (turn.results || []).filter((result) => getResultPromptKey(result) === variant.key);
-        if (!groupResults.length) return null;
-        return (
-          <div key={variant.key} style={isCompareMode ? S.turnResultGroup : undefined}>
-            {isCompareMode && (
-              <div style={S.turnResultGroupHead}>
-                <span style={S.turnPromptBadge}>{variant.label}</span>
-                <span style={S.turnResultMeta}>{groupResults.length} model tasks</span>
+      {isStyleMode ? (
+        <div
+          style={{
+            ...S.turnStyleResultsGrid,
+            gridTemplateColumns: `repeat(${Math.min(6, Math.max(1, styleResults.length))}, minmax(0, 1fr))`,
+          }}
+        >
+          {styleResults.map((result, index) => (
+            <ResultColumn
+              key={`${turn.id}-${result.modelId}-${getResultPromptKey(result)}-${index}`}
+              result={result}
+              onPreview={onPreview}
+              onCancel={() => onCancelModel?.(turn.id, result.modelId, getResultPromptKey(result))}
+              turnId={turn.id}
+              turnSeq={turn.seq}
+              selectedImageKeys={selectedImageKeys}
+              onToggleImageSelect={onToggleImageSelect}
+              showPromptBadge={false}
+            />
+          ))}
+        </div>
+      ) : (
+        <div
+          style={
+            isCompareMode
+              ? { ...S.turnCompareResultsGrid, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }
+              : undefined
+          }
+        >
+          {resultsByVariant.map(({ variant, groupResults }) => {
+          return (
+            <div key={variant.key} style={isMultiPromptMode ? S.turnResultGroup : undefined}>
+              {isCompareMode && (
+                <div style={S.turnResultGroupHead}>
+                  <span style={S.turnPromptBadge}>{variant.label}</span>
+                  <span style={S.turnResultMeta}>{groupResults.length} model tasks</span>
+                </div>
+              )}
+              <div
+                style={{
+                  display: "grid",
+                  gap: 16,
+                  gridTemplateColumns: isCompareMode
+                    ? `repeat(${Math.min(2, Math.max(1, groupResults.length))}, minmax(0, 1fr))`
+                    : `repeat(${Math.min(4, Math.max(1, groupResults.length))}, minmax(0, 1fr))`,
+                }}
+              >
+                {groupResults.map((r, i) => (
+                  <ResultColumn
+                    key={`${turn.id}-${r.modelId}-${getResultPromptKey(r)}-${i}`}
+                    result={r}
+                    onPreview={onPreview}
+                    onCancel={() => onCancelModel?.(turn.id, r.modelId, getResultPromptKey(r))}
+                    turnId={turn.id}
+                    turnSeq={turn.seq}
+                    selectedImageKeys={selectedImageKeys}
+                    onToggleImageSelect={onToggleImageSelect}
+                  />
+                ))}
               </div>
-            )}
-            <div
-              style={{
-                display: "grid",
-                gap: 16,
-                gridTemplateColumns: `repeat(${Math.min(4, Math.max(1, groupResults.length))}, minmax(0, 1fr))`,
-              }}
-            >
-              {groupResults.map((r, i) => (
-                <ResultColumn
-                  key={`${turn.id}-${r.modelId}-${getResultPromptKey(r)}-${i}`}
-                  result={r}
-                  onPreview={onPreview}
-                  onCancel={() => onCancelModel?.(turn.id, r.modelId, getResultPromptKey(r))}
-                />
-              ))}
             </div>
-          </div>
-        );
-        })}
-      </div>
+          );
+          })}
+        </div>
+      )}
     </section>
   );
 }
@@ -2174,8 +2849,17 @@ export default function App() {
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [editingTemplateId, setEditingTemplateId] = useState(null);
   const [templateDraft, setTemplateDraft] = useState({ title: "", body: "", backup: "" });
+  const [styleTemplates, setStyleTemplates] = useState(normalizeStyleTemplates(DEFAULT_STYLE_TEMPLATES));
+  const [activeStyleTemplateId, setActiveStyleTemplateId] = useState(DEFAULT_STYLE_TEMPLATES[0]?.id || null);
+  const [showStyleTemplateModal, setShowStyleTemplateModal] = useState(false);
+  const [editingStyleTemplateId, setEditingStyleTemplateId] = useState(null);
+  const [styleTemplateDraft, setStyleTemplateDraft] = useState({ title: "", body: "" });
+  const [styleThemes, setStyleThemes] = useState(normalizeStyleThemes(DEFAULT_STYLE_THEMES));
   const [uploadedImage, setUploadedImage] = useState(null);
   const [uploadedPreview, setUploadedPreview] = useState(null);
+  const [styleReferenceImages, setStyleReferenceImages] = useState([]);
+  const [showInputImageModal, setShowInputImageModal] = useState(false);
+  const [showStyleReferenceModal, setShowStyleReferenceModal] = useState(false);
   const [selectedModels, setSelectedModels] = useState(DEFAULT_SELECTED_MODELS);
   const [modelCounts, setModelCounts] = useState(DEFAULT_MODEL_COUNTS);
   const [lastEditedCount, setLastEditedCount] = useState(DEFAULT_LAST_EDITED_COUNT);
@@ -2191,6 +2875,9 @@ export default function App() {
   const [historyDirName, setHistoryDirName] = useState("");
   const [historyFolderMsg, setHistoryFolderMsg] = useState("");
   const [hiddenTurnIds, setHiddenTurnIds] = useState([]);
+  const [selectedAtlasItems, setSelectedAtlasItems] = useState([]);
+  const [atlasThumbnail, setAtlasThumbnail] = useState(null);
+  const [atlasBusy, setAtlasBusy] = useState(false);
   const fileRef = useRef(null);
   const activePromptFieldRef = useRef("single");
   const promptInputRef = useRef(null);
@@ -2260,12 +2947,23 @@ export default function App() {
           }
           setModelCounts((prev) => ({ ...prev, ...migratedCounts }));
         }
-        if (saved.taskMode === "single" || saved.taskMode === "compare") setTaskMode(saved.taskMode);
+        if (saved.taskMode === "single" || saved.taskMode === "compare" || saved.taskMode === "style") setTaskMode(saved.taskMode);
         if (saved.comparePrompts && typeof saved.comparePrompts === "object") {
           compareAEditor.resetText(typeof saved.comparePrompts.a === "string" ? saved.comparePrompts.a : DEFAULT_COMPARE_PROMPTS.a);
           compareBEditor.resetText(typeof saved.comparePrompts.b === "string" ? saved.comparePrompts.b : DEFAULT_COMPARE_PROMPTS.b);
         }
         if (typeof saved.prompt === "string") promptEditor.resetText(saved.prompt);
+        if (Array.isArray(saved.styleThemes)) {
+          setStyleThemes(normalizeStyleThemes(saved.styleThemes));
+        }
+        if (Array.isArray(saved.styleReferenceImages)) {
+          setStyleReferenceImages(
+            saved.styleReferenceImages
+              .map((item) => (typeof item === "string" ? item : ""))
+              .filter(Boolean)
+              .slice(0, MAX_STYLE_REFERENCE_IMAGES)
+          );
+        }
         if (typeof saved.apiBaseUrl === "string" && saved.apiBaseUrl.trim()) {
           setApiBaseUrl(resolveApiBaseUrl(saved.apiBaseUrl));
         }
@@ -2299,6 +2997,8 @@ export default function App() {
       prompt,
       taskMode,
       comparePrompts,
+      styleThemes,
+      styleReferenceImages,
       apiBaseUrl,
       hiddenTurnIds,
       lastEditedCount,
@@ -2316,7 +3016,12 @@ export default function App() {
         );
       } catch {}
     }
-  }, [turns, activeTurnId, historyLimit, selectedModels, modelCounts, prompt, taskMode, comparePrompts, apiBaseUrl, hiddenTurnIds, lastEditedCount, aspectRatio, proxyUrl]);
+  }, [turns, activeTurnId, historyLimit, selectedModels, modelCounts, prompt, taskMode, comparePrompts, styleThemes, styleReferenceImages, apiBaseUrl, hiddenTurnIds, lastEditedCount, aspectRatio, proxyUrl]);
+
+  useEffect(() => {
+    if (selectedAtlasItems.length > 0) return;
+    setAtlasThumbnail(null);
+  }, [selectedAtlasItems.length]);
 
   const handleSaveApiKey = useCallback(() => {
     const nextKey = normalizeApiKey(draftApiKey);
@@ -2370,6 +3075,29 @@ export default function App() {
     setShowTemplateModal(false);
   }, [templateDraft, editingTemplateId, historyDirHandle, activeTemplateId, taskMode, comparePrompts.a, comparePrompts.b, prompt, compareAEditor, compareBEditor, promptEditor]);
 
+  const openStyleTemplateEditor = useCallback((templateId) => {
+    if (!historyDirHandle) return;
+    const template = styleTemplates.find((item) => item.id === templateId);
+    if (!template) return;
+    setEditingStyleTemplateId(template.id);
+    setStyleTemplateDraft({
+      title: template.title || "",
+      body: template.body || "",
+    });
+    setShowStyleTemplateModal(true);
+  }, [styleTemplates, historyDirHandle]);
+
+  const saveStyleTemplateDraft = useCallback(() => {
+    if (!editingStyleTemplateId || !historyDirHandle) return;
+    const title = styleTemplateDraft.title.trim() || editingStyleTemplateId.replace("style-template-", "Style ");
+    const body = styleTemplateDraft.body || "";
+    setStyleTemplates((prev) => prev.map((item) => (item.id === editingStyleTemplateId ? { ...item, title, body } : item)));
+    if (activeStyleTemplateId === editingStyleTemplateId && prompt !== body) {
+      promptEditor.setText(body, { record: false });
+    }
+    setShowStyleTemplateModal(false);
+  }, [styleTemplateDraft, editingStyleTemplateId, historyDirHandle, activeStyleTemplateId, prompt, promptEditor]);
+
   const selectTemplateUsage = useCallback((templateId) => {
     if (!historyDirHandle) return;
     if (activeTemplateId === templateId) return;
@@ -2386,8 +3114,36 @@ export default function App() {
     if (prompt !== promptA) promptEditor.setText(promptA, { record: false });
   }, [templates, taskMode, compareAEditor, compareBEditor, promptEditor, activeTemplateId, comparePrompts.a, comparePrompts.b, prompt, historyDirHandle]);
 
+  const selectStyleTemplateUsage = useCallback((templateId) => {
+    if (!historyDirHandle) return;
+    if (activeStyleTemplateId === templateId) {
+      setActiveStyleTemplateId(null);
+      return;
+    }
+    const template = styleTemplates.find((item) => item.id === templateId);
+    if (!template) return;
+    setActiveStyleTemplateId(template.id);
+    const nextPrompt = template.body || "";
+    if (prompt !== nextPrompt) promptEditor.setText(nextPrompt, { record: false });
+  }, [historyDirHandle, activeStyleTemplateId, styleTemplates, prompt, promptEditor]);
+
   const syncTurnToTemplate = useCallback((turn) => {
-    if (!activeTemplateId || !historyDirHandle) return;
+    if (!historyDirHandle) return;
+    if (getTurnMode(turn) === "style") {
+      if (!activeStyleTemplateId) return;
+      const basePrompt = typeof turn.styleBasePrompt === "string"
+        ? turn.styleBasePrompt
+        : getTurnPromptVariants(turn)[0]?.prompt || "";
+      setStyleTemplates((prev) =>
+        prev.map((item) =>
+          item.id === activeStyleTemplateId
+            ? { ...item, body: basePrompt }
+            : item
+        )
+      );
+      return;
+    }
+    if (!activeTemplateId) return;
     const variants = getTurnPromptVariants(turn);
     const primary = variants[0]?.prompt || "";
     const backup = variants[1]?.prompt || "";
@@ -2398,7 +3154,7 @@ export default function App() {
           : item
       )
     );
-  }, [activeTemplateId, historyDirHandle]);
+  }, [activeTemplateId, activeStyleTemplateId, historyDirHandle]);
 
   const runGptAssist = useCallback(async () => {
     if (gptAssistBusy) return;
@@ -2409,23 +3165,44 @@ export default function App() {
 
     const items = taskMode === "compare"
       ? [
-          { key: "a", prompt: comparePrompts.a },
-          { key: "b", prompt: comparePrompts.b },
+          { key: "a", prompt: comparePrompts.a, clearedPrompt: clearPlaceholderValues(comparePrompts.a) },
+          { key: "b", prompt: comparePrompts.b, clearedPrompt: clearPlaceholderValues(comparePrompts.b) },
         ]
-      : [{ key: "single", prompt }];
+      : [{ key: "single", prompt, clearedPrompt: clearPlaceholderValues(prompt) }];
     const targetItems = items.filter((item) => extractPlaceholderTokens(item.prompt).length > 0);
     if (!targetItems.length) {
       setHistoryFolderMsg("未找到 {{ }} 占位符，GPT 未执行。");
       return;
     }
 
+    if (taskMode === "compare") {
+      compareAEditor.setText(items[0].clearedPrompt, { record: false });
+      compareBEditor.setText(items[1].clearedPrompt, { record: false });
+    } else {
+      promptEditor.setText(items[0].clearedPrompt, { record: false });
+    }
+
     setGptAssistBusy(true);
     try {
       const rewritten = {};
-      for (const item of targetItems) {
+      if (taskMode === "compare") {
+        const sourceKey = activePromptFieldRef.current === "b" ? "b" : "a";
+        const sourceItem = targetItems.find((item) => item.key === sourceKey) || targetItems[0];
+        const sourceRewritten = await callTextAssistAPI(
+          proxyUrl,
+          sourceItem.clearedPrompt,
+          uploadedImage,
+          gptAssistPrompt,
+          { apiBaseUrl, apiKey }
+        );
+        const syncedReplacements = extractPlaceholderTokens(sourceRewritten);
+        rewritten.a = applyPlaceholderReplacements(items[0].clearedPrompt, syncedReplacements);
+        rewritten.b = applyPlaceholderReplacements(items[1].clearedPrompt, syncedReplacements);
+      } else {
+        const item = targetItems[0];
         rewritten[item.key] = await callTextAssistAPI(
           proxyUrl,
-          item.prompt,
+          item.clearedPrompt,
           uploadedImage,
           gptAssistPrompt,
           { apiBaseUrl, apiKey }
@@ -2454,14 +3231,29 @@ export default function App() {
   }, [gptAssistBusy, proxyUrl, taskMode, comparePrompts.a, comparePrompts.b, prompt, uploadedImage, gptAssistPrompt, apiBaseUrl, apiKey, compareAEditor, compareBEditor, promptEditor]);
 
   const toggleModel = useCallback((id) => {
-    setSelectedModels((prev) =>
-      prev.includes(id)
+    setSelectedModels((prev) => {
+      if (taskMode === "style") {
+        return prev.includes(id) ? prev.filter((m) => m !== id) : [id];
+      }
+      return prev.includes(id)
         ? prev.filter((m) => m !== id)
         : prev.length >= 6
         ? prev
-        : [...prev, id]
-    );
-  }, []);
+        : [...prev, id];
+    });
+  }, [taskMode]);
+
+  useEffect(() => {
+    if (taskMode !== "style") return;
+    if (selectedModels.length <= 1) return;
+    setSelectedModels((prev) => prev.slice(0, 1));
+  }, [taskMode, selectedModels.length]);
+
+  useEffect(() => {
+    if (taskMode === "style") return;
+    setShowInputImageModal(false);
+    setShowStyleReferenceModal(false);
+  }, [taskMode]);
 
   const setModelCount = useCallback((id, value) => {
     const n = Math.max(1, Math.min(8, Number(value) || 1));
@@ -2490,10 +3282,253 @@ export default function App() {
 
   const removeImage = useCallback(() => { setUploadedImage(null); setUploadedPreview(null); if (fileRef.current) fileRef.current.value = ""; }, []);
 
+  const inputImageList = useMemo(() => {
+    if (typeof uploadedImage !== "string" || !uploadedImage) return [];
+    return [uploadedImage];
+  }, [uploadedImage]);
+
+  const styleImageList = useMemo(
+    () =>
+      (Array.isArray(styleReferenceImages) ? styleReferenceImages : [])
+        .map((item) => (typeof item === "string" ? item : ""))
+        .filter(Boolean)
+        .slice(0, MAX_STYLE_REFERENCE_IMAGES),
+    [styleReferenceImages]
+  );
+
+  const appendInputImageFiles = useCallback(async (files) => {
+    const incoming = Array.isArray(files) ? files : [];
+    const first = incoming[0];
+    if (!first) return;
+    const encoded = await fileToBase64(first);
+    if (typeof encoded !== "string" || !encoded.startsWith("data:image/")) return;
+    setUploadedImage(encoded);
+    setUploadedPreview(encoded);
+    if (fileRef.current) fileRef.current.value = "";
+  }, []);
+
+  const removeInputImageAt = useCallback(() => {
+    setUploadedImage(null);
+    setUploadedPreview(null);
+    if (fileRef.current) fileRef.current.value = "";
+  }, []);
+
+  const appendStyleReferenceFiles = useCallback(async (files) => {
+    const incoming = Array.isArray(files) ? files : [];
+    if (!incoming.length) return;
+    const remaining = Math.max(0, MAX_STYLE_REFERENCE_IMAGES - styleImageList.length);
+    if (!remaining) return;
+    const picked = incoming.slice(0, remaining);
+    const encoded = await Promise.all(picked.map((file) => fileToBase64(file)));
+    const safeEncoded = encoded.filter((item) => typeof item === "string" && item.startsWith("data:image/"));
+    if (!safeEncoded.length) return;
+    setStyleReferenceImages((prev) => {
+      const base = (Array.isArray(prev) ? prev : [])
+        .map((item) => (typeof item === "string" ? item : ""))
+        .filter(Boolean);
+      return [...base, ...safeEncoded].slice(0, MAX_STYLE_REFERENCE_IMAGES);
+    });
+  }, [styleImageList.length]);
+
+  const removeStyleReferenceAt = useCallback((index) => {
+    setStyleReferenceImages((prev) => prev.filter((_, idx) => idx !== index));
+  }, []);
+
+  const updateStyleTheme = useCallback((index, value) => {
+    setStyleThemes((prev) => {
+      const next = normalizeStyleThemes(prev);
+      next[index] = typeof value === "string" ? value : String(value ?? "");
+      return next;
+    });
+  }, []);
+
   const updateComparePrompt = useCallback((key, value) => {
-    if (key === "a") compareAEditor.setText(value);
-    if (key === "b") compareBEditor.setText(value);
-  }, [compareAEditor, compareBEditor]);
+    const nextValue = typeof value === "string" ? value : String(value ?? "");
+    if (key === "a") {
+      const prevTokens = extractPlaceholderTokens(comparePrompts.a);
+      const nextTokens = extractPlaceholderTokens(nextValue);
+      compareAEditor.setText(nextValue);
+      const changed = prevTokens.length !== nextTokens.length || prevTokens.some((v, index) => v !== nextTokens[index]);
+      if (changed) {
+        const synced = applyPlaceholderReplacements(comparePrompts.b, nextTokens);
+        if (synced !== comparePrompts.b) compareBEditor.setText(synced, { record: false });
+      }
+      return;
+    }
+    if (key === "b") {
+      const prevTokens = extractPlaceholderTokens(comparePrompts.b);
+      const nextTokens = extractPlaceholderTokens(nextValue);
+      compareBEditor.setText(nextValue);
+      const changed = prevTokens.length !== nextTokens.length || prevTokens.some((v, index) => v !== nextTokens[index]);
+      if (changed) {
+        const synced = applyPlaceholderReplacements(comparePrompts.a, nextTokens);
+        if (synced !== comparePrompts.a) compareAEditor.setText(synced, { record: false });
+      }
+    }
+  }, [compareAEditor, compareBEditor, comparePrompts.a, comparePrompts.b]);
+
+  const selectedImageKeys = useMemo(
+    () => new Set(selectedAtlasItems.map((item) => item.key)),
+    [selectedAtlasItems]
+  );
+
+  const toggleImageSelection = useCallback((payload) => {
+    if (!payload?.key) return;
+    setAtlasThumbnail(null);
+    setSelectedAtlasItems((prev) => {
+      const existing = prev.find((item) => item.key === payload.key);
+      if (existing) {
+        return prev.filter((item) => item.key !== payload.key);
+      }
+      const taskKey = `${payload.turnId}:${payload.modelId}:${payload.promptKey}`;
+      const removedSameTask = prev.filter((item) => item.taskKey !== taskKey);
+      if (removedSameTask.length >= MAX_STYLE_SELECTED_IMAGES) {
+        setHistoryFolderMsg(`最多选择 ${MAX_STYLE_SELECTED_IMAGES} 张图片。`);
+        return removedSameTask;
+      }
+      return [
+        ...removedSameTask,
+        {
+          ...payload,
+          taskKey,
+          selectedAt: Date.now(),
+        },
+      ];
+    });
+  }, []);
+
+  const clearAllSelections = useCallback(() => {
+    setSelectedAtlasItems([]);
+    setAtlasThumbnail(null);
+  }, []);
+
+  const generateAtlasThumbnail = useCallback(async () => {
+    if (!selectedAtlasItems.length) {
+      setHistoryFolderMsg("请先选择要拼接的图片。");
+      return;
+    }
+    setAtlasBusy(true);
+    try {
+      const ordered = [...selectedAtlasItems].sort((a, b) => (a.selectedAt || 0) - (b.selectedAt || 0));
+      const sources = await Promise.all(
+        ordered.map(async (item) => {
+          const normalized = normalizeImageValue(item.image, apiBaseUrl);
+          if (!normalized) return null;
+          const proxied = await proxyFetchImageAsDataUrl(proxyUrl, normalized);
+          return normalizeImageValue(proxied, apiBaseUrl);
+        })
+      );
+      const thumbDataUrl = await createAtlasThumbnailDataUrl(sources.filter(Boolean), { rows: 3, cellWidth: 256, cellHeight: 256 });
+      if (!thumbDataUrl) {
+        setHistoryFolderMsg("缩略图生成失败。");
+        return;
+      }
+      setAtlasThumbnail(thumbDataUrl);
+      setHistoryFolderMsg(`缩略图已生成（${ordered.length} 张，3 行）。`);
+    } catch (err) {
+      setHistoryFolderMsg(`缩略图生成失败：${err?.message || "未知错误"}`);
+    } finally {
+      setAtlasBusy(false);
+    }
+  }, [selectedAtlasItems, apiBaseUrl, proxyUrl]);
+
+  const exportAtlasSelection = useCallback(async () => {
+    if (!historyDirHandle) {
+      setHistoryFolderMsg("请先选择 History Folder。");
+      return;
+    }
+    if (!selectedAtlasItems.length) {
+      setHistoryFolderMsg("请先选择要导出的图片。");
+      return;
+    }
+
+    setAtlasBusy(true);
+    try {
+      const canWrite = await ensureDirectoryPermission(historyDirHandle, true);
+      if (!canWrite) {
+        setHistoryFolderMsg("文件夹写入权限未授权，无法导出图集。");
+        return;
+      }
+
+      const ordered = [...selectedAtlasItems].sort((a, b) => (a.selectedAt || 0) - (b.selectedAt || 0));
+      let thumbDataUrl = atlasThumbnail;
+      if (!thumbDataUrl) {
+        const sources = await Promise.all(
+          ordered.map(async (item) => {
+            const normalized = normalizeImageValue(item.image, apiBaseUrl);
+            if (!normalized) return null;
+            const proxied = await proxyFetchImageAsDataUrl(proxyUrl, normalized);
+            return normalizeImageValue(proxied, apiBaseUrl);
+          })
+        );
+        thumbDataUrl = await createAtlasThumbnailDataUrl(sources.filter(Boolean), { rows: 3, cellWidth: 256, cellHeight: 256 });
+        if (thumbDataUrl) setAtlasThumbnail(thumbDataUrl);
+      }
+
+      const atlasRoot = await historyDirHandle.getDirectoryHandle("atlas", { create: true });
+      const folderName = formatAtlasFolderName(ordered);
+      const atlasDir = await atlasRoot.getDirectoryHandle(folderName, { create: true });
+      const manifestItems = [];
+
+      for (let index = 0; index < ordered.length; index += 1) {
+        const item = ordered[index];
+        const normalized = normalizeImageValue(item.image, apiBaseUrl);
+        if (!normalized) continue;
+        const stem = buildAtlasImageFileStem(item, index);
+        let fileName = `${stem}.png`;
+        if (normalized.startsWith("data:image/")) {
+          const data = dataUrlToBytes(normalized);
+          if (!data) continue;
+          fileName = `${stem}.${data.ext}`;
+          await writeBinaryFile(atlasDir, fileName, data.bytes);
+        } else if (/^https?:\/\//i.test(normalized)) {
+          const remote = await fetchImageBytes(normalized);
+          fileName = `${stem}.${remote.ext}`;
+          await writeBinaryFile(atlasDir, fileName, remote.bytes);
+        } else {
+          continue;
+        }
+        manifestItems.push({
+          index: index + 1,
+          file: fileName,
+          theme: item.theme || "",
+          turnId: item.turnId,
+          turnSeq: item.turnSeq,
+          modelId: item.modelId,
+          modelName: item.modelName || "",
+          promptKey: item.promptKey,
+        });
+      }
+
+      if (thumbDataUrl) {
+        const thumb = dataUrlToBytes(thumbDataUrl);
+        if (thumb) {
+          await writeBinaryFile(atlasDir, `thumbnail.${thumb.ext}`, thumb.bytes);
+        }
+      }
+
+      await writeTextFile(
+        atlasDir,
+        "manifest.json",
+        JSON.stringify(
+          {
+            createdAt: Date.now(),
+            itemCount: manifestItems.length,
+            maxSelectable: MAX_STYLE_SELECTED_IMAGES,
+            rows: 3,
+            items: manifestItems,
+          },
+          null,
+          2
+        )
+      );
+      setHistoryFolderMsg(`图集已导出：atlas/${folderName}`);
+    } catch (err) {
+      setHistoryFolderMsg(`导出失败：${err?.message || "未知错误"}`);
+    } finally {
+      setAtlasBusy(false);
+    }
+  }, [historyDirHandle, selectedAtlasItems, atlasThumbnail, apiBaseUrl, proxyUrl]);
 
   const loadHistoryFromFolder = useCallback(async (dirHandle) => {
     if (!dirHandle) return false;
@@ -2520,7 +3555,18 @@ export default function App() {
       setTemplates(fallbackTemplates);
       setActiveTemplateId(null);
     }
+    const styleTemplatePayload = await loadStyleTemplatesFromLocalFolder(dirHandle);
+    if (styleTemplatePayload) {
+      setStyleTemplates(styleTemplatePayload.templates);
+      setActiveStyleTemplateId(styleTemplatePayload.activeTemplateId || styleTemplatePayload.templates[0]?.id || null);
+    } else {
+      const fallbackStyleTemplates = normalizeStyleTemplates(DEFAULT_STYLE_TEMPLATES);
+      setStyleTemplates(fallbackStyleTemplates);
+      setActiveStyleTemplateId(fallbackStyleTemplates[0]?.id || null);
+    }
     const loadedTurns = await loadTurnsFromLocalFolder(dirHandle);
+    setSelectedAtlasItems([]);
+    setAtlasThumbnail(null);
     setTurns((prev) => {
       const map = new Map();
       [...prev, ...loadedTurns].forEach((t) => {
@@ -2534,8 +3580,8 @@ export default function App() {
     }
     setHistoryFolderMsg(
       templatePayload
-        ? `已读取文件夹历史：${loadedTurns.length} 条，模板：${templatePayload.templates.length} 个，API/GPT 配置已加载。`
-        : `已读取文件夹历史：${loadedTurns.length} 条，模板：${MAX_TEMPLATES} 个（已初始化），API/GPT 配置已初始化。`
+        ? `已读取文件夹历史：${loadedTurns.length} 条，模板：${templatePayload.templates.length} + 风格模板：${styleTemplatePayload?.templates?.length || MAX_STYLE_TEMPLATES}，API/GPT 配置已加载。`
+        : `已读取文件夹历史：${loadedTurns.length} 条，模板：${MAX_TEMPLATES} + 风格模板：${styleTemplatePayload?.templates?.length || MAX_STYLE_TEMPLATES}（已初始化），API/GPT 配置已初始化。`
     );
     return true;
   }, []);
@@ -2559,12 +3605,14 @@ export default function App() {
 
   const handleGenerate = useCallback(async () => {
     if (!proxyUrl.trim()) { setShowSettings(true); return; }
-    const promptVariants = getComposerPromptVariants(taskMode, prompt, comparePrompts);
+    const effectiveModelIds = taskMode === "style" ? selectedModels.slice(0, 1) : selectedModels;
+    const promptVariants = getComposerPromptVariants(taskMode, prompt, comparePrompts, styleThemes);
     const hasPromptInput = promptVariants.some((variant) => variant.prompt.trim());
-    if (!selectedModels.length || (!hasPromptInput && !uploadedImage)) return;
+    const hasImageInput = !!uploadedImage || (taskMode === "style" && styleReferenceImages.length > 0);
+    if (!effectiveModelIds.length || (!hasPromptInput && !hasImageInput)) return;
 
     const now = Date.now();
-    const turnModelCounts = selectedModels.reduce((acc, mid) => {
+    const turnModelCounts = effectiveModelIds.reduce((acc, mid) => {
       acc[mid] = Math.max(1, Math.min(8, Number(modelCounts[mid]) || 1));
       return acc;
     }, {});
@@ -2577,18 +3625,21 @@ export default function App() {
       seq: seqRef.current,
       createdAt: now,
       mode: taskMode,
-      prompt: taskMode === "single" ? (prompt || "") : "",
+      prompt: taskMode === "compare" ? "" : (prompt || ""),
+      styleBasePrompt: taskMode === "style" ? (prompt || "") : "",
+      styleThemes: taskMode === "style" ? normalizeStyleThemes(styleThemes) : [],
       promptVariants: normalizedPromptVariants,
       apiBaseUrl: resolveApiBaseUrl(apiBaseUrl),
       apiKey: normalizeApiKey(apiKey),
       aspectRatio: normalizeAspectRatio(aspectRatio),
       referenceImage: uploadedImage,
-      selectedModelIds: [...selectedModels],
+      styleReferenceImages: taskMode === "style" ? styleReferenceImages.slice(0, MAX_STYLE_REFERENCE_IMAGES) : [],
+      selectedModelIds: [...effectiveModelIds],
       modelCounts: turnModelCounts,
       proxyUrl: proxyUrl.trim(),
       status: "queued",
       results: normalizedPromptVariants.flatMap((variant) =>
-        selectedModels.map((mid) => ({
+        effectiveModelIds.map((mid) => ({
           modelId: mid,
           modelName: IMAGE_MODELS.find((m) => m.id === mid)?.name || mid,
           promptKey: variant.key,
@@ -2610,7 +3661,7 @@ export default function App() {
     } else {
       promptEditor.setText((prev) => clearPlaceholderValues(prev), { record: false });
     }
-  }, [proxyUrl, selectedModels, modelCounts, taskMode, prompt, comparePrompts, apiBaseUrl, apiKey, aspectRatio, uploadedImage, compareAEditor, compareBEditor, promptEditor]);
+  }, [proxyUrl, selectedModels, modelCounts, taskMode, prompt, comparePrompts, styleThemes, styleReferenceImages, apiBaseUrl, apiKey, aspectRatio, uploadedImage, compareAEditor, compareBEditor, promptEditor]);
 
   const cancelModelTask = useCallback((turnId, modelId, promptKey = "single") => {
     const key = `${turnId}:${modelId}:${promptKey}`;
@@ -2639,6 +3690,8 @@ export default function App() {
     const targetTurn = turns.find((item) => item.id === turnId) || null;
     setTurns((prev) => prev.filter((t) => t.id !== turnId));
     setHiddenTurnIds((prev) => prev.filter((id) => id !== turnId));
+    setSelectedAtlasItems((prev) => prev.filter((item) => item.turnId !== turnId));
+    setAtlasThumbnail(null);
     setActiveTurnId((prev) => (prev === turnId ? null : prev));
     Object.keys(controllersRef.current).forEach((key) => {
       if (!key.startsWith(`${turnId}:`)) return;
@@ -2672,21 +3725,47 @@ export default function App() {
 
   const reuseTurn = useCallback((turn) => {
     const promptVariants = getTurnPromptVariants(turn);
+    const mode = getTurnMode(turn);
     const primaryPrompt = promptVariants[0]?.prompt || turn.prompt || "";
-    promptEditor.resetText(primaryPrompt);
-    if (getTurnMode(turn) === "compare") {
-      setTaskMode("compare");
-      compareAEditor.resetText(promptVariants[0]?.prompt || "");
-      compareBEditor.resetText(promptVariants[1]?.prompt || "");
-    } else {
-      setTaskMode("single");
+    if (mode === "style") {
+      setTaskMode("style");
+      promptEditor.resetText(typeof turn.styleBasePrompt === "string" ? turn.styleBasePrompt : primaryPrompt);
       compareAEditor.resetText(DEFAULT_COMPARE_PROMPTS.a);
       compareBEditor.resetText(DEFAULT_COMPARE_PROMPTS.b);
+      setStyleThemes(normalizeStyleThemes(turn.styleThemes));
+      setStyleReferenceImages(
+        (Array.isArray(turn.styleReferenceImages) ? turn.styleReferenceImages : [])
+          .map((item) => (typeof item === "string" ? item : ""))
+          .filter(Boolean)
+          .slice(0, MAX_STYLE_REFERENCE_IMAGES)
+      );
+    } else if (mode === "compare") {
+      setTaskMode("compare");
+      promptEditor.resetText(primaryPrompt);
+      compareAEditor.resetText(promptVariants[0]?.prompt || "");
+      compareBEditor.resetText(promptVariants[1]?.prompt || "");
+      setStyleThemes(normalizeStyleThemes(DEFAULT_STYLE_THEMES));
+      setStyleReferenceImages([]);
+    } else {
+      setTaskMode("single");
+      promptEditor.resetText(primaryPrompt);
+      compareAEditor.resetText(DEFAULT_COMPARE_PROMPTS.a);
+      compareBEditor.resetText(DEFAULT_COMPARE_PROMPTS.b);
+      setStyleThemes(normalizeStyleThemes(DEFAULT_STYLE_THEMES));
+      setStyleReferenceImages([]);
     }
-    setSelectedModels(Array.isArray(turn.selectedModelIds) && turn.selectedModelIds.length ? turn.selectedModelIds : DEFAULT_SELECTED_MODELS);
+    const nextSelectedModels =
+      Array.isArray(turn.selectedModelIds) && turn.selectedModelIds.length
+        ? mode === "style"
+          ? turn.selectedModelIds.slice(0, 1)
+          : turn.selectedModelIds
+        : mode === "style"
+        ? DEFAULT_SELECTED_MODELS.slice(0, 1)
+        : DEFAULT_SELECTED_MODELS;
+    setSelectedModels(nextSelectedModels);
     if (turn.modelCounts && typeof turn.modelCounts === "object") {
       setModelCounts((prev) => ({ ...prev, ...turn.modelCounts }));
-      const firstSelectedModel = Array.isArray(turn.selectedModelIds) ? turn.selectedModelIds[0] : null;
+      const firstSelectedModel = nextSelectedModels[0] || null;
       if (firstSelectedModel && typeof turn.modelCounts[firstSelectedModel] === "number") {
         setLastEditedCount(Math.max(1, Math.min(8, Number(turn.modelCounts[firstSelectedModel]) || 1)));
       }
@@ -2715,6 +3794,7 @@ export default function App() {
       setTurns((prev) => prev.map((t) => (t.id === next.id ? { ...t, status: "running", startedAt: Date.now() } : t)));
       const promptVariants = getTurnPromptVariants(next);
       const promptLookup = new Map(promptVariants.map((variant) => [variant.key, variant]));
+      const turnImageInputs = normalizeImageInputs(next.referenceImage, next.styleReferenceImages);
       const resultSeeds =
         Array.isArray(next.results) && next.results.length
           ? next.results
@@ -2755,6 +3835,7 @@ export default function App() {
               apiBaseUrl: next.apiBaseUrl || DEFAULT_API_BASE_URL,
               apiKey: next.apiKey || DEFAULT_API_KEY,
               aspectRatio: normalizeAspectRatio(next.aspectRatio ?? next.geminiAspectRatio),
+              imageInputs: turnImageInputs,
             });
             setTurns((prev) =>
               prev.map((t) =>
@@ -2845,6 +3926,17 @@ export default function App() {
       const canWrite = await ensureDirectoryPermission(historyDirHandle, true);
       if (!canWrite) return;
       try {
+        await saveStyleTemplatesToLocalFolder(historyDirHandle, styleTemplates, activeStyleTemplateId);
+      } catch {}
+    })();
+  }, [historyDirHandle, styleTemplates, activeStyleTemplateId]);
+
+  useEffect(() => {
+    if (!historyDirHandle) return;
+    (async () => {
+      const canWrite = await ensureDirectoryPermission(historyDirHandle, true);
+      if (!canWrite) return;
+      try {
         await saveGptAssistToLocalFolder(historyDirHandle, gptAssistPrompt);
       } catch {}
     })();
@@ -2875,11 +3967,15 @@ export default function App() {
   const hasAnySuccess = visibleTurns.some((t) => t.results?.some((r) => r.status === "success" && r.images?.length));
   const folderSupported = supportsFileSystemAccess();
   const templatesEnabled = !!historyDirHandle;
-  const composerPromptVariants = getComposerPromptVariants(taskMode, prompt, comparePrompts);
+  const composerPromptVariants = getComposerPromptVariants(taskMode, prompt, comparePrompts, styleThemes);
   const hasPromptInput = composerPromptVariants.some((variant) => variant.prompt.trim());
-  const hasPlaceholderInComposer = composerPromptVariants.some((variant) => extractPlaceholderTokens(variant.prompt).length > 0);
+  const hasImageInput = !!uploadedImage || (taskMode === "style" && styleReferenceImages.length > 0);
+  const hasPlaceholderInComposer =
+    taskMode === "compare"
+      ? composerPromptVariants.some((variant) => extractPlaceholderTokens(variant.prompt).length > 0)
+      : extractPlaceholderTokens(prompt).length > 0;
   const canRunGptAssist = !gptAssistBusy && !!proxyUrl.trim() && hasPlaceholderInComposer;
-  const canGenerate = selectedModels.length > 0 && (hasPromptInput || !!uploadedImage);
+  const canGenerate = selectedModels.length > 0 && (hasPromptInput || hasImageInput);
   const isApiKeyDirty = normalizeApiKey(draftApiKey) !== normalizeApiKey(apiKey);
   const isGptAssistPromptDirty = normalizeGptAssistPrompt(draftGptAssistPrompt) !== normalizeGptAssistPrompt(gptAssistPrompt);
   const canSaveGptAssistPrompt = !!historyDirHandle;
@@ -2923,6 +4019,13 @@ export default function App() {
             >
               Prompt Compare
             </button>
+            <button
+              type="button"
+              style={{ ...S.modeTab, ...(taskMode === "style" ? S.modeTabActive : null) }}
+              onClick={() => setTaskMode("style")}
+            >
+              Style
+            </button>
           </nav>
           <div style={S.apiSwitchWrap}>
             <button
@@ -2954,7 +4057,7 @@ export default function App() {
 
       <main style={S.main}>
         <section style={{ marginBottom: 24 }}>
-          <div style={S.inputGrid}>
+          <div style={taskMode === "style" ? S.inputGridStyle : S.inputGrid}>
             <div>
               <div style={S.promptHead}>
                 <label style={{ ...S.label, marginBottom: 0 }}>{taskMode === "compare" ? "PROMPTS" : "PROMPT"}</label>
@@ -3016,20 +4119,60 @@ export default function App() {
                 />
               )}
             </div>
-            <div>
-              <label style={S.label}>REFERENCE IMAGE</label>
-              {uploadedPreview ? (
-                <div style={S.uploadedBox}>
-                  <img src={uploadedPreview} alt="Ref" style={S.uploadedThumb} />
-                  <button style={S.removeBtn} onClick={removeImage}>✕</button>
-                </div>
+            <div style={S.refColumn}>
+              {taskMode === "style" ? (
+                <>
+                  <div style={S.uploadPairRow}>
+                    <div style={S.uploadPairCol}>
+                      <div style={S.uploadPairTopLabel}>INPUT</div>
+                      <button type="button" style={S.uploadPairBox} onClick={() => setShowInputImageModal(true)}>
+                        <div style={S.uploadPairBody}>
+                          {inputImageList[0] ? (
+                            <img src={inputImageList[0]} alt="Input" style={S.uploadPairMainThumb} />
+                          ) : (
+                            <div style={S.inputImagesEmpty}>+</div>
+                          )}
+                        </div>
+                      </button>
+                    </div>
+                    <div style={S.uploadPairCol}>
+                      <div style={S.uploadPairTopLabel}>REFERENCE ({styleImageList.length}/{MAX_STYLE_REFERENCE_IMAGES})</div>
+                      <button type="button" style={S.uploadPairBox} onClick={() => setShowStyleReferenceModal(true)}>
+                        <div style={S.inputImagesGrid}>
+                          {Array.from({ length: MAX_STYLE_REFERENCE_IMAGES }, (_, index) => {
+                            const image = styleImageList[index];
+                            return image ? (
+                              <div key={`style-image-slot-${index}`} style={S.inputImagesCell}>
+                                <img src={image} alt={`Reference ${index + 1}`} style={S.inputImagesThumb} />
+                              </div>
+                            ) : (
+                              <div key={`style-empty-slot-${index}`} style={S.inputImagesEmpty}>
+                                +
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+                </>
               ) : (
-                <div style={S.dropZone} onClick={() => fileRef.current?.click()}>
-                  <span style={{ fontSize: 28, opacity: 0.4 }}>+</span>
-                  <span style={{ fontSize: 12, color: "#888", marginTop: 4 }}>Upload</span>
-                </div>
+                <>
+                  <label style={S.label}>REFERENCE IMAGE</label>
+                  {uploadedPreview ? (
+                    <div style={S.uploadedBox}>
+                      <img src={uploadedPreview} alt="Ref" style={S.uploadedThumb} />
+                      <button style={S.removeBtn} onClick={removeImage}>✕</button>
+                    </div>
+                  ) : (
+                    <div style={S.dropZone} onClick={() => fileRef.current?.click()}>
+                      <span style={{ fontSize: 28, opacity: 0.4 }}>+</span>
+                      <span style={{ fontSize: 12, color: "#888", marginTop: 4 }}>Upload</span>
+                    </div>
+                  )}
+                  <input ref={fileRef} type="file" accept="image/*" onChange={handleFileChange} style={{ display: "none" }} />
+                </>
               )}
-              <input ref={fileRef} type="file" accept="image/*" onChange={handleFileChange} style={{ display: "none" }} />
             </div>
           </div>
         </section>
@@ -3039,7 +4182,7 @@ export default function App() {
             <div style={S.modelsPanel}>
               <div style={S.modelsHeadRow}>
                 <label style={{ ...S.label, marginBottom: 0 }}>
-                  SELECT MODELS <span style={{ color: "#888", fontWeight: 400 }}>({selectedModels.length}/6)</span>
+                  SELECT MODELS <span style={{ color: "#888", fontWeight: 400 }}>({selectedModels.length}/{taskMode === "style" ? 1 : 6})</span>
                 </label>
                 <button style={S.syncBtn} onClick={syncSelectedCounts} disabled={!selectedModels.length}>
                   Sync Last Edited Count
@@ -3052,7 +4195,7 @@ export default function App() {
                     model={m}
                     selected={selectedModels.includes(m.id)}
                     onToggle={toggleModel}
-                    disabled={selectedModels.length >= 6}
+                    disabled={taskMode === "style" ? selectedModels.length >= 1 : selectedModels.length >= 6}
                     count={modelCounts[m.id] || 1}
                     onCountChange={setModelCount}
                   />
@@ -3078,44 +4221,93 @@ export default function App() {
             </div>
             <aside style={S.templatePanel}>
               <div style={S.templatePanelHead}>
-                <label style={{ ...S.label, marginBottom: 0 }}>TEMPLATES</label>
+                <label style={{ ...S.label, marginBottom: 0 }}>{taskMode === "style" ? "STYLE TEMPLATES" : "TEMPLATES"}</label>
               </div>
-              <div style={S.templateList}>
-                {templates.map((item) => (
-                  <div
-                    key={item.id}
-                    style={{
-                      ...S.templateItem,
-                      ...(item.id === activeTemplateId ? S.templateItemActive : null),
-                      ...(!templatesEnabled ? S.templateItemDisabled : null),
-                    }}
-                    onClick={() => {
-                      if (!templatesEnabled) return;
-                      selectTemplateUsage(item.id);
-                    }}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onPointerDown={(event) => event.preventDefault()}
-                  >
-                    <span style={S.templateItemTitle}>{item.title}</span>
-                    <span style={S.templateActions}>
-                      <button
-                        type="button"
-                        style={S.templateEditBtn}
-                        disabled={!templatesEnabled}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          if (!templatesEnabled) return;
-                          openTemplateEditor(item.id);
+              {taskMode === "style" ? (
+                <>
+                  <div style={S.styleTemplateList}>
+                    {styleTemplates.map((item) => (
+                      <div
+                        key={item.id}
+                        style={{
+                          ...S.templateItem,
+                          ...(item.id === activeStyleTemplateId ? S.templateItemActive : null),
+                          ...(!templatesEnabled ? S.templateItemDisabled : null),
                         }}
-                        onMouseDown={(event) => event.preventDefault()}
-                        title="Edit template"
-                      >
-                        ✎
-                      </button>
-                    </span>
+                      onClick={() => {
+                        if (!templatesEnabled) return;
+                        selectStyleTemplateUsage(item.id);
+                      }}
+                    >
+                        <span style={S.templateItemTitle}>{item.title}</span>
+                        <span style={S.templateActions}>
+                          <button
+                            type="button"
+                            style={S.templateEditBtn}
+                            disabled={!templatesEnabled}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                            if (!templatesEnabled) return;
+                            openStyleTemplateEditor(item.id);
+                          }}
+                          title="Edit style template"
+                        >
+                            ✎
+                          </button>
+                        </span>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                  <div style={S.styleThemesPanel}>
+                    <label style={{ ...S.label, marginBottom: 6 }}>THEMES (12)</label>
+                    <div style={S.styleThemesGrid}>
+                      {styleThemes.map((theme, index) => (
+                        <input
+                          key={`theme-${index + 1}`}
+                          style={S.styleThemeInput}
+                          value={theme}
+                          onChange={(event) => updateStyleTheme(index, event.target.value)}
+                          placeholder={`Theme ${index + 1}`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div style={S.templateList}>
+                  {templates.map((item) => (
+                    <div
+                      key={item.id}
+                      style={{
+                        ...S.templateItem,
+                        ...(item.id === activeTemplateId ? S.templateItemActive : null),
+                        ...(!templatesEnabled ? S.templateItemDisabled : null),
+                      }}
+                      onClick={() => {
+                        if (!templatesEnabled) return;
+                        selectTemplateUsage(item.id);
+                      }}
+                    >
+                      <span style={S.templateItemTitle}>{item.title}</span>
+                      <span style={S.templateActions}>
+                        <button
+                          type="button"
+                          style={S.templateEditBtn}
+                          disabled={!templatesEnabled}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (!templatesEnabled) return;
+                            openTemplateEditor(item.id);
+                          }}
+                          title="Edit template"
+                        >
+                          ✎
+                        </button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </aside>
           </div>
         </section>
@@ -3123,7 +4315,7 @@ export default function App() {
         <div style={S.genRow}>
           <button style={{ ...S.genBtn, opacity: canGenerate ? 1 : 0.5 }}
             disabled={!canGenerate} onClick={handleGenerate}>
-            {isProcessing ? <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={S.btnSpin} /> Running {runningCount} · Queued {queueCount}</span> : taskMode === "compare" ? "⬡ Enqueue Compare Tasks" : "⬡ Enqueue Task"}
+            {isProcessing ? <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={S.btnSpin} /> Running {runningCount} · Queued {queueCount}</span> : taskMode === "compare" ? "⬡ Enqueue Compare Tasks" : taskMode === "style" ? "⬡ Enqueue Style Tasks" : "⬡ Enqueue Task"}
           </button>
           {hasAnySuccess && <button style={S.zipBtn} onClick={() => downloadAllAsZip(turns)}>↓ Download All Dialogs (.zip)</button>}
         </div>
@@ -3144,6 +4336,45 @@ export default function App() {
               : "Folder API unsupported in this browser"}
           </span>
         </div>
+        {taskMode === "style" && (
+          <div style={S.atlasRow}>
+            <span style={S.atlasCount}>Selected {selectedAtlasItems.length}/{MAX_STYLE_SELECTED_IMAGES}</span>
+            <button
+              type="button"
+              style={{ ...S.zipBtn, padding: "8px 14px", fontSize: 12, opacity: selectedAtlasItems.length ? 1 : 0.5, cursor: selectedAtlasItems.length ? "pointer" : "not-allowed" }}
+              onClick={clearAllSelections}
+              disabled={!selectedAtlasItems.length || atlasBusy}
+            >
+              Clear Selections
+            </button>
+            <button
+              type="button"
+              style={{ ...S.zipBtn, padding: "8px 14px", fontSize: 12, opacity: selectedAtlasItems.length ? 1 : 0.5, cursor: selectedAtlasItems.length ? "pointer" : "not-allowed" }}
+              onClick={generateAtlasThumbnail}
+              disabled={!selectedAtlasItems.length || atlasBusy}
+            >
+              {atlasBusy ? "Processing..." : "Generate Thumbnail"}
+            </button>
+            <button
+              type="button"
+              style={{ ...S.zipBtn, padding: "8px 14px", fontSize: 12, opacity: historyDirHandle && selectedAtlasItems.length ? 1 : 0.5, cursor: historyDirHandle && selectedAtlasItems.length ? "pointer" : "not-allowed" }}
+              onClick={exportAtlasSelection}
+              disabled={!historyDirHandle || !selectedAtlasItems.length || atlasBusy}
+            >
+              Export Atlas Folder
+            </button>
+            {atlasThumbnail && (
+              <button
+                type="button"
+                style={S.atlasThumbBtn}
+                onClick={() => setPreviewImage(atlasThumbnail)}
+                title="Preview atlas thumbnail"
+              >
+                <img src={atlasThumbnail} alt="Atlas Thumbnail" style={S.atlasThumbImg} />
+              </button>
+            )}
+          </div>
+        )}
         {!!historyFolderMsg && <div style={S.folderMsg}>{historyFolderMsg}</div>}
 
         {activeTurn && (
@@ -3159,7 +4390,9 @@ export default function App() {
               onReuse={reuseTurn}
               onHide={hideTurn}
               onSyncTemplate={syncTurnToTemplate}
-              canSyncTemplate={templatesEnabled && !!activeTemplateId}
+              canSyncTemplate={templatesEnabled && (getTurnMode(activeTurn) === "style" ? !!activeStyleTemplateId : !!activeTemplateId)}
+              selectedImageKeys={selectedImageKeys}
+              onToggleImageSelect={toggleImageSelection}
             />
           </section>
         )}
@@ -3180,7 +4413,9 @@ export default function App() {
                     onReuse={reuseTurn}
                     onHide={hideTurn}
                     onSyncTemplate={syncTurnToTemplate}
-                    canSyncTemplate={templatesEnabled && !!activeTemplateId}
+                    canSyncTemplate={templatesEnabled && (getTurnMode(turn) === "style" ? !!activeStyleTemplateId : !!activeTemplateId)}
+                    selectedImageKeys={selectedImageKeys}
+                    onToggleImageSelect={toggleImageSelection}
                   />
                 </div>
               ))}
@@ -3222,6 +4457,32 @@ export default function App() {
         onSave={saveTemplateDraft}
         canSave={!!templateDraft.title.trim() || !!templateDraft.body.trim() || !!templateDraft.backup.trim()}
       />
+      <StyleTemplateEditorModal
+        show={showStyleTemplateModal}
+        onClose={() => setShowStyleTemplateModal(false)}
+        draft={styleTemplateDraft}
+        setDraft={setStyleTemplateDraft}
+        onSave={saveStyleTemplateDraft}
+        canSave={!!styleTemplateDraft.title.trim() || !!styleTemplateDraft.body.trim()}
+      />
+      <InputImagesModal
+        show={showInputImageModal}
+        onClose={() => setShowInputImageModal(false)}
+        title="Input Image"
+        images={inputImageList}
+        maxCount={1}
+        onUploadFiles={appendInputImageFiles}
+        onRemoveAt={removeInputImageAt}
+      />
+      <InputImagesModal
+        show={showStyleReferenceModal}
+        onClose={() => setShowStyleReferenceModal(false)}
+        title="Reference Images"
+        images={styleImageList}
+        maxCount={MAX_STYLE_REFERENCE_IMAGES}
+        onUploadFiles={appendStyleReferenceFiles}
+        onRemoveAt={removeStyleReferenceAt}
+      />
       <ImagePreviewModal src={previewImage} onClose={() => setPreviewImage(null)} />
 
       <style>{`
@@ -3244,40 +4505,60 @@ export default function App() {
 // ─── Styles ───
 const mono = "'JetBrains Mono', monospace";
 const sans = "'DM Sans', sans-serif";
+const THEME_PRIMARY = "#3b82f6";
+const THEME_PRIMARY_TEXT = "#bfdbfe";
+const THEME_PRIMARY_SOFT = "rgba(59,130,246,0.16)";
+const THEME_PRIMARY_BORDER = "rgba(59,130,246,0.45)";
+const THEME_GOLD = "#facc15";
+const THEME_GOLD_TEXT = "#fef08a";
+const THEME_GOLD_SOFT = "rgba(250,204,21,0.14)";
+const THEME_GOLD_BORDER = "rgba(250,204,21,0.55)";
 const S = {
   root: { minHeight: "100vh", background: "#0a0a0b", color: "#e4e4e7", fontFamily: sans, position: "relative" },
   bgGrain: { position: "fixed", inset: 0, background: "radial-gradient(ellipse at 20% 0%, rgba(16,163,127,0.06) 0%, transparent 60%), radial-gradient(ellipse at 80% 100%, rgba(26,115,232,0.04) 0%, transparent 60%)", pointerEvents: "none", zIndex: 0 },
   header: { position: "relative", zIndex: 1, display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 28px", borderBottom: "1px solid rgba(255,255,255,0.06)" },
   logoArea: { display: "flex", alignItems: "center", gap: 14 },
-  logoCube: { width: 40, height: 40, borderRadius: 10, background: "linear-gradient(135deg, #10a37f, #1a73e8)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 700 },
+  logoCube: { width: 40, height: 40, borderRadius: 10, background: "linear-gradient(135deg, #1a73e8, #10a37f)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 700 },
   title: { margin: 0, fontSize: 18, fontFamily: mono, fontWeight: 700, letterSpacing: 3, color: "#fff" },
   subtitle: { margin: 0, fontSize: 11, color: "#888", letterSpacing: 1, textTransform: "uppercase" },
   headerActions: { display: "flex", alignItems: "center", gap: 12 },
   modeNav: { display: "flex", alignItems: "center", gap: 4, padding: 4, borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.04)" },
   modeTab: { padding: "8px 12px", borderRadius: 8, border: "none", background: "transparent", color: "#a1a1aa", fontFamily: mono, fontSize: 12, cursor: "pointer" },
-  modeTabActive: { background: "rgba(250,204,21,0.14)", color: "#facc15" },
+  modeTabActive: { background: THEME_GOLD_SOFT, color: THEME_GOLD },
   apiSwitchWrap: { position: "relative" },
   apiSwitchBtn: { height: 36, padding: "0 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#a1a1aa", fontFamily: mono, fontSize: 12, cursor: "pointer" },
-  apiSwitchBtnActive: { borderColor: "rgba(125,211,252,0.45)", color: "#7dd3fc", background: "rgba(125,211,252,0.08)" },
+  apiSwitchBtnActive: { borderColor: THEME_PRIMARY_BORDER, color: THEME_PRIMARY_TEXT, background: THEME_PRIMARY_SOFT },
   settingsBtn: { width: 36, height: 36, borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#aaa", fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
   main: { position: "relative", zIndex: 1, maxWidth: 1200, margin: "0 auto", padding: "24px 20px 60px" },
-  inputGrid: { display: "grid", gridTemplateColumns: "1fr 160px", gap: 16 },
+  inputGrid: { display: "grid", gridTemplateColumns: "minmax(0, 1fr) 136px", gap: 16 },
+  inputGridStyle: { display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px", gap: 16 },
+  refColumn: { display: "flex", flexDirection: "column" },
   label: { display: "block", fontSize: 11, fontFamily: mono, fontWeight: 600, letterSpacing: 1.5, color: "#999", marginBottom: 8, textTransform: "uppercase" },
   promptHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 8, flexWrap: "wrap" },
   promptHeadActions: { display: "flex", alignItems: "center", gap: 8 },
   inputHint: { fontSize: 12, color: "#71717a", fontFamily: mono },
-  placeholderBtn: { height: 20, minWidth: 26, borderRadius: 5, border: "1px solid rgba(96,165,250,0.72)", background: "rgba(59,130,246,0.18)", color: "#bfdbfe", fontFamily: mono, fontSize: 10, lineHeight: "18px", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 5px" },
-  gptAssistBtn: { width: 20, height: 20, borderRadius: 5, border: "1px solid rgba(96,165,250,0.72)", background: "rgba(59,130,246,0.18)", color: "#bfdbfe", fontFamily: mono, fontSize: 11, lineHeight: "18px", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },
+  placeholderBtn: { height: 20, minWidth: 26, borderRadius: 5, border: `1px solid ${THEME_PRIMARY_BORDER}`, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT, fontFamily: mono, fontSize: 10, lineHeight: "18px", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 5px" },
+  gptAssistBtn: { width: 20, height: 20, borderRadius: 5, border: `1px solid ${THEME_PRIMARY_BORDER}`, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT, fontFamily: mono, fontSize: 11, lineHeight: "18px", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },
   comparePromptGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 },
   textarea: { width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "14px 16px", color: "#e4e4e7", fontFamily: sans, fontSize: 14, resize: "vertical", outline: "none", lineHeight: 1.6 },
   tokenEditor: { width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "14px 16px", color: "#e4e4e7", fontFamily: sans, fontSize: 14, outline: "none", lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word" },
-  dropZone: { width: "100%", height: 120, borderRadius: 10, border: "1px dashed rgba(255,255,255,0.12)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer" },
-  uploadedBox: { position: "relative", width: "100%", height: 120, borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)" },
+  dropZone: { width: "100%", height: PROMPT_EDITOR_MIN_HEIGHT, borderRadius: 10, border: "1px dashed rgba(255,255,255,0.12)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer" },
+  uploadedBox: { position: "relative", width: "100%", height: PROMPT_EDITOR_MIN_HEIGHT, borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)" },
   uploadedThumb: { width: "100%", height: "100%", objectFit: "cover" },
   removeBtn: { position: "absolute", top: 6, right: 6, width: 22, height: 22, borderRadius: 11, background: "rgba(0,0,0,0.7)", border: "none", color: "#fff", fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  uploadPairRow: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, alignItems: "stretch" },
+  uploadPairCol: { display: "flex", flexDirection: "column", gap: 6, minWidth: 0 },
+  uploadPairTopLabel: { fontSize: 11, color: "#71717a", fontFamily: mono, letterSpacing: 0.5, textTransform: "uppercase" },
+  uploadPairBox: { width: "100%", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 10, background: "rgba(255,255,255,0.03)", padding: 6, cursor: "pointer", textAlign: "left" },
+  uploadPairBody: { borderRadius: 8, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.02)", minHeight: 106 },
+  uploadPairMainThumb: { width: "100%", height: 106, objectFit: "cover", display: "block" },
+  inputImagesGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 6, minHeight: 106 },
+  inputImagesCell: { borderRadius: 8, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.02)", minHeight: 50 },
+  inputImagesThumb: { width: "100%", height: 50, objectFit: "cover", display: "block" },
+  inputImagesEmpty: { minHeight: 50, borderRadius: 8, border: "1px dashed rgba(255,255,255,0.2)", color: "#71717a", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.02)", width: "100%" },
   modelsPanel: { border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10, background: "rgba(255,255,255,0.02)", display: "flex", flexDirection: "column", gap: 10, height: "100%" },
   modelsHeadRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  syncBtn: { padding: "6px 10px", borderRadius: 7, border: "1px solid rgba(250,204,21,0.55)", background: "rgba(250,204,21,0.12)", color: "#fef08a", fontFamily: mono, fontSize: 11, cursor: "pointer" },
+  syncBtn: { padding: "6px 10px", borderRadius: 7, border: `1px solid ${THEME_GOLD_BORDER}`, background: THEME_GOLD_SOFT, color: THEME_GOLD_TEXT, fontFamily: mono, fontSize: 11, cursor: "pointer" },
   modelTemplateGrid: { display: "grid", gridTemplateColumns: "minmax(0, 5fr) minmax(0, 3fr)", gap: 12, alignItems: "stretch" },
   modelGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
   imageSizePanel: { border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "8px 10px", background: "rgba(255,255,255,0.015)", marginTop: "auto" },
@@ -3285,15 +4566,20 @@ const S = {
   imageSizeGroupTitle: { fontSize: 11, color: "#8b8b93", fontFamily: mono },
   imageSizeBtnRow: { display: "flex", flexWrap: "wrap", gap: 6 },
   imageSizeBtn: { padding: "5px 8px", borderRadius: 7, border: "1px solid rgba(255,255,255,0.16)", background: "rgba(255,255,255,0.03)", color: "#c4c4cc", fontFamily: mono, fontSize: 11, cursor: "pointer" },
-  imageSizeBtnActive: { borderColor: "rgba(34,211,238,0.65)", background: "rgba(34,211,238,0.16)", color: "#67e8f9" },
+  imageSizeBtnActive: { borderColor: THEME_PRIMARY_BORDER, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT },
   imageSizeWarn: { margin: "2px 0 0", fontSize: 11, color: "#a1a1aa", fontFamily: mono, lineHeight: 1.5 },
   templatePanel: { border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10, background: "rgba(255,255,255,0.02)", height: "100%" },
   templatePanelHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 },
+  templateFieldHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
   templateStatus: { fontSize: 11, color: "#71717a", fontFamily: mono, marginBottom: 8 },
   templateList: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
+  styleTemplateList: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
+  styleThemesPanel: { marginTop: 10, border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, padding: 8, background: "rgba(255,255,255,0.02)" },
+  styleThemesGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
+  styleThemeInput: { width: "100%", height: 30, borderRadius: 7, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(0,0,0,0.25)", color: "#e2e8f0", fontFamily: mono, fontSize: 12, padding: "0 8px", outline: "none" },
   templateItem: { width: "100%", border: "1px solid rgba(63,63,70,0.9)", borderRadius: 8, padding: "8px 8px 8px 10px", background: "rgba(12,12,14,0.9)", minHeight: 38, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, textAlign: "left", color: "#71717a", cursor: "pointer", userSelect: "none", WebkitTapHighlightColor: "transparent", boxShadow: "none" },
   templateItemDisabled: { opacity: 0.55, cursor: "not-allowed" },
-  templateItemActive: { borderColor: "rgba(34,211,238,0.85)", boxShadow: "none", background: "rgba(34,211,238,0.16)", color: "#67e8f9" },
+  templateItemActive: { borderColor: THEME_PRIMARY_BORDER, boxShadow: "none", background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT },
   templateItemTitle: { fontSize: 11, color: "inherit", fontFamily: mono, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1 },
   templateActions: { display: "inline-flex", alignItems: "center", justifyContent: "center" },
   templateEditBtn: { width: 24, height: 24, borderRadius: 6, border: "1px solid rgba(82,82,91,0.9)", background: "rgba(24,24,27,0.9)", color: "#a1a1aa", fontSize: 12, fontFamily: mono, cursor: "pointer", padding: 0, lineHeight: "24px", textAlign: "center", outline: "none" },
@@ -3302,15 +4588,19 @@ const S = {
   modelChip: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 8px", borderRadius: 7, border: "1px solid", color: "#e4e4e7", fontSize: 12, fontFamily: sans, transition: "all 0.15s", width: "100%", minHeight: 34 },
   dot: { width: 6, height: 6, borderRadius: 3, flexShrink: 0 },
   chipName: { fontWeight: 500, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 90 },
-  check: { marginLeft: "auto", color: "#10a37f", fontWeight: 700, fontSize: 14 },
+  check: { marginLeft: "auto", color: THEME_PRIMARY, fontWeight: 700, fontSize: 14 },
   countRow: { display: "flex", alignItems: "center", gap: 4 },
   countLabel: { fontSize: 11, color: "#999", fontFamily: mono, width: 10, textAlign: "center" },
   countSelect: { width: 58, height: 34, padding: "4px 6px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.14)", background: "rgba(255,255,255,0.04)", color: "#e4e4e7", fontFamily: mono, fontSize: 12, outline: "none" },
   genRow: { display: "flex", gap: 12, marginBottom: 32, alignItems: "center" },
   folderRow: { display: "flex", gap: 10, marginBottom: 10, alignItems: "center", flexWrap: "wrap" },
+  atlasRow: { display: "flex", gap: 8, marginBottom: 10, alignItems: "center", flexWrap: "wrap" },
+  atlasCount: { fontSize: 12, color: THEME_PRIMARY_TEXT, fontFamily: mono, minWidth: 120 },
+  atlasThumbBtn: { width: 54, height: 54, borderRadius: 8, border: `1px solid ${THEME_PRIMARY_BORDER}`, background: "rgba(8,47,73,0.65)", overflow: "hidden", padding: 0, cursor: "zoom-in", display: "inline-flex", alignItems: "center", justifyContent: "center" },
+  atlasThumbImg: { width: "100%", height: "100%", objectFit: "cover", display: "block" },
   folderHint: { fontSize: 12, color: "#a1a1aa", fontFamily: mono },
-  folderMsg: { fontSize: 12, color: "#7dd3fc", marginBottom: 18, fontFamily: mono },
-  genBtn: { padding: "12px 32px", borderRadius: 10, border: "none", background: "linear-gradient(135deg, #10a37f, #1a73e8)", color: "#fff", fontFamily: mono, fontSize: 14, fontWeight: 600, cursor: "pointer" },
+  folderMsg: { fontSize: 12, color: THEME_PRIMARY_TEXT, marginBottom: 18, fontFamily: mono },
+  genBtn: { padding: "12px 32px", borderRadius: 10, border: "none", background: "linear-gradient(135deg, #1a73e8, #10a37f)", color: "#fff", fontFamily: mono, fontSize: 14, fontWeight: 600, cursor: "pointer" },
   zipBtn: { padding: "12px 24px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.04)", color: "#e4e4e7", fontFamily: mono, fontSize: 13, cursor: "pointer" },
   btnSpin: { display: "inline-block", width: 14, height: 14, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.6s linear infinite" },
   resultCol: { background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, padding: 16, minHeight: 200 },
@@ -3318,11 +4608,20 @@ const S = {
   resultName: { fontFamily: mono, fontSize: 13, fontWeight: 600, flex: 1 },
   statusBadge: { fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 6, textTransform: "capitalize" },
   loadingArea: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 0" },
-  spinner: { width: 32, height: 32, border: "3px solid rgba(16,163,127,0.2)", borderTopColor: "#10a37f", borderRadius: "50%", animation: "spin 0.8s linear infinite" },
+  spinner: { width: 32, height: 32, border: "3px solid rgba(59,130,246,0.2)", borderTopColor: THEME_PRIMARY, borderRadius: "50%", animation: "spin 0.8s linear infinite" },
   errArea: { padding: "20px 12px" },
   imgGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 10 },
-  imgCard: { borderRadius: 8, overflow: "hidden", background: "#111", border: "1px solid rgba(255,255,255,0.06)" },
+  imgGridCompact: { display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 6 },
+  imgCard: { position: "relative", borderRadius: 8, overflow: "hidden", background: "#111", border: "1px solid rgba(255,255,255,0.06)" },
+  imgCardCompact: { borderRadius: 6 },
+  imgCardSelected: { borderColor: "rgba(59,130,246,0.9)", boxShadow: "0 0 0 1px rgba(59,130,246,0.35) inset" },
+  imageSelectBtn: { position: "absolute", top: 8, right: 8, zIndex: 3, width: 24, height: 24, borderRadius: 12, border: "1px solid rgba(226,232,240,0.7)", background: "rgba(15,23,42,0.72)", color: "#e2e8f0", fontFamily: mono, fontSize: 12, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 },
+  imageSelectBtnCompact: { top: 4, right: 4, width: 16, height: 16, borderRadius: 8, fontSize: 10 },
+  imageSelectBtnActive: { borderColor: "rgba(59,130,246,0.9)", background: "rgba(37,99,235,0.92)", color: "#dbeafe" },
+  imageThemeTag: { position: "absolute", left: 8, top: 8, zIndex: 2, maxWidth: "70%", padding: "2px 7px", borderRadius: 999, fontSize: 10, fontFamily: mono, color: THEME_PRIMARY_TEXT, background: "rgba(6,78,59,0.82)", border: `1px solid ${THEME_PRIMARY_BORDER}`, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  imageThemeTagCompact: { left: 4, top: 4, maxWidth: "75%", padding: "1px 5px", fontSize: 9, borderRadius: 999 },
   thumb: { width: "100%", aspectRatio: "4 / 3", objectFit: "contain", cursor: "pointer", display: "block", background: "#0b0b0d" },
+  thumbCompact: { width: "100%", aspectRatio: "1 / 1", objectFit: "cover", cursor: "pointer", display: "block", background: "#0b0b0d" },
   dlBtn: { width: "100%", padding: "8px 0", border: "none", borderTop: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.04)", color: "#aaa", fontSize: 12, fontFamily: mono, cursor: "pointer" },
   modalOverlay: { position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.8)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", animation: "fadeIn 0.15s ease" },
   settingsModal: { width: "90%", maxWidth: 560, background: "#161618", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 16, padding: 28, maxHeight: "80vh", overflow: "auto" },
@@ -3334,19 +4633,27 @@ const S = {
   codeBlock: { marginTop: 12, padding: 16, background: "#0d0d0f", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, fontSize: 11, fontFamily: mono, color: "#a0a0b0", overflow: "auto", maxHeight: 300, lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word" },
   apiModalActions: { marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 },
   apiModalState: { fontSize: 12, color: "#a1a1aa", fontFamily: mono },
-  apiSaveBtn: { padding: "8px 14px", borderRadius: 8, border: "1px solid rgba(16,163,127,0.5)", background: "rgba(16,163,127,0.15)", color: "#6ee7b7", fontFamily: mono, fontSize: 12, cursor: "pointer" },
+  apiSaveBtn: { padding: "8px 14px", borderRadius: 8, border: `1px solid ${THEME_PRIMARY_BORDER}`, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT, fontFamily: mono, fontSize: 12, cursor: "pointer" },
+  modalInputImagesGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, marginBottom: 14 },
+  modalInputImageCell: { position: "relative", borderRadius: 10, overflow: "hidden", border: `1px solid ${THEME_PRIMARY_BORDER}`, background: THEME_PRIMARY_SOFT },
+  modalInputImageThumb: { width: "100%", height: 140, objectFit: "cover", display: "block" },
+  modalInputImageRemoveBtn: { position: "absolute", top: 8, right: 8, width: 22, height: 22, borderRadius: 11, border: "none", background: "rgba(15,23,42,0.8)", color: "#e2e8f0", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" },
+  modalInputImageEmpty: { height: 140, borderRadius: 10, border: `1px dashed ${THEME_PRIMARY_BORDER}`, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT, fontFamily: mono, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center" },
+  modalInputImagesActions: { marginTop: 10, display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" },
   turnActionBtn: { height: 28, padding: "0 10px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.04)", color: "#d4d4d8", fontSize: 11, fontFamily: mono, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1 },
   turnPromptRow: { marginBottom: 10, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" },
-  turnModeBadge: { display: "inline-flex", alignItems: "center", marginLeft: 8, padding: "2px 8px", borderRadius: 999, background: "rgba(59,130,246,0.12)", color: "#93c5fd", fontSize: 11, fontFamily: mono },
+  turnModeBadge: { display: "inline-flex", alignItems: "center", marginLeft: 8, padding: "2px 8px", borderRadius: 999, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT, fontSize: 11, fontFamily: mono },
   turnPromptCards: { flex: "1 1 320px", minWidth: 220, display: "grid", gap: 10 },
   turnPromptCard: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.03)", padding: "12px 14px" },
-  turnPromptBadge: { display: "inline-flex", alignItems: "center", padding: "2px 8px", borderRadius: 999, background: "rgba(250,204,21,0.12)", color: "#facc15", fontSize: 10, fontFamily: mono, marginBottom: 8 },
+  turnPromptBadge: { display: "inline-flex", alignItems: "center", padding: "2px 8px", borderRadius: 999, background: THEME_GOLD_SOFT, color: THEME_GOLD, fontSize: 10, fontFamily: mono, marginBottom: 8 },
   turnPromptText: { fontSize: 13, color: "#e4e4e7", whiteSpace: "pre-wrap", lineHeight: 1.5 },
-  promptChipReadonly: { background: "rgba(59,130,246,0.24)", color: "#bfdbfe", border: "1px solid rgba(96,165,250,0.65)", borderRadius: 6, padding: "1px 6px", display: "inline-block", margin: "0 1px" },
+  promptChipReadonly: { background: "rgba(59,130,246,0.18)", color: THEME_PRIMARY_TEXT, border: "1px solid rgba(59,130,246,0.62)", borderRadius: 6, padding: "1px 6px", display: "inline-block", margin: "0 1px" },
   turnCompareResultsGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 },
+  turnStyleResultsGrid: { display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 10 },
   turnResultGroup: { marginTop: 16 },
   turnResultGroupHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10, flexWrap: "wrap" },
   turnResultMeta: { fontSize: 11, color: "#71717a", fontFamily: mono },
+  turnRefImageStack: { display: "flex", gap: 8, alignItems: "center", flexWrap: "nowrap", overflowX: "auto", paddingBottom: 2, maxWidth: "100%" },
   turnRefImageBtn: { width: 96, height: 96, borderRadius: 8, padding: 0, border: "1px solid rgba(255,255,255,0.1)", overflow: "hidden", background: "transparent", cursor: "zoom-in", flexShrink: 0 },
   turnRefImage: { width: "100%", height: "100%", objectFit: "cover", display: "block" },
 };
