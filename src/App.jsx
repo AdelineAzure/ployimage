@@ -12,6 +12,7 @@ const IMAGE_MODELS = [
   { id: "gpt-image-1.5", name: "GPT‑1.5 Image", shortName: "GPT-1.5", provider: "OpenAI", apiType: "images", badge: "HOT" },
   // NanoBanana 系列：本质调用 Gemini 图像模型
   { id: "gemini-2.5-flash-image", name: "NanoBanana", shortName: "Nano", provider: "Google", apiType: "gemini", badge: "HOT" },
+  { id: "gemini-3.1-flash-image-preview", name: "NanoBanana 2", shortName: "Nano 2", provider: "Google", apiType: "gemini", badge: "NEW" },
   { id: "gemini-3-pro-image", name: "NanoBanana Pro", shortName: "Nano Pro", provider: "Google", apiType: "gemini", badge: "PRO" },
 ];
 
