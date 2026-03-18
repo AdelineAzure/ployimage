@@ -50,12 +50,15 @@ const DEFAULT_API_BASE_URL = "https://api.deerapi.com";
 const DEFAULT_API_KEY = "";
 const DEFAULT_GPT_ASSIST_MODEL = "gpt-4o-mini";
 const DEFAULT_GPT_ASSIST_PROMPT = "你是一个提示词优化助手。你只改写 {{ }} 里的内容，保持用户原有写作风格、长度和随机感，不要改动大括号外的任何字符。";
+const DEFAULT_STYLE_THEME_ASSIST_PROMPT =
+  "你是主题联想助手。用户会给你一个主题词，请输出12个可用于视觉创作的相关元素，要求具体、可见、彼此有区分。只输出JSON：{\"themes\":[\"...\", \"...\"]}，数组长度必须为12。";
 const PROMPT_EDITOR_MIN_HEIGHT = 104;
 const MAX_TEMPLATES = 8;
 const MAX_STYLE_TEMPLATES = 2;
 const STYLE_THEME_SLOTS = 12;
 const MAX_STYLE_REFERENCE_IMAGES = 4;
 const MAX_STYLE_SELECTED_IMAGES = 15;
+const MAX_INPUT_IMAGES_PER_BATCH = 10;
 const TEMPLATE_FILE_NAME = "templates.json";
 const STYLE_TEMPLATE_FILE_NAME = "style-templates.json";
 const GPT_ASSIST_FILE_NAME = "gpt-assist.json";
@@ -118,29 +121,44 @@ export default {
     }
     const body = await request.text();
 
-    const requestApiKey = (request.headers.get("X-Api-Key") || "").trim();
-    const fallbackApiKey = (env.DEERAPI_KEY || "").trim();
+    const requestApiKey = normalizeApiKey(request.headers.get("X-Api-Key") || "");
+    const fallbackApiKey = normalizeApiKey(env.DEERAPI_KEY || "");
     const apiKey = requestApiKey || fallbackApiKey;
     if (!apiKey) {
       return new Response(JSON.stringify({ error: "API key missing. Provide X-Api-Key or configure DEERAPI_KEY." }), { status: 400 });
     }
 
-    // Determine auth format: Gemini endpoints use plain key, others use Bearer
     const isGemini = targetPath.includes("/v1beta/");
-    const authHeader = isGemini
-      ? apiKey
-      : \`Bearer \${apiKey}\`;
+    const primaryAuth = isGemini ? apiKey : \`Bearer \${apiKey}\`;
+    const fallbackAuth = isGemini ? \`Bearer \${apiKey}\` : apiKey;
+    const baseHeaders = {
+      "Content-Type": "application/json",
+      "X-Api-Key": apiKey,
+      "X-Goog-Api-Key": apiKey,
+    };
 
-    const resp = await fetch(\`\${upstreamBase}\${targetPath}\`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": authHeader,
-      },
-      body,
-    });
+    const forward = (authorization) =>
+      fetch(\`\${upstreamBase}\${targetPath}\`, {
+        method: "POST",
+        headers: {
+          ...baseHeaders,
+          "Authorization": authorization,
+        },
+        body,
+      });
 
-    const data = await resp.text();
+    let resp = await forward(primaryAuth);
+    let data = await resp.text();
+    const authError = /auth|authorization|api.?key|bearer|x-goog-api-key|invalid key|token|密钥/i.test(data);
+    if ([400, 401, 403].includes(resp.status) && authError && fallbackAuth !== primaryAuth) {
+      const retry = await forward(fallbackAuth);
+      const retryData = await retry.text();
+      if (retry.ok || !resp.ok) {
+        resp = retry;
+        data = retryData;
+      }
+    }
+
     return new Response(data, {
       status: resp.status,
       headers: {
@@ -153,6 +171,17 @@ export default {
 };
 
 const DEFAULT_UPSTREAM_BASE = "https://api.deerapi.com";
+
+function normalizeApiKey(value) {
+  if (typeof value !== "string") return "";
+  let next = value.trim();
+  if (!next) return "";
+  next = next.replace(/^authorization\\s*:\\s*/i, "").trim();
+  next = next.replace(/^x-goog-api-key\\s*:\\s*/i, "").trim();
+  next = next.replace(/^bearer\\s+/i, "").trim();
+  next = next.replace(/^[\"']+|[\"']+$/g, "").trim();
+  return next;
+}
 
 function resolveUpstreamBase(value) {
   if (!value) return DEFAULT_UPSTREAM_BASE;
@@ -244,7 +273,7 @@ function stripBase64Prefix(dataUrl) {
 }
 
 function getMimeFromDataUrl(dataUrl) {
-  const m = dataUrl?.match(/^data:(image\/[a-z+]+);base64,/);
+  const m = dataUrl?.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,/);
   return m ? m[1] : "image/png";
 }
 
@@ -293,7 +322,13 @@ function resolveApiBaseUrl(value) {
 
 function normalizeApiKey(value) {
   if (typeof value !== "string") return "";
-  return value.trim();
+  let next = value.trim();
+  if (!next) return "";
+  next = next.replace(/^authorization\s*:\s*/i, "").trim();
+  next = next.replace(/^x-goog-api-key\s*:\s*/i, "").trim();
+  next = next.replace(/^bearer\s+/i, "").trim();
+  next = next.replace(/^["']+|["']+$/g, "").trim();
+  return next;
 }
 
 function normalizeAspectRatio(value) {
@@ -334,6 +369,12 @@ function normalizeGptAssistPrompt(value) {
   if (typeof value !== "string") return DEFAULT_GPT_ASSIST_PROMPT;
   const next = value.trim();
   return next || DEFAULT_GPT_ASSIST_PROMPT;
+}
+
+function normalizeStyleThemeAssistPrompt(value) {
+  if (typeof value !== "string") return DEFAULT_STYLE_THEME_ASSIST_PROMPT;
+  const next = value.trim();
+  return next || DEFAULT_STYLE_THEME_ASSIST_PROMPT;
 }
 
 function extractPlaceholderTokens(input = "") {
@@ -423,6 +464,34 @@ function parseJsonFromText(rawText = "") {
   return null;
 }
 
+function parseThemeSuggestions(rawText = "") {
+  const parsed = parseJsonFromText(rawText);
+  const listFromJson = Array.isArray(parsed?.themes)
+    ? parsed.themes
+    : Array.isArray(parsed?.items)
+    ? parsed.items
+    : Array.isArray(parsed)
+    ? parsed
+    : [];
+
+  const fallback = String(rawText || "")
+    .split(/[\n,，、;；]/g)
+    .map((item) => item.replace(/^[\-\d\.\)\s]+/, "").trim())
+    .filter(Boolean);
+
+  const merged = [...listFromJson, ...fallback]
+    .map((item) => (typeof item === "string" ? item.trim() : String(item ?? "").trim()))
+    .filter(Boolean);
+
+  const deduped = [];
+  merged.forEach((item) => {
+    if (!item || deduped.includes(item)) return;
+    deduped.push(item);
+  });
+
+  return deduped.slice(0, STYLE_THEME_SLOTS);
+}
+
 function normalizeImageInputs(imageBase64, imageInputs = []) {
   const collected = [];
   if (typeof imageBase64 === "string" && imageBase64.trim()) collected.push(imageBase64.trim());
@@ -508,9 +577,6 @@ async function createAtlasThumbnailDataUrl(imageSources = [], options = {}) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
 
-  ctx.fillStyle = "#0b1220";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
   for (let index = 0; index < sources.length; index += 1) {
     const src = sources[index];
     try {
@@ -519,17 +585,17 @@ async function createAtlasThumbnailDataUrl(imageSources = [], options = {}) {
       const col = Math.floor(index / rows);
       const x = col * cellWidth;
       const y = row * cellHeight;
-      const scale = Math.min(cellWidth / image.width, cellHeight / image.height);
+      const scale = Math.max(cellWidth / image.width, cellHeight / image.height);
       const drawWidth = Math.max(1, Math.floor(image.width * scale));
       const drawHeight = Math.max(1, Math.floor(image.height * scale));
       const dx = x + Math.floor((cellWidth - drawWidth) / 2);
       const dy = y + Math.floor((cellHeight - drawHeight) / 2);
-      ctx.fillStyle = "#05070f";
-      ctx.fillRect(x, y, cellWidth, cellHeight);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x, y, cellWidth, cellHeight);
+      ctx.clip();
       ctx.drawImage(image, dx, dy, drawWidth, drawHeight);
-      ctx.strokeStyle = "rgba(125, 211, 252, 0.35)";
-      ctx.lineWidth = 1;
-      ctx.strokeRect(x + 0.5, y + 0.5, cellWidth - 1, cellHeight - 1);
+      ctx.restore();
     } catch {}
   }
 
@@ -741,6 +807,10 @@ function getResultPromptKey(result) {
   return typeof result?.promptKey === "string" && result.promptKey ? result.promptKey : "single";
 }
 
+function buildTurnImageKey(turnId, modelId, promptKey = "single", index = 1) {
+  return `${turnId}:${modelId}:${promptKey || "single"}:${Math.max(1, Number(index) || 1)}`;
+}
+
 function toPersistableTurns(turns) {
   return turns.slice(0, 30);
 }
@@ -756,12 +826,24 @@ function toLightweightTurns(turns) {
 }
 
 function safeName(input) {
-  return String(input || "unknown").replace(/[^a-zA-Z0-9._-]/g, "_");
+  const raw = String(input ?? "").trim();
+  if (!raw) return "unknown";
+  const cleaned = raw
+    .normalize("NFKC")
+    .replace(/[^\p{L}\p{N}._-]+/gu, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_+/g, "_");
+  return cleaned || "unknown";
 }
 
 function buildResultFileStem(result) {
-  const promptKey = getResultPromptKey(result);
-  const promptPrefix = promptKey !== "single" ? `${safeName(result?.promptLabel || promptKey)}_` : "";
+  const rawPromptKey = getResultPromptKey(result);
+  const promptKey = safeName(rawPromptKey);
+  const promptLabel = safeName(result?.promptLabel || "");
+  const promptPrefix =
+    rawPromptKey !== "single"
+      ? `${promptKey}${promptLabel !== "unknown" ? `_${promptLabel}` : ""}_`
+      : "";
   return `${promptPrefix}${safeName(result?.modelName || result?.modelId || "model")}`;
 }
 
@@ -1219,21 +1301,34 @@ async function loadGptAssistFromLocalFolder(rootHandle) {
     const fileHandle = await rootHandle.getFileHandle(GPT_ASSIST_FILE_NAME);
     const file = await fileHandle.getFile();
     const raw = JSON.parse(await file.text());
-    return normalizeGptAssistPrompt(raw?.prompt);
+    return {
+      prompt: normalizeGptAssistPrompt(raw?.prompt),
+      styleThemePrompt: normalizeStyleThemeAssistPrompt(raw?.styleThemePrompt),
+    };
   } catch (err) {
-    if (String(err?.name || "") === "NotFoundError") return DEFAULT_GPT_ASSIST_PROMPT;
-    return DEFAULT_GPT_ASSIST_PROMPT;
+    if (String(err?.name || "") === "NotFoundError") {
+      return {
+        prompt: DEFAULT_GPT_ASSIST_PROMPT,
+        styleThemePrompt: DEFAULT_STYLE_THEME_ASSIST_PROMPT,
+      };
+    }
+    return {
+      prompt: DEFAULT_GPT_ASSIST_PROMPT,
+      styleThemePrompt: DEFAULT_STYLE_THEME_ASSIST_PROMPT,
+    };
   }
 }
 
-async function saveGptAssistToLocalFolder(rootHandle, prompt) {
+async function saveGptAssistToLocalFolder(rootHandle, prompt, styleThemePrompt) {
   const normalizedPrompt = normalizeGptAssistPrompt(prompt);
+  const normalizedStyleThemePrompt = normalizeStyleThemeAssistPrompt(styleThemePrompt);
   await writeTextFile(
     rootHandle,
     GPT_ASSIST_FILE_NAME,
     JSON.stringify(
       {
         prompt: normalizedPrompt,
+        styleThemePrompt: normalizedStyleThemePrompt,
       },
       null,
       2
@@ -1404,6 +1499,47 @@ async function callTextAssistAPI(proxyUrl, sourcePrompt, imageBase64, assistProm
   return applyPlaceholderReplacements(sourcePrompt, replacements);
 }
 
+async function callThemeAssistAPI(proxyUrl, seedText, assistPrompt, options = {}) {
+  const { signal } = options;
+  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl);
+  const apiKey = normalizeApiKey(options.apiKey);
+  const normalizedSeed = typeof seedText === "string" ? seedText.trim() : "";
+  if (!normalizedSeed) return [];
+
+  const body = {
+    model: DEFAULT_GPT_ASSIST_MODEL,
+    stream: false,
+    temperature: 1.1,
+    messages: [
+      { role: "system", content: normalizeStyleThemeAssistPrompt(assistPrompt) },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: [
+              `主题词：${normalizedSeed}`,
+              `请输出 ${STYLE_THEME_SLOTS} 个与主题相关、可用于生图的视觉元素。`,
+              "请严格输出 JSON。",
+            ].join("\n"),
+          },
+        ],
+      },
+    ],
+  };
+
+  const data = await postJsonWithRetry(proxyUrl, "/v1/chat/completions", body, {
+    signal,
+    maxAttempts: 3,
+    baseDelayMs: 900,
+    apiBaseUrl,
+    apiKey,
+  });
+
+  const rawText = assistantMessageToText(data?.choices?.[0]?.message?.content);
+  return parseThemeSuggestions(rawText);
+}
+
 // 1. OpenAI Chat Completions format (gpt-4o-image, gpt-5-image)
 async function callChatAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
   const { signal } = options;
@@ -1440,7 +1576,7 @@ async function callChatAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
     const re = /data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]+/g;
     const matches = c.match(re);
     if (matches) images.push(...matches);
-    const urlRe = /https?:\/\/[^\s"')]+\.(?:png|jpg|jpeg|webp)/gi;
+    const urlRe = /https?:\/\/[^\s"')]+/gi;
     const urlMatches = c.match(urlRe);
     if (urlMatches) images.push(...urlMatches);
   } else if (Array.isArray(c)) {
@@ -1545,10 +1681,21 @@ async function callGeminiAPI(proxyUrl, model, prompt, imageBase64, options = {})
   const apiKey = normalizeApiKey(options.apiKey);
   const aspectRatio = normalizeAspectRatio(options.aspectRatio);
   const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
+  const resolvedImageInputs = await Promise.all(
+    imageInputs.map(async (image) => {
+      const normalized = normalizeImageValue(image, apiBaseUrl);
+      if (!normalized) return null;
+      if (normalized.startsWith("data:image/")) return normalized;
+      if (!/^https?:\/\//i.test(normalized)) return null;
+      const proxied = await proxyFetchImageAsDataUrl(proxyUrl, normalized);
+      const resolved = normalizeImageValue(proxied, apiBaseUrl);
+      return resolved?.startsWith("data:image/") ? resolved : null;
+    })
+  );
   const parts = [];
   if (prompt) parts.push({ text: prompt });
-  if (!prompt && !imageInputs.length) parts.push({ text: "Generate a creative image" });
-  imageInputs.forEach((image) => {
+  if (!prompt && !resolvedImageInputs.filter(Boolean).length) parts.push({ text: "Generate a creative image" });
+  resolvedImageInputs.filter(Boolean).forEach((image) => {
     const mimeType = getMimeFromDataUrl(image);
     const data = stripBase64Prefix(image);
     parts.push({
@@ -1891,6 +2038,13 @@ function PromptTextWithChips({ text }) {
   );
 }
 
+function getPromptPreviewText(text, maxChars = 220) {
+  const source = typeof text === "string" ? text : "";
+  if (!source) return "";
+  if (source.length <= maxChars) return source;
+  return `${source.slice(0, maxChars).trimEnd()}…`;
+}
+
 function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placeholder, rows = 4, editorRef }) {
   const rootRef = useRef(null);
   const selfUpdateRef = useRef(false);
@@ -2174,6 +2328,8 @@ function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placeholder, ro
     syncValueFromDom();
   }, [syncValueFromDom]);
 
+  const fixedHeight = Math.max(PROMPT_EDITOR_MIN_HEIGHT, rows * 24);
+
   return (
     <div
       ref={rootRef}
@@ -2190,7 +2346,7 @@ function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placeholder, ro
       }}
       onFocus={onFocus}
       data-placeholder={placeholder}
-      style={{ ...S.tokenEditor, minHeight: Math.max(PROMPT_EDITOR_MIN_HEIGHT, rows * 24) }}
+      style={{ ...S.tokenEditor, height: fixedHeight, maxHeight: fixedHeight, overflowY: "auto" }}
     />
   );
 }
@@ -2250,9 +2406,23 @@ function ApiKeyModal({ show, onClose, apiKey, draftApiKey, setDraftApiKey, onSav
   );
 }
 
-function GptAssistModal({ show, onClose, prompt, draftPrompt, setDraftPrompt, onSave, saveStateText, canSave }) {
+function GptAssistModal({
+  show,
+  onClose,
+  prompt,
+  draftPrompt,
+  setDraftPrompt,
+  styleThemePrompt,
+  draftStyleThemePrompt,
+  setDraftStyleThemePrompt,
+  onSave,
+  saveStateText,
+  canSave,
+}) {
   if (!show) return null;
-  const isDirty = normalizeGptAssistPrompt(draftPrompt) !== normalizeGptAssistPrompt(prompt);
+  const isDirty =
+    normalizeGptAssistPrompt(draftPrompt) !== normalizeGptAssistPrompt(prompt) ||
+    normalizeStyleThemeAssistPrompt(draftStyleThemePrompt) !== normalizeStyleThemeAssistPrompt(styleThemePrompt);
   return (
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.settingsModal} onClick={(e) => e.stopPropagation()}>
@@ -2268,6 +2438,14 @@ function GptAssistModal({ show, onClose, prompt, draftPrompt, setDraftPrompt, on
           placeholder="告诉 GPT 如何改写 {{ }} 内文字..."
           rows={6}
         />
+        <label style={{ ...S.fieldLabel, marginTop: 14 }}>Style Theme Association Instruction</label>
+        <textarea
+          style={S.textarea}
+          value={draftStyleThemePrompt}
+          onChange={(event) => setDraftStyleThemePrompt(event.target.value)}
+          placeholder="告诉 GPT 如何联想 12 个主题元素..."
+          rows={5}
+        />
         <div style={S.apiModalActions}>
           <span style={S.apiModalState}>{saveStateText}</span>
           <button
@@ -2278,7 +2456,7 @@ function GptAssistModal({ show, onClose, prompt, draftPrompt, setDraftPrompt, on
             Save
           </button>
         </div>
-        <p style={S.hint}>该提示词会存到历史文件夹（与模板相同），不会保存输入图。</p>
+        <p style={S.hint}>两套提示词都会存到历史文件夹（与模板相同），不会保存输入图。</p>
       </div>
     </div>
   );
@@ -2448,7 +2626,7 @@ function InputImagesModal({ show, onClose, title, images, maxCount, onUploadFile
   );
 }
 
-function ModelChip({ model, selected, onToggle, disabled, count, onCountChange }) {
+function ModelChip({ model, selected, onToggle, disabled, count, onCountChange, styleMode = false }) {
   const displayName = model.shortName || model.name;
   return (
     <div style={{ ...S.modelChipWrap, opacity: disabled && !selected ? 0.35 : 1 }}>
@@ -2463,7 +2641,7 @@ function ModelChip({ model, selected, onToggle, disabled, count, onCountChange }
             cursor: disabled && !selected ? "not-allowed" : "pointer",
           }}
         >
-          <span style={S.chipName} title={model.name}>{displayName}</span>
+          <span style={styleMode ? S.chipNameStyleMode : S.chipName} title={model.name}>{displayName}</span>
           {selected && <span style={S.check}>✓</span>}
         </button>
         <label style={S.countRow}>
@@ -2506,6 +2684,11 @@ function ResultColumn({
   turnSeq,
   selectedImageKeys,
   onToggleImageSelect,
+  onRetryImage,
+  retryingImageKeys,
+  enableSelect = false,
+  showImageLabel = false,
+  selectPosition = "top-right",
   compactImages = false,
   showPromptBadge = true,
 }) {
@@ -2549,32 +2732,50 @@ function ResultColumn({
       {result.status === "error" && <div style={S.errArea}><p style={{ color: "#ef4444", fontSize: 13, wordBreak: "break-word" }}>{result.error}</p></div>}
       {result.status === "cancelled" && <div style={S.errArea}><p style={{ color: "#9ca3af", fontSize: 13 }}>Cancelled by user</p></div>}
       {(result.status === "success" || result.status === "loading") && visibleImages.length > 0 && (
-        <div style={compactImages ? S.imgGridCompact : S.imgGrid}>{visibleImages.map((img, i) => (
-          <ImageCard
-            key={i}
-            img={img}
-            fileStem={buildResultFileStem(result)}
-            index={i + 1}
-            onPreview={onPreview}
-            label={result.promptLabel || ""}
-            compact={compactImages}
-            selected={selectedImageKeys?.has?.(`${turnId}:${result.modelId}:${getResultPromptKey(result)}:${i + 1}`)}
-            onToggleSelect={() =>
-              onToggleImageSelect?.({
-                key: `${turnId}:${result.modelId}:${getResultPromptKey(result)}:${i + 1}`,
-                image: img,
-                turnId,
-                turnSeq,
-                modelId: result.modelId,
-                modelName: result.modelName || model?.name || result.modelId,
-                promptKey: getResultPromptKey(result),
-                theme: result.promptLabel || "",
-                fileStem: buildResultFileStem(result),
-                index: i + 1,
-              })
-            }
-          />
-        ))}
+        <div style={compactImages ? S.imgGridCompact : S.imgGrid}>
+          {visibleImages.map((img, i) => {
+            const imageIndex = i + 1;
+            const promptKey = getResultPromptKey(result);
+            const imageKey = buildTurnImageKey(turnId, result.modelId, promptKey, imageIndex);
+            return (
+              <ImageCard
+                key={imageKey}
+                img={img}
+                fileStem={buildResultFileStem(result)}
+                index={imageIndex}
+                onPreview={onPreview}
+                label={showImageLabel ? (result.promptLabel || "") : ""}
+                compact={compactImages}
+                showSelect={enableSelect}
+                selectPosition={selectPosition}
+                selected={enableSelect ? selectedImageKeys?.has?.(imageKey) : false}
+                retrying={retryingImageKeys?.has?.(imageKey)}
+                onRetry={() =>
+                  onRetryImage?.({
+                    key: imageKey,
+                    turnId,
+                    modelId: result.modelId,
+                    promptKey,
+                    index: imageIndex,
+                  })
+                }
+                onToggleSelect={() =>
+                  enableSelect && onToggleImageSelect?.({
+                    key: imageKey,
+                    image: img,
+                    turnId,
+                    turnSeq,
+                    modelId: result.modelId,
+                    modelName: result.modelName || model?.name || result.modelId,
+                    promptKey,
+                    theme: result.promptLabel || "",
+                    fileStem: buildResultFileStem(result),
+                    index: imageIndex,
+                  })
+                }
+              />
+            );
+          })}
         </div>
       )}
       {result.status === "success" && !visibleImages.length && <div style={S.errArea}><p style={{ color: "#f59e0b", fontSize: 13 }}>No images returned.</p></div>}
@@ -2582,7 +2783,20 @@ function ResultColumn({
   );
 }
 
-function ImageCard({ img, fileStem, index, onPreview, label, selected, onToggleSelect, compact = false }) {
+function ImageCard({
+  img,
+  fileStem,
+  index,
+  onPreview,
+  label,
+  selected,
+  onToggleSelect,
+  onRetry,
+  retrying = false,
+  showSelect = true,
+  selectPosition = "top-right",
+  compact = false,
+}) {
   const [src, setSrc] = useState(img);
   const [triedProxy, setTriedProxy] = useState(false);
 
@@ -2603,16 +2817,38 @@ function ImageCard({ img, fileStem, index, onPreview, label, selected, onToggleS
 
   return (
     <div style={{ ...S.imgCard, ...(compact ? S.imgCardCompact : null), ...(selected ? S.imgCardSelected : null) }}>
-      <button
-        type="button"
-        style={{ ...S.imageSelectBtn, ...(compact ? S.imageSelectBtnCompact : null), ...(selected ? S.imageSelectBtnActive : null) }}
-        onClick={onToggleSelect}
-        title={selected ? "Unselect" : "Select"}
-      >
-        {selected ? "●" : "○"}
-      </button>
+      {typeof onRetry === "function" && (
+        <button
+          type="button"
+          style={{ ...S.imageRetryBtn, ...(compact ? S.imageRetryBtnCompact : null), ...(retrying ? S.imageRetryBtnBusy : null) }}
+          onClick={onRetry}
+          disabled={retrying}
+          title={retrying ? "Retrying..." : "Retry"}
+        >
+          {retrying ? "…" : "↻"}
+        </button>
+      )}
+      {showSelect && (
+        <button
+          type="button"
+          style={{
+            ...S.imageSelectBtn,
+            ...(compact ? S.imageSelectBtnCompact : null),
+            ...(selectPosition === "bottom-right" ? S.imageSelectBtnBottom : null),
+            ...(selected ? S.imageSelectBtnActive : null),
+          }}
+          onClick={onToggleSelect}
+          title={selected ? "Unselect" : "Select"}
+        >
+          {selected ? "●" : "○"}
+        </button>
+      )}
       {!!label && <div style={{ ...S.imageThemeTag, ...(compact ? S.imageThemeTagCompact : null) }}>{label}</div>}
-      <img src={src} alt={`Gen ${index}`} style={compact ? S.thumbCompact : S.thumb} onClick={() => onPreview(src)} onError={onImgError} />
+      {!retrying ? (
+        <img src={src} alt={`Gen ${index}`} style={compact ? S.thumbCompact : S.thumb} onClick={() => onPreview(src)} onError={onImgError} />
+      ) : (
+        <div style={compact ? S.thumbRetryingCompact : S.thumbRetrying}>Retrying…</div>
+      )}
       {!compact && (
         <button
           style={S.dlBtn}
@@ -2640,7 +2876,10 @@ function TurnPanel({
   canSyncTemplate,
   selectedImageKeys,
   onToggleImageSelect,
+  onRetryImage,
+  retryingImageKeys,
   compactStyleHistory = false,
+  truncatePromptText = false,
 }) {
   const promptVariants = getTurnPromptVariants(turn);
   const turnMode = getTurnMode(turn);
@@ -2675,6 +2914,10 @@ function TurnPanel({
   const styleModelId = selectedModelIds[0] || styleResults[0]?.modelId || "";
   const styleModelName = IMAGE_MODELS.find((model) => model.id === styleModelId)?.name || styleModelId || "-";
   const styleRequestedCount = styleResults[0]?.requestedCount || (styleModelId ? Number(turn?.modelCounts?.[styleModelId]) || 1 : 0);
+  const styleExpectedCount = styleResults.reduce(
+    (sum, result) => sum + Math.max(1, Number(result?.requestedCount) || 1),
+    0
+  );
   const styleGeneratedCount = styleResults.reduce(
     (sum, result) => sum + (Array.isArray(result?.images) ? result.images.length : 0),
     0
@@ -2683,6 +2926,32 @@ function TurnPanel({
   const styleErrorCount = styleResults.filter((result) => result.status === "error").length;
   const styleCancelledCount = styleResults.filter((result) => result.status === "cancelled").length;
   const styleLoadingCount = styleResults.filter((result) => result.status === "loading").length;
+  const styleFailedCount = styleErrorCount + styleCancelledCount;
+  const styleTurnFinished = turn.status === "done";
+  const styleStillRunning = !styleTurnFinished && (turn.status === "queued" || turn.status === "running" || styleLoadingCount > 0);
+  const styleImageItems = styleResults.flatMap((result) => {
+    const promptKey = getResultPromptKey(result);
+    const promptLabel = result.promptLabel || promptKey;
+    const modelName = result.modelName || styleModelName;
+    const images = Array.isArray(result.images) ? result.images : [];
+    return images.map((image, index) => ({
+      image,
+      index: index + 1,
+      modelId: result.modelId,
+      modelName,
+      promptKey,
+      promptLabel,
+      fileStem: buildResultFileStem(result),
+    }));
+  });
+  const styleFailedThemes = Array.from(
+    new Set(
+      styleResults
+        .filter((result) => result.status === "error" || result.status === "cancelled")
+        .map((result) => result.promptLabel || getResultPromptKey(result))
+        .filter(Boolean)
+    )
+  );
   const resultsByVariant = promptVariants.map((variant) => ({
     variant,
     groupResults: (turn.results || [])
@@ -2757,17 +3026,17 @@ function TurnPanel({
               }}
             >
               {isStyleMode ? (
-                <div style={S.turnPromptCard}>
-                  <div style={S.turnPromptText}>
-                    {styleBasePrompt ? <PromptTextWithChips text={styleBasePrompt} /> : "(no prompt)"}
+                <div style={{ ...S.turnPromptCard, ...(truncatePromptText ? S.turnPromptCardCompact : null) }}>
+                  <div style={{ ...S.turnPromptText, ...(truncatePromptText ? S.turnPromptTextCompact : null) }}>
+                    {styleBasePrompt ? <PromptTextWithChips text={getPromptPreviewText(styleBasePrompt)} /> : "(no prompt)"}
                   </div>
                 </div>
               ) : (
                 promptVariants.map((variant) => (
-                  <div key={variant.key} style={S.turnPromptCard}>
+                  <div key={variant.key} style={{ ...S.turnPromptCard, ...(truncatePromptText ? S.turnPromptCardCompact : null) }}>
                     {isCompareMode && <div style={S.turnPromptBadge}>{variant.label}</div>}
-                    <div style={S.turnPromptText}>
-                      {variant.prompt ? <PromptTextWithChips text={variant.prompt} /> : "(no prompt)"}
+                    <div style={{ ...S.turnPromptText, ...(truncatePromptText ? S.turnPromptTextCompact : null) }}>
+                      {variant.prompt ? <PromptTextWithChips text={getPromptPreviewText(variant.prompt)} /> : "(no prompt)"}
                     </div>
                   </div>
                 ))
@@ -2800,25 +3069,106 @@ function TurnPanel({
             )}
           </div>
           {isStyleMode ? (
-            <div
-              style={{
-                ...S.turnStyleResultsGrid,
-                gridTemplateColumns: `repeat(${Math.min(6, Math.max(1, styleResults.length))}, minmax(0, 1fr))`,
-              }}
-            >
-              {styleResults.map((result, index) => (
-                <ResultColumn
-                  key={`${turn.id}-${result.modelId}-${getResultPromptKey(result)}-${index}`}
-                  result={result}
-                  onPreview={onPreview}
-                  onCancel={() => onCancelModel?.(turn.id, result.modelId, getResultPromptKey(result))}
-                  turnId={turn.id}
-                  turnSeq={turn.seq}
-                  selectedImageKeys={selectedImageKeys}
-                  onToggleImageSelect={onToggleImageSelect}
-                  showPromptBadge={false}
-                />
-              ))}
+            <div style={S.turnStyleUnifiedWrap}>
+              <div style={S.styleHistorySummary}>
+                <div style={S.styleSummaryItem}>
+                  <span style={S.styleSummaryKey}>Model</span>
+                  <span style={S.styleSummaryVal}>{styleModelName}</span>
+                </div>
+                <div style={S.styleSummaryItem}>
+                  <span style={S.styleSummaryKey}>Per Task</span>
+                  <span style={S.styleSummaryVal}>x{styleRequestedCount || 0}</span>
+                </div>
+                <div style={S.styleSummaryItem}>
+                  <span style={S.styleSummaryKey}>Generated</span>
+                  <span style={S.styleSummaryVal}>{styleGeneratedCount}</span>
+                </div>
+                <div style={S.styleSummaryItem}>
+                  <span style={S.styleSummaryKey}>Success</span>
+                  <span style={S.styleSummaryVal}>{styleSuccessCount}/{styleResults.length || 0}</span>
+                </div>
+                <div style={S.styleSummaryItem}>
+                  <span style={S.styleSummaryKey}>Failed</span>
+                  <span style={S.styleSummaryVal}>{styleErrorCount + styleCancelledCount}</span>
+                </div>
+                <div style={S.styleSummaryItem}>
+                  <span style={S.styleSummaryKey}>Running</span>
+                  <span style={S.styleSummaryVal}>{styleLoadingCount}</span>
+                </div>
+              </div>
+
+              {styleTurnFinished && styleFailedThemes.length > 0 && (
+                <div style={S.turnStyleFailedLine}>
+                  Failed themes: {styleFailedThemes.join(" · ")}
+                </div>
+              )}
+
+              <div style={S.turnStyleImageBox}>
+                <div style={S.turnStyleImageHead}>
+                  <span style={S.turnResultMeta}>Style Results</span>
+                  {styleLoadingCount > 0 && (
+                    <span style={S.turnResultMeta}>
+                      Generating {styleGeneratedCount}/{styleExpectedCount || 0}
+                    </span>
+                  )}
+                </div>
+
+                {styleImageItems.length > 0 ? (
+                  <div style={S.imgGridCompact}>
+                    {styleImageItems.map((item) => {
+                      const imageKey = buildTurnImageKey(turn.id, item.modelId, item.promptKey, item.index);
+                      return (
+                        <ImageCard
+                          key={imageKey}
+                          img={item.image}
+                          fileStem={item.fileStem}
+                          index={item.index}
+                          onPreview={onPreview}
+                          label={item.promptLabel}
+                          compact
+                          showSelect
+                          selectPosition="bottom-right"
+                          selected={selectedImageKeys?.has?.(imageKey)}
+                          retrying={retryingImageKeys?.has?.(imageKey)}
+                          onRetry={() =>
+                            onRetryImage?.({
+                              key: imageKey,
+                              turnId: turn.id,
+                              modelId: item.modelId,
+                              promptKey: item.promptKey,
+                              index: item.index,
+                            })
+                          }
+                          onToggleSelect={() =>
+                            onToggleImageSelect?.({
+                              key: imageKey,
+                              image: item.image,
+                              turnId: turn.id,
+                              turnSeq: turn.seq,
+                              modelId: item.modelId,
+                              modelName: item.modelName,
+                              promptKey: item.promptKey,
+                              theme: item.promptLabel || "",
+                              fileStem: item.fileStem,
+                              index: item.index,
+                            })
+                          }
+                        />
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={S.turnStyleImageEmpty}>
+                    {styleStillRunning
+                      ? "Generating images..."
+                      : styleFailedCount > 0
+                      ? "No successful images. Check failed themes."
+                      : styleResults.length
+                      ? "No images returned."
+                      : "No style results yet."}
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
             <div
@@ -2856,6 +3206,10 @@ function TurnPanel({
                         turnSeq={turn.seq}
                         selectedImageKeys={selectedImageKeys}
                         onToggleImageSelect={onToggleImageSelect}
+                        onRetryImage={onRetryImage}
+                        retryingImageKeys={retryingImageKeys}
+                        enableSelect={false}
+                        showImageLabel={false}
                       />
                     ))}
                   </div>
@@ -2888,9 +3242,13 @@ export default function App() {
   const [showApiModal, setShowApiModal] = useState(false);
   const [gptAssistPrompt, setGptAssistPrompt] = useState(DEFAULT_GPT_ASSIST_PROMPT);
   const [draftGptAssistPrompt, setDraftGptAssistPrompt] = useState(DEFAULT_GPT_ASSIST_PROMPT);
+  const [styleThemeAssistPrompt, setStyleThemeAssistPrompt] = useState(DEFAULT_STYLE_THEME_ASSIST_PROMPT);
+  const [draftStyleThemeAssistPrompt, setDraftStyleThemeAssistPrompt] = useState(DEFAULT_STYLE_THEME_ASSIST_PROMPT);
   const [gptAssistSavedAt, setGptAssistSavedAt] = useState(null);
   const [showGptAssistModal, setShowGptAssistModal] = useState(false);
   const [gptAssistBusy, setGptAssistBusy] = useState(false);
+  const [styleThemeAssistBusy, setStyleThemeAssistBusy] = useState(false);
+  const [styleThemeSeedInput, setStyleThemeSeedInput] = useState("");
   const [templates, setTemplates] = useState(normalizeTemplates(DEFAULT_TEMPLATES));
   const [activeTemplateId, setActiveTemplateId] = useState(null);
   const [showTemplateModal, setShowTemplateModal] = useState(false);
@@ -2902,6 +3260,7 @@ export default function App() {
   const [editingStyleTemplateId, setEditingStyleTemplateId] = useState(null);
   const [styleTemplateDraft, setStyleTemplateDraft] = useState({ title: "", body: "" });
   const [styleThemes, setStyleThemes] = useState(normalizeStyleThemes(DEFAULT_STYLE_THEMES));
+  const [uploadedInputImages, setUploadedInputImages] = useState([]);
   const [uploadedImage, setUploadedImage] = useState(null);
   const [uploadedPreview, setUploadedPreview] = useState(null);
   const [styleReferenceImages, setStyleReferenceImages] = useState([]);
@@ -2925,6 +3284,7 @@ export default function App() {
   const [selectedAtlasItems, setSelectedAtlasItems] = useState([]);
   const [atlasThumbnail, setAtlasThumbnail] = useState(null);
   const [atlasBusy, setAtlasBusy] = useState(false);
+  const [retryingImageKeys, setRetryingImageKeys] = useState(new Set());
   const fileRef = useRef(null);
   const activePromptFieldRef = useRef("single");
   const promptInputRef = useRef(null);
@@ -3082,11 +3442,14 @@ export default function App() {
       return;
     }
     const nextPrompt = normalizeGptAssistPrompt(draftGptAssistPrompt);
+    const nextStyleThemePrompt = normalizeStyleThemeAssistPrompt(draftStyleThemeAssistPrompt);
     setGptAssistPrompt(nextPrompt);
+    setStyleThemeAssistPrompt(nextStyleThemePrompt);
     setDraftGptAssistPrompt(nextPrompt);
+    setDraftStyleThemeAssistPrompt(nextStyleThemePrompt);
     setGptAssistSavedAt(Date.now());
     setShowGptAssistModal(false);
-  }, [draftGptAssistPrompt, historyDirHandle]);
+  }, [draftGptAssistPrompt, draftStyleThemeAssistPrompt, historyDirHandle]);
 
   const openTemplateEditor = useCallback((templateId) => {
     if (!historyDirHandle) return;
@@ -3277,6 +3640,52 @@ export default function App() {
     }
   }, [gptAssistBusy, proxyUrl, taskMode, comparePrompts.a, comparePrompts.b, prompt, uploadedImage, gptAssistPrompt, apiBaseUrl, apiKey, compareAEditor, compareBEditor, promptEditor]);
 
+  const clearAllStyleThemes = useCallback(() => {
+    setStyleThemes(Array.from({ length: STYLE_THEME_SLOTS }, () => ""));
+  }, []);
+
+  const runStyleThemeAssist = useCallback(async () => {
+    if (styleThemeAssistBusy) return;
+    if (taskMode !== "style") return;
+    if (!proxyUrl.trim()) {
+      setShowSettings(true);
+      return;
+    }
+    const seed = styleThemeSeedInput.trim();
+    if (!seed) {
+      setHistoryFolderMsg("请输入主题联想关键词。");
+      return;
+    }
+
+    setStyleThemeAssistBusy(true);
+    try {
+      const generated = await callThemeAssistAPI(
+        proxyUrl,
+        seed,
+        styleThemeAssistPrompt,
+        { apiBaseUrl, apiKey }
+      );
+      if (!generated.length) {
+        setHistoryFolderMsg("主题联想失败：GPT 未返回有效主题。");
+        return;
+      }
+      setStyleThemes((prev) => {
+        const next = normalizeStyleThemes(prev);
+        for (let index = 0; index < STYLE_THEME_SLOTS; index += 1) {
+          next[index] = generated[index] || "";
+        }
+        return next;
+      });
+      setHistoryFolderMsg(`已生成 ${Math.min(generated.length, STYLE_THEME_SLOTS)} 个主题元素。`);
+    } catch (err) {
+      if (!isAbortError(err)) {
+        setHistoryFolderMsg(`主题联想失败：${err?.message || "未知错误"}`);
+      }
+    } finally {
+      setStyleThemeAssistBusy(false);
+    }
+  }, [styleThemeAssistBusy, taskMode, proxyUrl, styleThemeSeedInput, styleThemeAssistPrompt, apiBaseUrl, apiKey]);
+
   const toggleModel = useCallback((id) => {
     setSelectedModels((prev) => {
       if (taskMode === "style") {
@@ -3321,18 +3730,32 @@ export default function App() {
   }, [selectedModels, lastEditedCount]);
 
   const handleFileChange = useCallback(async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploadedImage(await fileToBase64(file));
-    setUploadedPreview(URL.createObjectURL(file));
+    const files = Array.from(e.target.files || []).slice(0, MAX_INPUT_IMAGES_PER_BATCH);
+    if (!files.length) return;
+    const encoded = await Promise.all(files.map((file) => fileToBase64(file)));
+    const safeEncoded = encoded.filter((item) => typeof item === "string" && item.startsWith("data:image/"));
+    if (!safeEncoded.length) return;
+    setUploadedInputImages(safeEncoded);
+    setUploadedImage(safeEncoded[0]);
+    setUploadedPreview(safeEncoded[0]);
+    if (fileRef.current) fileRef.current.value = "";
   }, []);
 
-  const removeImage = useCallback(() => { setUploadedImage(null); setUploadedPreview(null); if (fileRef.current) fileRef.current.value = ""; }, []);
+  const removeImage = useCallback(() => {
+    setUploadedInputImages([]);
+    setUploadedImage(null);
+    setUploadedPreview(null);
+    if (fileRef.current) fileRef.current.value = "";
+  }, []);
 
   const inputImageList = useMemo(() => {
-    if (typeof uploadedImage !== "string" || !uploadedImage) return [];
-    return [uploadedImage];
-  }, [uploadedImage]);
+    const list = Array.isArray(uploadedInputImages)
+      ? uploadedInputImages.filter((item) => typeof item === "string" && item)
+      : [];
+    if (list.length) return list.slice(0, MAX_INPUT_IMAGES_PER_BATCH);
+    if (typeof uploadedImage === "string" && uploadedImage) return [uploadedImage];
+    return [];
+  }, [uploadedInputImages, uploadedImage]);
 
   const styleImageList = useMemo(
     () =>
@@ -3345,20 +3768,36 @@ export default function App() {
 
   const appendInputImageFiles = useCallback(async (files) => {
     const incoming = Array.isArray(files) ? files : [];
-    const first = incoming[0];
-    if (!first) return;
-    const encoded = await fileToBase64(first);
-    if (typeof encoded !== "string" || !encoded.startsWith("data:image/")) return;
-    setUploadedImage(encoded);
-    setUploadedPreview(encoded);
+    if (!incoming.length) return;
+    const encoded = await Promise.all(incoming.slice(0, MAX_INPUT_IMAGES_PER_BATCH).map((file) => fileToBase64(file)));
+    const safeEncoded = encoded.filter((item) => typeof item === "string" && item.startsWith("data:image/"));
+    if (!safeEncoded.length) return;
+    const base = (Array.isArray(uploadedInputImages) ? uploadedInputImages : [])
+      .filter((item) => typeof item === "string" && item);
+    const next = [...base, ...safeEncoded].slice(0, MAX_INPUT_IMAGES_PER_BATCH);
+    setUploadedInputImages(next);
+    setUploadedImage(next[0] || null);
+    setUploadedPreview(next[0] || null);
     if (fileRef.current) fileRef.current.value = "";
-  }, []);
+  }, [uploadedInputImages]);
 
-  const removeInputImageAt = useCallback(() => {
-    setUploadedImage(null);
-    setUploadedPreview(null);
+  const removeInputImageAt = useCallback((index = 0) => {
+    const base = (Array.isArray(uploadedInputImages) ? uploadedInputImages : [])
+      .filter((item) => typeof item === "string" && item);
+    if (!base.length) {
+      setUploadedInputImages([]);
+      setUploadedImage(null);
+      setUploadedPreview(null);
+      if (fileRef.current) fileRef.current.value = "";
+      return;
+    }
+    const safeIndex = Math.max(0, Math.min(base.length - 1, Number(index) || 0));
+    const next = base.filter((_, idx) => idx !== safeIndex);
+    setUploadedInputImages(next);
+    setUploadedImage(next[0] || null);
+    setUploadedPreview(next[0] || null);
     if (fileRef.current) fileRef.current.value = "";
-  }, []);
+  }, [uploadedInputImages]);
 
   const appendStyleReferenceFiles = useCallback(async (files) => {
     const incoming = Array.isArray(files) ? files : [];
@@ -3443,6 +3882,141 @@ export default function App() {
       ];
     });
   }, []);
+
+  const retryImage = useCallback(async (payload) => {
+    const key = payload?.key;
+    const turnId = payload?.turnId;
+    const modelId = payload?.modelId;
+    const promptKey = payload?.promptKey || "single";
+    const imageIndex = Math.max(1, Number(payload?.index) || 1);
+    if (!key || !turnId || !modelId) return;
+
+    const targetTurn = turns.find((item) => item.id === turnId);
+    if (!targetTurn) {
+      setHistoryFolderMsg("重试失败：找不到对应任务。");
+      return;
+    }
+    const targetResult = (targetTurn.results || []).find((result) => isSameResultTask(result, modelId, promptKey));
+    if (!targetResult) {
+      setHistoryFolderMsg("重试失败：找不到对应结果。");
+      return;
+    }
+    const model = IMAGE_MODELS.find((item) => item.id === modelId);
+    if (!model) {
+      setHistoryFolderMsg("重试失败：模型不存在。");
+      return;
+    }
+
+    const promptVariants = getTurnPromptVariants(targetTurn);
+    const matchedVariant = promptVariants.find((item) => item.key === promptKey) || promptVariants[0];
+    const promptText =
+      typeof targetResult.promptText === "string"
+        ? targetResult.promptText
+        : matchedVariant?.prompt || targetTurn.prompt || "";
+    const turnImageInputs = normalizeImageInputs(targetTurn.referenceImage, targetTurn.styleReferenceImages);
+    const replaceAt = imageIndex - 1;
+
+    setRetryingImageKeys((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+
+    setTurns((prev) =>
+      prev.map((turn) =>
+        turn.id !== turnId
+          ? turn
+          : {
+              ...turn,
+              folderSyncedAt: null,
+              results: (turn.results || []).map((result) =>
+                isSameResultTask(result, modelId, promptKey)
+                  ? {
+                      ...result,
+                      status: "loading",
+                      error: null,
+                    }
+                  : result
+              ),
+            }
+      )
+    );
+
+    try {
+      const generated = await generateImage(targetTurn.proxyUrl || proxyUrl, model, promptText, targetTurn.referenceImage, {
+        count: 1,
+        apiBaseUrl: targetTurn.apiBaseUrl || apiBaseUrl || DEFAULT_API_BASE_URL,
+        apiKey: targetTurn.apiKey || apiKey || DEFAULT_API_KEY,
+        aspectRatio: normalizeAspectRatio(targetTurn.aspectRatio ?? targetTurn.geminiAspectRatio ?? aspectRatio),
+        imageInputs: turnImageInputs,
+      });
+      const nextImage = Array.isArray(generated) && generated.length ? generated[0] : null;
+      if (!nextImage) throw new Error("No images returned");
+
+      setTurns((prev) =>
+        prev.map((turn) =>
+          turn.id !== turnId
+            ? turn
+            : {
+                ...turn,
+                folderSyncedAt: null,
+                results: (turn.results || []).map((result) => {
+                  if (!isSameResultTask(result, modelId, promptKey)) return result;
+                  const baseImages = Array.isArray(result.images) ? [...result.images] : [];
+                  if (replaceAt >= 0 && replaceAt < baseImages.length) {
+                    baseImages[replaceAt] = nextImage;
+                  } else {
+                    baseImages.push(nextImage);
+                  }
+                  return {
+                    ...result,
+                    status: "success",
+                    error: null,
+                    images: baseImages,
+                  };
+                }),
+              }
+        )
+      );
+      setSelectedAtlasItems((prev) => prev.filter((item) => item.key !== key));
+      setAtlasThumbnail(null);
+      setHistoryFolderMsg("已重试并替换图片。");
+    } catch (err) {
+      const message = err?.message || "未知错误";
+      setTurns((prev) =>
+        prev.map((turn) =>
+          turn.id !== turnId
+            ? turn
+            : {
+                ...turn,
+                folderSyncedAt: null,
+                results: (turn.results || []).map((result) => {
+                  if (!isSameResultTask(result, modelId, promptKey)) return result;
+                  const hasImages = Array.isArray(result.images) && result.images.length > 0;
+                  return hasImages
+                    ? {
+                        ...result,
+                        status: "success",
+                      }
+                    : {
+                        ...result,
+                        status: "error",
+                        error: message,
+                      };
+                }),
+              }
+        )
+      );
+      setHistoryFolderMsg(`重试失败：${message}`);
+    } finally {
+      setRetryingImageKeys((prev) => {
+        if (!prev.has(key)) return prev;
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }, [turns, proxyUrl, apiBaseUrl, apiKey, aspectRatio]);
 
   const clearAllSelections = useCallback(() => {
     setSelectedAtlasItems([]);
@@ -3589,9 +4163,11 @@ export default function App() {
     setApiKey(loadedApiKey);
     setDraftApiKey(loadedApiKey);
     setApiKeySavedAt(apiConfig.exists ? Date.now() : null);
-    const loadedGptAssistPrompt = await loadGptAssistFromLocalFolder(dirHandle);
-    setGptAssistPrompt(loadedGptAssistPrompt);
-    setDraftGptAssistPrompt(loadedGptAssistPrompt);
+    const loadedGptAssistConfig = await loadGptAssistFromLocalFolder(dirHandle);
+    setGptAssistPrompt(loadedGptAssistConfig.prompt);
+    setDraftGptAssistPrompt(loadedGptAssistConfig.prompt);
+    setStyleThemeAssistPrompt(loadedGptAssistConfig.styleThemePrompt);
+    setDraftStyleThemeAssistPrompt(loadedGptAssistConfig.styleThemePrompt);
     setGptAssistSavedAt(Date.now());
     const templatePayload = await loadTemplatesFromLocalFolder(dirHandle);
     if (templatePayload) {
@@ -3655,7 +4231,13 @@ export default function App() {
     const effectiveModelIds = taskMode === "style" ? selectedModels.slice(0, 1) : selectedModels;
     const promptVariants = getComposerPromptVariants(taskMode, prompt, comparePrompts, styleThemes);
     const hasPromptInput = promptVariants.some((variant) => variant.prompt.trim());
-    const hasImageInput = !!uploadedImage || (taskMode === "style" && styleReferenceImages.length > 0);
+    const inputBatch = (Array.isArray(uploadedInputImages) ? uploadedInputImages : [])
+      .map((item) => (typeof item === "string" ? item : ""))
+      .filter(Boolean)
+      .slice(0, MAX_INPUT_IMAGES_PER_BATCH);
+    const fallbackInput = typeof uploadedImage === "string" && uploadedImage ? [uploadedImage] : [];
+    const resolvedInputBatch = inputBatch.length ? inputBatch : fallbackInput;
+    const hasImageInput = !!resolvedInputBatch.length || (taskMode === "style" && styleReferenceImages.length > 0);
     if (!effectiveModelIds.length || (!hasPromptInput && !hasImageInput)) return;
 
     const now = Date.now();
@@ -3667,10 +4249,11 @@ export default function App() {
       ...variant,
       prompt: variant.prompt || "",
     }));
-    const turn = {
-      id: now + Math.floor(Math.random() * 1000),
-      seq: seqRef.current,
-      createdAt: now,
+    const turnInputImages = resolvedInputBatch.length ? resolvedInputBatch : [null];
+    const queuedTurns = turnInputImages.map((referenceImage, index) => ({
+      id: now + index * 1000 + Math.floor(Math.random() * 1000),
+      seq: seqRef.current + index,
+      createdAt: now + index,
       mode: taskMode,
       prompt: taskMode === "compare" ? "" : (prompt || ""),
       styleBasePrompt: taskMode === "style" ? (prompt || "") : "",
@@ -3679,7 +4262,7 @@ export default function App() {
       apiBaseUrl: resolveApiBaseUrl(apiBaseUrl),
       apiKey: normalizeApiKey(apiKey),
       aspectRatio: normalizeAspectRatio(aspectRatio),
-      referenceImage: uploadedImage,
+      referenceImage,
       styleReferenceImages: taskMode === "style" ? styleReferenceImages.slice(0, MAX_STYLE_REFERENCE_IMAGES) : [],
       selectedModelIds: [...effectiveModelIds],
       modelCounts: turnModelCounts,
@@ -3698,17 +4281,21 @@ export default function App() {
           error: null,
         }))
       ),
-    };
-    seqRef.current += 1;
-    setActiveTurnId(turn.id);
-    setTurns((prev) => [turn, ...prev]);
+    }));
+    const displayTurns = [...queuedTurns].reverse();
+    seqRef.current += queuedTurns.length;
+    setActiveTurnId(displayTurns[0]?.id || null);
+    setTurns((prev) => [...displayTurns, ...prev]);
+    if (queuedTurns.length > 1) {
+      setHistoryFolderMsg(`已创建 ${queuedTurns.length} 个任务（按输入图拆分）。`);
+    }
     if (taskMode === "compare") {
       compareAEditor.setText((prev) => clearPlaceholderValues(prev), { record: false });
       compareBEditor.setText((prev) => clearPlaceholderValues(prev), { record: false });
     } else {
       promptEditor.setText((prev) => clearPlaceholderValues(prev), { record: false });
     }
-  }, [proxyUrl, selectedModels, modelCounts, taskMode, prompt, comparePrompts, styleThemes, styleReferenceImages, apiBaseUrl, apiKey, aspectRatio, uploadedImage, compareAEditor, compareBEditor, promptEditor]);
+  }, [proxyUrl, selectedModels, modelCounts, taskMode, prompt, comparePrompts, styleThemes, styleReferenceImages, apiBaseUrl, apiKey, aspectRatio, uploadedInputImages, uploadedImage, compareAEditor, compareBEditor, promptEditor]);
 
   const cancelModelTask = useCallback((turnId, modelId, promptKey = "single") => {
     const key = `${turnId}:${modelId}:${promptKey}`;
@@ -3738,6 +4325,13 @@ export default function App() {
     setTurns((prev) => prev.filter((t) => t.id !== turnId));
     setHiddenTurnIds((prev) => prev.filter((id) => id !== turnId));
     setSelectedAtlasItems((prev) => prev.filter((item) => item.turnId !== turnId));
+    setRetryingImageKeys((prev) => {
+      const next = new Set();
+      prev.forEach((key) => {
+        if (!String(key).startsWith(`${turnId}:`)) next.add(key);
+      });
+      return next;
+    });
     setAtlasThumbnail(null);
     setActiveTurnId((prev) => (prev === turnId ? null : prev));
     Object.keys(controllersRef.current).forEach((key) => {
@@ -3819,9 +4413,11 @@ export default function App() {
     }
     setAspectRatio(normalizeAspectRatio(turn.aspectRatio ?? turn.geminiAspectRatio));
     if (turn.referenceImage) {
+      setUploadedInputImages([turn.referenceImage]);
       setUploadedImage(turn.referenceImage);
       setUploadedPreview(turn.referenceImage);
     } else {
+      setUploadedInputImages([]);
       setUploadedImage(null);
       setUploadedPreview(null);
       if (fileRef.current) fileRef.current.value = "";
@@ -4015,10 +4611,10 @@ export default function App() {
       const canWrite = await ensureDirectoryPermission(historyDirHandle, true);
       if (!canWrite) return;
       try {
-        await saveGptAssistToLocalFolder(historyDirHandle, gptAssistPrompt);
+        await saveGptAssistToLocalFolder(historyDirHandle, gptAssistPrompt, styleThemeAssistPrompt);
       } catch {}
     })();
-  }, [historyDirHandle, gptAssistPrompt]);
+  }, [historyDirHandle, gptAssistPrompt, styleThemeAssistPrompt]);
 
   useEffect(() => {
     if (!historyDirHandle) return;
@@ -4047,15 +4643,23 @@ export default function App() {
   const templatesEnabled = !!historyDirHandle;
   const composerPromptVariants = getComposerPromptVariants(taskMode, prompt, comparePrompts, styleThemes);
   const hasPromptInput = composerPromptVariants.some((variant) => variant.prompt.trim());
-  const hasImageInput = !!uploadedImage || (taskMode === "style" && styleReferenceImages.length > 0);
+  const hasImageInput = inputImageList.length > 0 || (taskMode === "style" && styleReferenceImages.length > 0);
   const hasPlaceholderInComposer =
     taskMode === "compare"
       ? composerPromptVariants.some((variant) => extractPlaceholderTokens(variant.prompt).length > 0)
       : extractPlaceholderTokens(prompt).length > 0;
   const canRunGptAssist = !gptAssistBusy && !!proxyUrl.trim() && hasPlaceholderInComposer;
+  const hasAnyStyleThemeValue = styleThemes.some((item) => typeof item === "string" && item.trim());
+  const canRunStyleThemeAssist =
+    taskMode === "style" &&
+    !styleThemeAssistBusy &&
+    !!proxyUrl.trim() &&
+    !!styleThemeSeedInput.trim();
   const canGenerate = selectedModels.length > 0 && (hasPromptInput || hasImageInput);
   const isApiKeyDirty = normalizeApiKey(draftApiKey) !== normalizeApiKey(apiKey);
-  const isGptAssistPromptDirty = normalizeGptAssistPrompt(draftGptAssistPrompt) !== normalizeGptAssistPrompt(gptAssistPrompt);
+  const isGptAssistPromptDirty =
+    normalizeGptAssistPrompt(draftGptAssistPrompt) !== normalizeGptAssistPrompt(gptAssistPrompt) ||
+    normalizeStyleThemeAssistPrompt(draftStyleThemeAssistPrompt) !== normalizeStyleThemeAssistPrompt(styleThemeAssistPrompt);
   const canSaveGptAssistPrompt = !!historyDirHandle;
   const apiKeySaveStateText = isApiKeyDirty
     ? "Unsaved changes"
@@ -4123,6 +4727,7 @@ export default function App() {
               style={{ ...S.apiSwitchBtn, ...(showGptAssistModal ? S.apiSwitchBtnActive : null) }}
               onClick={() => {
                 setDraftGptAssistPrompt(gptAssistPrompt);
+                setDraftStyleThemeAssistPrompt(styleThemeAssistPrompt);
                 setShowGptAssistModal(true);
               }}
             >
@@ -4248,7 +4853,7 @@ export default function App() {
                       <span style={{ fontSize: 12, color: "#888", marginTop: 4 }}>Upload</span>
                     </div>
                   )}
-                  <input ref={fileRef} type="file" accept="image/*" onChange={handleFileChange} style={{ display: "none" }} />
+                  <input ref={fileRef} type="file" accept="image/*" multiple onChange={handleFileChange} style={{ display: "none" }} />
                 </>
               )}
             </div>
@@ -4256,8 +4861,8 @@ export default function App() {
         </section>
 
         <section style={{ marginBottom: 24 }}>
-          <div style={S.modelTemplateGrid}>
-            <div style={S.modelsPanel}>
+          <div style={taskMode === "style" ? S.modelTemplateGridStyle : S.modelTemplateGrid}>
+            <div style={{ ...S.modelsPanel, ...(taskMode === "style" ? S.modelsPanelStyle : null) }}>
               <div style={S.modelsHeadRow}>
                 <label style={{ ...S.label, marginBottom: 0 }}>
                   SELECT MODELS <span style={{ color: "#888", fontWeight: 400 }}>({selectedModels.length}/{taskMode === "style" ? 1 : 6})</span>
@@ -4266,7 +4871,7 @@ export default function App() {
                   Sync Last Edited Count
                 </button>
               </div>
-              <div style={S.modelGrid}>
+              <div style={taskMode === "style" ? S.modelGridStyle : S.modelGrid}>
                 {IMAGE_MODELS.map((m) => (
                   <ModelChip
                     key={m.id}
@@ -4276,6 +4881,7 @@ export default function App() {
                     disabled={taskMode === "style" ? selectedModels.length >= 1 : selectedModels.length >= 6}
                     count={modelCounts[m.id] || 1}
                     onCountChange={setModelCount}
+                    styleMode={taskMode === "style"}
                   />
                 ))}
               </div>
@@ -4337,7 +4943,33 @@ export default function App() {
                     ))}
                   </div>
                   <div style={S.styleThemesPanel}>
-                    <label style={{ ...S.label, marginBottom: 6 }}>THEMES (12)</label>
+                    <div style={S.styleThemesHeadRow}>
+                      <label style={{ ...S.label, marginBottom: 0 }}>THEMES (12)</label>
+                      <button
+                        type="button"
+                        style={{ ...S.zipBtn, padding: "6px 10px", fontSize: 11, opacity: hasAnyStyleThemeValue ? 1 : 0.5, cursor: hasAnyStyleThemeValue ? "pointer" : "not-allowed" }}
+                        onClick={clearAllStyleThemes}
+                        disabled={!hasAnyStyleThemeValue}
+                      >
+                        Clear All
+                      </button>
+                    </div>
+                    <div style={S.styleThemeAssistRow}>
+                      <input
+                        style={S.styleThemeAssistInput}
+                        value={styleThemeSeedInput}
+                        onChange={(event) => setStyleThemeSeedInput(event.target.value)}
+                        placeholder="Theme association seed, e.g. coffee"
+                      />
+                      <button
+                        type="button"
+                        style={{ ...S.apiSaveBtn, padding: "0 12px", height: 30, opacity: canRunStyleThemeAssist ? 1 : 0.5, cursor: canRunStyleThemeAssist ? "pointer" : "not-allowed" }}
+                        onClick={runStyleThemeAssist}
+                        disabled={!canRunStyleThemeAssist}
+                      >
+                        {styleThemeAssistBusy ? "..." : "GPT 12"}
+                      </button>
+                    </div>
                     <div style={S.styleThemesGrid}>
                       {styleThemes.map((theme, index) => (
                         <input
@@ -4471,7 +5103,10 @@ export default function App() {
               canSyncTemplate={templatesEnabled && (getTurnMode(activeTurn) === "style" ? !!activeStyleTemplateId : !!activeTemplateId)}
               selectedImageKeys={selectedImageKeys}
               onToggleImageSelect={toggleImageSelection}
+              onRetryImage={retryImage}
+              retryingImageKeys={retryingImageKeys}
               compactStyleHistory={false}
+              truncatePromptText={false}
             />
           </section>
         )}
@@ -4495,7 +5130,10 @@ export default function App() {
                     canSyncTemplate={templatesEnabled && (getTurnMode(turn) === "style" ? !!activeStyleTemplateId : !!activeTemplateId)}
                     selectedImageKeys={selectedImageKeys}
                     onToggleImageSelect={toggleImageSelection}
-                    compactStyleHistory={getTurnMode(turn) === "style"}
+                    onRetryImage={retryImage}
+                    retryingImageKeys={retryingImageKeys}
+                    compactStyleHistory={false}
+                    truncatePromptText={true}
                   />
                 </div>
               ))}
@@ -4525,6 +5163,9 @@ export default function App() {
         prompt={gptAssistPrompt}
         draftPrompt={draftGptAssistPrompt}
         setDraftPrompt={setDraftGptAssistPrompt}
+        styleThemePrompt={styleThemeAssistPrompt}
+        draftStyleThemePrompt={draftStyleThemeAssistPrompt}
+        setDraftStyleThemePrompt={setDraftStyleThemeAssistPrompt}
         onSave={handleSaveGptAssistPrompt}
         saveStateText={gptAssistSaveStateText}
         canSave={canSaveGptAssistPrompt}
@@ -4637,10 +5278,13 @@ const S = {
   inputImagesThumb: { width: "100%", height: 50, objectFit: "cover", display: "block" },
   inputImagesEmpty: { minHeight: 50, borderRadius: 8, border: "1px dashed rgba(255,255,255,0.2)", color: "#71717a", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.02)", width: "100%" },
   modelsPanel: { border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10, background: "rgba(255,255,255,0.02)", display: "flex", flexDirection: "column", gap: 10, height: "100%" },
+  modelsPanelStyle: { width: "100%", maxWidth: "100%" },
   modelsHeadRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
   syncBtn: { padding: "6px 10px", borderRadius: 7, border: `1px solid ${THEME_GOLD_BORDER}`, background: THEME_GOLD_SOFT, color: THEME_GOLD_TEXT, fontFamily: mono, fontSize: 11, cursor: "pointer" },
   modelTemplateGrid: { display: "grid", gridTemplateColumns: "minmax(0, 5fr) minmax(0, 3fr)", gap: 12, alignItems: "stretch" },
+  modelTemplateGridStyle: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12, alignItems: "stretch" },
   modelGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
+  modelGridStyle: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
   imageSizePanel: { border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "8px 10px", background: "rgba(255,255,255,0.015)", marginTop: "auto" },
   imageSizeGroup: { display: "grid", gap: 6, marginBottom: 8 },
   imageSizeGroupTitle: { fontSize: 11, color: "#8b8b93", fontFamily: mono },
@@ -4655,7 +5299,10 @@ const S = {
   templateList: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
   styleTemplateList: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
   styleThemesPanel: { marginTop: 10, border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, padding: 8, background: "rgba(255,255,255,0.02)" },
-  styleThemesGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
+  styleThemesHeadRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 },
+  styleThemeAssistRow: { display: "grid", gridTemplateColumns: "1fr auto", gap: 8, marginBottom: 8 },
+  styleThemeAssistInput: { width: "100%", height: 30, borderRadius: 7, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(0,0,0,0.25)", color: "#e2e8f0", fontFamily: mono, fontSize: 12, padding: "0 8px", outline: "none" },
+  styleThemesGrid: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 },
   styleThemeInput: { width: "100%", height: 30, borderRadius: 7, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(0,0,0,0.25)", color: "#e2e8f0", fontFamily: mono, fontSize: 12, padding: "0 8px", outline: "none" },
   templateItem: { width: "100%", border: "1px solid rgba(63,63,70,0.9)", borderRadius: 8, padding: "8px 8px 8px 10px", background: "rgba(12,12,14,0.9)", minHeight: 38, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, textAlign: "left", color: "#71717a", cursor: "pointer", userSelect: "none", WebkitTapHighlightColor: "transparent", boxShadow: "none" },
   templateItemDisabled: { opacity: 0.55, cursor: "not-allowed" },
@@ -4668,6 +5315,7 @@ const S = {
   modelChip: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 8px", borderRadius: 7, border: "1px solid", color: "#e4e4e7", fontSize: 12, fontFamily: sans, transition: "all 0.15s", width: "100%", minHeight: 34 },
   dot: { width: 6, height: 6, borderRadius: 3, flexShrink: 0 },
   chipName: { fontWeight: 500, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 90 },
+  chipNameStyleMode: { fontWeight: 500, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 162 },
   check: { marginLeft: "auto", color: "#10a37f", fontWeight: 700, fontSize: 14 },
   countRow: { display: "flex", alignItems: "center", gap: 4 },
   countLabel: { fontSize: 11, color: "#999", fontFamily: mono, width: 10, textAlign: "center" },
@@ -4695,13 +5343,19 @@ const S = {
   imgCard: { position: "relative", borderRadius: 8, overflow: "hidden", background: "#111", border: "1px solid rgba(255,255,255,0.06)" },
   imgCardCompact: { borderRadius: 6 },
   imgCardSelected: { borderColor: "rgba(59,130,246,0.9)", boxShadow: "0 0 0 1px rgba(59,130,246,0.35) inset" },
+  imageRetryBtn: { position: "absolute", top: 8, right: 8, zIndex: 4, width: 24, height: 24, borderRadius: 12, border: "1px solid rgba(226,232,240,0.7)", background: "rgba(15,23,42,0.72)", color: "#e2e8f0", fontFamily: mono, fontSize: 13, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 },
+  imageRetryBtnCompact: { top: 4, right: 4, width: 16, height: 16, borderRadius: 8, fontSize: 10 },
+  imageRetryBtnBusy: { opacity: 0.7, cursor: "wait" },
   imageSelectBtn: { position: "absolute", top: 8, right: 8, zIndex: 3, width: 24, height: 24, borderRadius: 12, border: "1px solid rgba(226,232,240,0.7)", background: "rgba(15,23,42,0.72)", color: "#e2e8f0", fontFamily: mono, fontSize: 12, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 },
   imageSelectBtnCompact: { top: 4, right: 4, width: 16, height: 16, borderRadius: 8, fontSize: 10 },
+  imageSelectBtnBottom: { top: "auto", bottom: 4, right: 4 },
   imageSelectBtnActive: { borderColor: "rgba(16,163,127,0.9)", background: "rgba(5,150,105,0.92)", color: "#dcfce7" },
   imageThemeTag: { position: "absolute", left: 8, top: 8, zIndex: 2, maxWidth: "70%", padding: "2px 7px", borderRadius: 999, fontSize: 10, fontFamily: mono, color: THEME_PRIMARY_TEXT, background: "rgba(6,78,59,0.82)", border: `1px solid ${THEME_PRIMARY_BORDER}`, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   imageThemeTagCompact: { left: 4, top: 4, maxWidth: "75%", padding: "1px 5px", fontSize: 9, borderRadius: 999 },
   thumb: { width: "100%", aspectRatio: "4 / 3", objectFit: "contain", cursor: "pointer", display: "block", background: "#0b0b0d" },
   thumbCompact: { width: "100%", aspectRatio: "1 / 1", objectFit: "cover", cursor: "pointer", display: "block", background: "#0b0b0d" },
+  thumbRetrying: { width: "100%", aspectRatio: "4 / 3", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(2,6,23,0.65)", color: "#cbd5e1", fontFamily: mono, fontSize: 12 },
+  thumbRetryingCompact: { width: "100%", aspectRatio: "1 / 1", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(2,6,23,0.65)", color: "#cbd5e1", fontFamily: mono, fontSize: 10 },
   dlBtn: { width: "100%", padding: "8px 0", border: "none", borderTop: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.04)", color: "#aaa", fontSize: 12, fontFamily: mono, cursor: "pointer" },
   modalOverlay: { position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.8)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", animation: "fadeIn 0.15s ease" },
   settingsModal: { width: "90%", maxWidth: 560, background: "#161618", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 16, padding: 28, maxHeight: "80vh", overflow: "auto" },
@@ -4725,13 +5379,20 @@ const S = {
   turnModeBadge: { display: "inline-flex", alignItems: "center", marginLeft: 8, padding: "2px 8px", borderRadius: 999, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT, fontSize: 11, fontFamily: mono },
   turnPromptCards: { flex: "1 1 320px", minWidth: 220, display: "grid", gap: 10 },
   turnPromptCard: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.03)", padding: "12px 14px" },
+  turnPromptCardCompact: { maxHeight: 96, overflow: "hidden" },
   turnPromptBadge: { display: "inline-flex", alignItems: "center", padding: "2px 8px", borderRadius: 999, background: THEME_GOLD_SOFT, color: THEME_GOLD, fontSize: 10, fontFamily: mono, marginBottom: 8 },
   turnPromptText: { fontSize: 13, color: "#e4e4e7", whiteSpace: "pre-wrap", lineHeight: 1.5 },
+  turnPromptTextCompact: { maxHeight: 72, overflow: "hidden" },
   promptChipReadonly: { background: "rgba(59,130,246,0.18)", color: THEME_PRIMARY_TEXT, border: "1px solid rgba(59,130,246,0.62)", borderRadius: 6, padding: "1px 6px", display: "inline-block", margin: "0 1px" },
   styleHistorySummary: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: 10, display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 8 },
   styleSummaryItem: { borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(0,0,0,0.24)", padding: "8px 10px", display: "grid", gap: 4 },
   styleSummaryKey: { fontSize: 10, color: "#71717a", fontFamily: mono, textTransform: "uppercase", letterSpacing: 0.4 },
   styleSummaryVal: { fontSize: 12, color: "#e4e4e7", fontFamily: mono, fontWeight: 600 },
+  turnStyleUnifiedWrap: { display: "grid", gap: 10 },
+  turnStyleFailedLine: { borderRadius: 8, border: "1px solid rgba(239,68,68,0.35)", background: "rgba(127,29,29,0.2)", color: "#fca5a5", fontFamily: mono, fontSize: 11, padding: "7px 10px" },
+  turnStyleImageBox: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: 10, display: "grid", gap: 8 },
+  turnStyleImageHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" },
+  turnStyleImageEmpty: { borderRadius: 8, border: "1px dashed rgba(255,255,255,0.14)", background: "rgba(0,0,0,0.2)", color: "#71717a", fontFamily: mono, fontSize: 12, padding: "14px 10px", textAlign: "center" },
   turnCompareResultsGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 },
   turnStyleResultsGrid: { display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 10 },
   turnResultGroup: { marginTop: 16 },

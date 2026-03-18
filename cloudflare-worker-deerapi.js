@@ -82,26 +82,43 @@ export default {
 
       const body = method === "POST" ? await request.text() : undefined;
 
-      const requestApiKey = (request.headers.get("X-Api-Key") || "").trim();
-      const fallbackApiKey = (env.DEERAPI_KEY || "").trim();
+      const requestApiKey = normalizeApiKey(request.headers.get("X-Api-Key") || "");
+      const fallbackApiKey = normalizeApiKey(env.DEERAPI_KEY || "");
       const apiKey = requestApiKey || fallbackApiKey;
       if (!apiKey) {
         return json({ error: "API key missing. Provide X-Api-Key or configure DEERAPI_KEY." }, 400);
       }
 
       const isGemini = targetPath.includes("/v1beta/");
-      const authHeader = isGemini ? apiKey : `Bearer ${apiKey}`;
+      const primaryAuth = isGemini ? apiKey : `Bearer ${apiKey}`;
+      const fallbackAuth = isGemini ? `Bearer ${apiKey}` : apiKey;
+      const baseHeaders = {
+        "Content-Type": "application/json",
+        "X-Api-Key": apiKey,
+        "X-Goog-Api-Key": apiKey,
+      };
+      const forward = (authorization) =>
+        fetch(`${upstreamBase}${targetPath}`, {
+          method,
+          headers: {
+            ...baseHeaders,
+            "Authorization": authorization,
+          },
+          body,
+        });
 
-      const resp = await fetch(`${upstreamBase}${targetPath}`, {
-        method,
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": authHeader,
-        },
-        body,
-      });
+      let resp = await forward(primaryAuth);
+      let data = await resp.text();
+      const authError = /auth|authorization|api.?key|bearer|x-goog-api-key|invalid key|token|密钥/i.test(data);
+      if ([400, 401, 403].includes(resp.status) && authError && fallbackAuth !== primaryAuth) {
+        const retry = await forward(fallbackAuth);
+        const retryData = await retry.text();
+        if (retry.ok || !resp.ok) {
+          resp = retry;
+          data = retryData;
+        }
+      }
 
-      const data = await resp.text();
       return new Response(data, {
         status: resp.status,
         headers: {
@@ -124,6 +141,17 @@ function corsHeaders() {
 }
 
 const DEFAULT_UPSTREAM_BASE = "https://api.deerapi.com";
+
+function normalizeApiKey(value) {
+  if (typeof value !== "string") return "";
+  let next = value.trim();
+  if (!next) return "";
+  next = next.replace(/^authorization\s*:\s*/i, "").trim();
+  next = next.replace(/^x-goog-api-key\s*:\s*/i, "").trim();
+  next = next.replace(/^bearer\s+/i, "").trim();
+  next = next.replace(/^["']+|["']+$/g, "").trim();
+  return next;
+}
 
 function resolveUpstreamBase(value) {
   if (!value) return DEFAULT_UPSTREAM_BASE;
