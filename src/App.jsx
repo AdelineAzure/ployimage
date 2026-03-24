@@ -2883,11 +2883,13 @@ function HelpPage() {
       en: [
         "Input images support multi-select uploads.",
         "The main input box uploads directly, while `Edit` opens a manager to add or remove images.",
+        "In `Current Dialog` and `History Dialogs`, click the magnifier on the input image to expand it in place. Click the enlarged image first, then use the wheel to zoom, drag to pan, and click the corner collapse button to restore the thumbnail.",
         "In `Style`, reference images open their own editor modal.",
       ],
       cn: [
         "输入图支持一次多选上传。",
         "主输入框点击后会直接上传，`Edit` 会打开管理弹窗用于删除或新增图片。",
+        "在 `Current Dialog` 和 `History Dialogs` 中，点击输入图上的放大镜，可以在原位置展开大图。先点一下大图，再用滚轮缩放、拖拽平移，点击右上角缩小按钮即可恢复缩略图。",
         "在 `Style` 里，参考图使用独立的编辑弹窗。",
       ],
     },
@@ -2993,6 +2995,116 @@ function ImagePreviewModal({ src, onClose }) {
       <div style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
         <button onClick={onClose} style={{ ...S.closeBtn, position: "absolute", top: 12, right: 12, zIndex: 10 }}>✕</button>
         <img src={src} alt="Full" style={{ maxWidth: "90vw", maxHeight: "85vh", borderRadius: 8 }} />
+      </div>
+    </div>
+  );
+}
+
+function InlineZoomViewer({ src, onCollapse }) {
+  const viewportRef = useRef(null);
+  const dragRef = useRef(null);
+  const [scale, setScale] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const [wheelActive, setWheelActive] = useState(false);
+
+  const clampScale = useCallback((value) => Math.max(1, Math.min(6, Number(value) || 1)), []);
+
+  useEffect(() => {
+    setScale(1);
+    setOffset({ x: 0, y: 0 });
+    setDragging(false);
+    setWheelActive(false);
+    dragRef.current = null;
+  }, [src]);
+
+  const handleWheel = useCallback((event) => {
+    if (!wheelActive) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const delta = event.deltaY < 0 ? 0.2 : -0.2;
+    setScale((prev) => {
+      const next = clampScale(prev + delta);
+      if (next <= 1.02) {
+        setOffset({ x: 0, y: 0 });
+      }
+      return next;
+    });
+  }, [clampScale, wheelActive]);
+
+  useEffect(() => {
+    const node = viewportRef.current;
+    if (!node) return undefined;
+    const onWheel = (event) => handleWheel(event);
+    node.addEventListener("wheel", onWheel, { passive: false });
+    return () => node.removeEventListener("wheel", onWheel);
+  }, [handleWheel]);
+
+  useEffect(() => {
+    if (!dragging) return undefined;
+    const handleMove = (event) => {
+      if (!dragRef.current) return;
+      const dx = event.clientX - dragRef.current.startX;
+      const dy = event.clientY - dragRef.current.startY;
+      setOffset({
+        x: dragRef.current.originX + dx,
+        y: dragRef.current.originY + dy,
+      });
+    };
+    const handleUp = () => {
+      setDragging(false);
+      dragRef.current = null;
+    };
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+  }, [dragging]);
+
+  const handleMouseDown = useCallback((event) => {
+    if (event.button !== 0) return;
+    setWheelActive(true);
+    if (scale <= 1.02) return;
+    event.preventDefault();
+    dragRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: offset.x,
+      originY: offset.y,
+    };
+    setDragging(true);
+  }, [offset.x, offset.y, scale]);
+
+  if (!src) return null;
+
+  return (
+    <div style={S.inlineZoomViewer}>
+      <button type="button" style={S.inlineZoomViewerCollapseBtn} onClick={onCollapse} title="Collapse">
+        ↙
+      </button>
+      <div
+        ref={viewportRef}
+        style={S.inlineZoomViewerViewport}
+        onMouseDown={handleMouseDown}
+        onClick={() => setWheelActive(true)}
+        onDoubleClick={() => {
+          setScale(1);
+          setOffset({ x: 0, y: 0 });
+        }}
+      >
+        <img
+          src={src}
+          alt="Input Image"
+          draggable={false}
+          style={{
+            ...S.inlineZoomViewerImage,
+            transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+            transition: dragging ? "none" : "transform 0.08s ease-out",
+            cursor: scale > 1 ? (dragging ? "grabbing" : "grab") : "zoom-in",
+          }}
+        />
       </div>
     </div>
   );
@@ -3238,7 +3350,10 @@ function TurnPanel({
   compactStyleHistory = false,
   truncatePromptText = false,
   showModelSummary = true,
+  enableInlineReferenceViewer = false,
 }) {
+  const [inlineViewerSrc, setInlineViewerSrc] = useState(null);
+  const expandPromptPreview = truncatePromptText && !!inlineViewerSrc;
   const promptVariants = getTurnPromptVariants(turn);
   const turnMode = getTurnMode(turn);
   const isCompareMode = turnMode === "compare";
@@ -3250,6 +3365,13 @@ function TurnPanel({
       : turn?.prompt || promptVariants[0]?.prompt || "";
   const selectedModelIds = Array.isArray(turn?.selectedModelIds) ? turn.selectedModelIds : [];
   const styleReferenceImages = Array.isArray(turn?.styleReferenceImages) ? turn.styleReferenceImages : [];
+
+  useEffect(() => {
+    if (!turn.referenceImage && inlineViewerSrc) {
+      setInlineViewerSrc(null);
+    }
+  }, [turn.referenceImage, inlineViewerSrc]);
+
   const modelOrder = new Map(selectedModelIds.map((id, index) => [id, index]));
   const promptVariantOrder = new Map(promptVariants.map((variant, index) => [variant.key, index]));
   const styleResults = isStyleMode
@@ -3378,53 +3500,105 @@ function TurnPanel({
         </div>
       ) : (
         <>
-          <div style={S.turnPromptRow}>
+          <div style={{ ...S.turnPromptRow, ...(expandPromptPreview ? S.turnPromptRowExpanded : null) }}>
             <div
               style={{
                 ...S.turnPromptCards,
                 gridTemplateColumns: isCompareMode ? "repeat(2, minmax(0, 1fr))" : "1fr",
+                ...(expandPromptPreview ? S.turnPromptCardsExpanded : null),
               }}
             >
               {isStyleMode ? (
-                <div style={{ ...S.turnPromptCard, ...(truncatePromptText ? S.turnPromptCardCompact : null) }}>
-                  <div style={{ ...S.turnPromptText, ...(truncatePromptText ? S.turnPromptTextCompact : null) }}>
-                    {styleBasePrompt ? <PromptTextWithChips text={getPromptPreviewText(styleBasePrompt)} /> : "(no prompt)"}
+                <div
+                  style={{
+                    ...S.turnPromptCard,
+                    ...(truncatePromptText ? S.turnPromptCardCompact : null),
+                    ...(expandPromptPreview ? S.turnPromptCardExpanded : null),
+                  }}
+                >
+                  <div
+                    style={{
+                      ...S.turnPromptText,
+                      ...(truncatePromptText ? S.turnPromptTextCompact : null),
+                      ...(expandPromptPreview ? S.turnPromptTextExpanded : null),
+                    }}
+                  >
+                    {styleBasePrompt ? <PromptTextWithChips text={getPromptPreviewText(styleBasePrompt, expandPromptPreview ? 960 : 220)} /> : "(no prompt)"}
                   </div>
                 </div>
               ) : (
                 promptVariants.map((variant) => (
-                  <div key={variant.key} style={{ ...S.turnPromptCard, ...(truncatePromptText ? S.turnPromptCardCompact : null) }}>
+                  <div
+                    key={variant.key}
+                    style={{
+                      ...S.turnPromptCard,
+                      ...(truncatePromptText ? S.turnPromptCardCompact : null),
+                      ...(expandPromptPreview ? S.turnPromptCardExpanded : null),
+                    }}
+                  >
                     {isCompareMode && <div style={S.turnPromptBadge}>{variant.label}</div>}
-                    <div style={{ ...S.turnPromptText, ...(truncatePromptText ? S.turnPromptTextCompact : null) }}>
-                      {variant.prompt ? <PromptTextWithChips text={getPromptPreviewText(variant.prompt)} /> : "(no prompt)"}
+                    <div
+                      style={{
+                        ...S.turnPromptText,
+                        ...(truncatePromptText ? S.turnPromptTextCompact : null),
+                        ...(expandPromptPreview ? S.turnPromptTextExpanded : null),
+                      }}
+                    >
+                      {variant.prompt ? <PromptTextWithChips text={getPromptPreviewText(variant.prompt, expandPromptPreview ? 960 : 220)} /> : "(no prompt)"}
                     </div>
                   </div>
                 ))
               )}
             </div>
             {(turn.referenceImage || styleReferenceImages.length > 0) && (
-              <div style={S.turnRefImageStack}>
-                {turn.referenceImage && (
-                  <button
-                    type="button"
-                    style={S.turnRefImageBtn}
-                    onClick={() => onPreview?.(turn.referenceImage)}
-                    title="Preview reference image"
-                  >
-                    <img src={turn.referenceImage} alt="Reference" style={S.turnRefImage} />
-                  </button>
-                )}
-                {styleReferenceImages.map((image, index) => (
-                  <button
-                    key={`style-ref-${turn.id}-${index}`}
-                    type="button"
-                    style={S.turnRefImageBtn}
-                    onClick={() => onPreview?.(image)}
-                    title={`Preview style image ${index + 1}`}
-                  >
-                    <img src={image} alt={`Style ${index + 1}`} style={S.turnRefImage} />
-                  </button>
-                ))}
+              <div style={{ ...S.turnRefViewerCol, ...(expandPromptPreview ? S.turnRefViewerColExpanded : null) }}>
+                <div style={S.turnRefImageStack}>
+                  {turn.referenceImage && (
+                    inlineViewerSrc ? (
+                      <InlineZoomViewer
+                        src={inlineViewerSrc}
+                        onCollapse={() => {
+                          setInlineViewerSrc(null);
+                        }}
+                      />
+                    ) : (
+                      <div style={S.turnRefImageWrap}>
+                        <button
+                          type="button"
+                          style={S.turnRefImageBtn}
+                          onClick={() => onPreview?.(turn.referenceImage)}
+                          title="Preview reference image"
+                        >
+                          <img src={turn.referenceImage} alt="Reference" style={S.turnRefImage} />
+                        </button>
+                        {enableInlineReferenceViewer && (
+                          <button
+                            type="button"
+                            style={S.turnRefImageZoomBtn}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setInlineViewerSrc(turn.referenceImage);
+                            }}
+                            title="Open inline viewer"
+                          >
+                            🔍
+                          </button>
+                        )}
+                      </div>
+                    )
+                  )}
+                  {styleReferenceImages.map((image, index) => (
+                    <button
+                      key={`style-ref-${turn.id}-${index}`}
+                      type="button"
+                      style={S.turnRefImageBtn}
+                      onClick={() => onPreview?.(image)}
+                      title={`Preview style image ${index + 1}`}
+                    >
+                      <img src={image} alt={`Style ${index + 1}`} style={S.turnRefImage} />
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>
@@ -5576,6 +5750,7 @@ export default function App() {
               compactStyleHistory={false}
               truncatePromptText={false}
               showModelSummary={true}
+              enableInlineReferenceViewer={true}
             />
           </section>
         )}
@@ -5605,6 +5780,7 @@ export default function App() {
                     compactStyleHistory={false}
                     truncatePromptText={true}
                     showModelSummary={false}
+                    enableInlineReferenceViewer={true}
                   />
                 </div>
               ))}
@@ -5908,13 +6084,17 @@ const S = {
   atlasModalPreviewImg: { width: "100%", display: "block", objectFit: "contain", background: "#0b0b0d" },
   turnActionBtn: { height: 28, padding: "0 10px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.04)", color: "#d4d4d8", fontSize: 11, fontFamily: mono, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1 },
   turnPromptRow: { marginBottom: 10, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" },
+  turnPromptRowExpanded: { display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px", alignItems: "stretch", justifyContent: "stretch" },
   turnModeBadge: { display: "inline-flex", alignItems: "center", marginLeft: 8, padding: "2px 8px", borderRadius: 999, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT, fontSize: 11, fontFamily: mono },
   turnPromptCards: { flex: "1 1 320px", minWidth: 220, display: "grid", gap: 10 },
+  turnPromptCardsExpanded: { minHeight: 320, alignSelf: "stretch" },
   turnPromptCard: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.03)", padding: "12px 14px" },
   turnPromptCardCompact: { maxHeight: 96, overflow: "hidden" },
+  turnPromptCardExpanded: { maxHeight: 320, minHeight: 320, overflow: "hidden" },
   turnPromptBadge: { display: "inline-flex", alignItems: "center", padding: "2px 8px", borderRadius: 999, background: THEME_GOLD_SOFT, color: THEME_GOLD, fontSize: 10, fontFamily: mono, marginBottom: 8 },
   turnPromptText: { fontSize: 13, color: "#e4e4e7", whiteSpace: "pre-wrap", lineHeight: 1.5 },
   turnPromptTextCompact: { maxHeight: 72, overflow: "hidden" },
+  turnPromptTextExpanded: { maxHeight: 292, overflow: "hidden" },
   promptChipReadonly: { background: "rgba(59,130,246,0.18)", color: THEME_PRIMARY_TEXT, border: "1px solid rgba(59,130,246,0.62)", borderRadius: 6, padding: "1px 6px", display: "inline-block", margin: "0 1px" },
   styleHistorySummary: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: 10, display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 8 },
   styleSummaryItem: { borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(0,0,0,0.24)", padding: "8px 10px", display: "grid", gap: 4 },
@@ -5930,7 +6110,16 @@ const S = {
   turnResultGroup: { marginTop: 16 },
   turnResultGroupHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10, flexWrap: "wrap" },
   turnResultMeta: { fontSize: 11, color: "#71717a", fontFamily: mono },
-  turnRefImageStack: { display: "flex", gap: 8, alignItems: "center", flexWrap: "nowrap", overflowX: "auto", paddingBottom: 2, maxWidth: "100%" },
+  turnRefViewerCol: { display: "grid", gap: 10, alignItems: "start", justifyItems: "start", flex: "0 0 auto", minWidth: 0 },
+  turnRefViewerColExpanded: { width: 320, minWidth: 320, alignSelf: "stretch" },
+  turnRefImageStack: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", overflowX: "auto", paddingBottom: 2, maxWidth: "100%" },
+  turnRefImageWrap: { position: "relative", flexShrink: 0 },
   turnRefImageBtn: { width: 96, height: 96, borderRadius: 8, padding: 0, border: "1px solid rgba(255,255,255,0.1)", overflow: "hidden", background: "transparent", cursor: "zoom-in", flexShrink: 0 },
+  turnRefImageZoomBtn: { position: "absolute", top: 6, right: 6, zIndex: 3, width: 24, height: 24, borderRadius: 12, border: "1px solid rgba(255,255,255,0.16)", background: "rgba(2,6,23,0.82)", color: "#e2e8f0", fontSize: 12, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },
+  turnRefImageZoomBtnActive: { borderColor: THEME_PRIMARY_BORDER, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT },
   turnRefImage: { width: "100%", height: "100%", objectFit: "cover", display: "block" },
+  inlineZoomViewer: { position: "relative", width: 320, maxWidth: "min(320px, 100%)", height: 320, borderRadius: 12, border: `1px solid ${THEME_PRIMARY_BORDER}`, background: "rgba(8,47,73,0.22)", boxShadow: "0 0 0 1px rgba(59,130,246,0.18), 0 12px 30px rgba(2,6,23,0.28)", overflow: "hidden", flexShrink: 0 },
+  inlineZoomViewerCollapseBtn: { position: "absolute", top: 8, right: 8, zIndex: 4, width: 26, height: 26, borderRadius: 13, border: `1px solid ${THEME_PRIMARY_BORDER}`, background: "rgba(2,6,23,0.78)", color: THEME_PRIMARY_TEXT, fontSize: 13, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },
+  inlineZoomViewerViewport: { width: "100%", height: "100%", overflow: "hidden", background: "#0b0b0d", display: "flex", alignItems: "center", justifyContent: "center", userSelect: "none" },
+  inlineZoomViewerImage: { maxWidth: "100%", maxHeight: "100%", objectFit: "contain", transformOrigin: "center center", willChange: "transform", userSelect: "none" },
 };
