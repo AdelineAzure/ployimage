@@ -19,7 +19,7 @@ npm install
 npm run dev
 ```
 
-浏览器打开终端输出的本地地址（默认 `http://localhost:5173`），看到 POLYIMAGE 页面即“网页可见”。
+浏览器打开终端输出的本地地址（默认 `http://localhost:5173`）。
 
 ### 配置 API 通路（让生成真正可用）
 1. 将根目录 `cloudflare-worker-deerapi.js` 部署到 Cloudflare Worker。

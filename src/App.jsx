@@ -6,6 +6,7 @@ const IMAGE_MODELS = [
   // Seedream — /v1/images/generations (豆包生图)
   { id: "doubao-seedream-4-0-250828", name: "Seedream 4.0", shortName: "Seed 4.0", provider: "ByteDance", apiType: "images" },
   { id: "doubao-seedream-4-5-251128", name: "Seedream 4.5", shortName: "Seed 4.5", provider: "ByteDance", apiType: "images", badge: "NEW" },
+  { id: "doubao-seedream-5-0-260128", name: "Seedream 5.0 Lite", shortName: "Seed 5", provider: "ByteDance", apiType: "images", badge: "NEW" },
   // Midjourney via /mj
   { id: "midjourney-imagine", name: "Midjourney Imagine", shortName: "Midjourney", provider: "Midjourney", apiType: "midjourney", badge: "BETA" },
   // GPT‑1.5 image — 依旧走 /v1/images/generations
@@ -58,7 +59,7 @@ const MAX_TEMPLATES = 8;
 const MAX_STYLE_TEMPLATES = 2;
 const STYLE_THEME_SLOTS = 12;
 const MAX_STYLE_REFERENCE_IMAGES = 4;
-const MAX_STYLE_SELECTED_IMAGES = 15;
+const MAX_ATLAS_SELECTED_IMAGES = 20;
 const MAX_INPUT_IMAGES_PER_BATCH = 10;
 const TEMPLATE_FILE_NAME = "templates.json";
 const STYLE_TEMPLATE_FILE_NAME = "style-templates.json";
@@ -69,6 +70,7 @@ const DEFAULT_TEMPLATES = Array.from({ length: MAX_TEMPLATES }, (_, index) => ({
   title: `Preset ${index + 1}`,
   body: "",
   backup: "",
+  memo: "",
 }));
 const DEFAULT_STYLE_TEMPLATES = Array.from({ length: MAX_STYLE_TEMPLATES }, (_, index) => ({
   id: `style-template-${index + 1}`,
@@ -564,7 +566,7 @@ function loadImageElement(src) {
 async function createAtlasThumbnailDataUrl(imageSources = [], options = {}) {
   const sources = (Array.isArray(imageSources) ? imageSources : [])
     .filter((item) => typeof item === "string" && item.trim())
-    .slice(0, MAX_STYLE_SELECTED_IMAGES);
+    .slice(0, MAX_ATLAS_SELECTED_IMAGES);
   if (!sources.length) return null;
 
   const rows = Math.max(1, Number(options.rows) || 3);
@@ -812,6 +814,10 @@ function buildTurnImageKey(turnId, modelId, promptKey = "single", index = 1) {
   return `${turnId}:${modelId}:${promptKey || "single"}:${Math.max(1, Number(index) || 1)}`;
 }
 
+function buildTurnTaskKey(turnId, modelId, promptKey = "single") {
+  return `${turnId}:${modelId}:${promptKey || "single"}`;
+}
+
 function toPersistableTurns(turns) {
   return turns.slice(0, 30);
 }
@@ -863,6 +869,7 @@ function normalizeTemplate(input, index = 0) {
     title,
     body: typeof input?.body === "string" ? input.body : "",
     backup: typeof input?.backup === "string" ? input.backup : "",
+    memo: typeof input?.memo === "string" ? input.memo : "",
   };
 }
 
@@ -2466,10 +2473,15 @@ function GptAssistModal({
 function TemplateEditorModal({ show, onClose, draft, setDraft, onSave, canSave }) {
   const bodyEditorRef = useRef(null);
   const backupEditorRef = useRef(null);
+  const memoEditorRef = useRef(null);
 
   const insertPlaceholderInTemplate = useCallback((field) => {
     if (field === "backup") {
       backupEditorRef.current?.insertPlaceholder?.();
+      return;
+    }
+    if (field === "memo") {
+      memoEditorRef.current?.insertPlaceholder?.();
       return;
     }
     bodyEditorRef.current?.insertPlaceholder?.();
@@ -2510,6 +2522,17 @@ function TemplateEditorModal({ show, onClose, draft, setDraft, onSave, canSave }
           onChange={(next) => setDraft((prev) => ({ ...prev, backup: next }))}
           editorRef={backupEditorRef}
           placeholder="Backup template content"
+          rows={4}
+        />
+        <div style={{ ...S.templateFieldHead, marginTop: 14 }}>
+          <label style={{ ...S.fieldLabel, marginBottom: 0 }}>Memo</label>
+          <button type="button" style={S.placeholderBtn} onClick={() => insertPlaceholderInTemplate("memo")} title="插入占位框 {{ }}">【】</button>
+        </div>
+        <TokenPromptInput
+          value={draft.memo}
+          onChange={(next) => setDraft((prev) => ({ ...prev, memo: next }))}
+          editorRef={memoEditorRef}
+          placeholder="Notes, spare prompts, or copied backups"
           rows={4}
         />
         <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
@@ -2571,44 +2594,37 @@ function StyleTemplateEditorModal({ show, onClose, draft, setDraft, onSave, canS
 function InputImagesModal({ show, onClose, title, images, maxCount, onUploadFiles, onRemoveAt }) {
   const fileInputRef = useRef(null);
   if (!show) return null;
-  const slots = Array.from({ length: Math.max(1, Number(maxCount) || 1) }, (_, index) => images[index] || null);
+  const safeImages = Array.isArray(images)
+    ? images.filter((item) => typeof item === "string" && item).slice(0, Math.max(1, Number(maxCount) || 1))
+    : [];
+  const remainingCount = Math.max(0, (Math.max(1, Number(maxCount) || 1) - safeImages.length));
 
   return (
     <div style={S.modalOverlay} onClick={onClose}>
-      <div style={S.settingsModal} onClick={(event) => event.stopPropagation()}>
+      <div style={{ ...S.settingsModal, ...S.inputImagesModal }} onClick={(event) => event.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
           <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>{title || "Images"}</h2>
           <button onClick={onClose} style={S.closeBtn}>✕</button>
         </div>
-        <div
-          style={{
-            ...S.modalInputImagesGrid,
-            gridTemplateColumns: slots.length === 1 ? "1fr" : "repeat(2, minmax(0, 1fr))",
-          }}
-        >
-          {slots.map((image, index) =>
-            image ? (
-              <div key={`modal-image-${index}`} style={S.modalInputImageCell}>
-                <img src={image} alt={`Input ${index + 1}`} style={S.modalInputImageThumb} />
-                <button type="button" style={S.modalInputImageRemoveBtn} onClick={() => onRemoveAt(index)}>✕</button>
-              </div>
-            ) : (
-              <div key={`modal-empty-${index}`} style={S.modalInputImageEmpty}>Empty</div>
-            )
-          )}
+        <div style={S.modalInputImagesHint}>
+          First slot is upload. Changes save automatically when you close.
         </div>
-        <div style={S.modalInputImagesActions}>
+        <div style={S.modalInputImagesGrid}>
           <button
             type="button"
-            style={S.apiSaveBtn}
+            style={{ ...S.modalInputImageEmpty, ...(remainingCount <= 0 ? S.modalInputImageEmptyDisabled : null) }}
             onClick={() => fileInputRef.current?.click()}
-            disabled={images.length >= slots.length}
+            disabled={remainingCount <= 0}
           >
-            Upload Images
+            <span style={S.modalInputImageUploadPlus}>+</span>
+            <span style={S.modalInputImageUploadText}>Upload</span>
           </button>
-          <button type="button" style={S.apiSaveBtn} onClick={onClose}>
-            Done
-          </button>
+          {safeImages.map((image, index) => (
+            <div key={`modal-image-${index}`} style={S.modalInputImageCell}>
+              <img src={image} alt={`Input ${index + 1}`} style={S.modalInputImageThumb} />
+              <button type="button" style={S.modalInputImageRemoveBtn} onClick={() => onRemoveAt(index)}>✕</button>
+            </div>
+          ))}
         </div>
         <input
           ref={fileInputRef}
@@ -2617,13 +2633,318 @@ function InputImagesModal({ show, onClose, title, images, maxCount, onUploadFile
           multiple
           style={{ display: "none" }}
           onChange={async (event) => {
-            const files = Array.from(event.target.files || []);
+            const files = Array.from(event.target.files || []).slice(0, remainingCount);
             if (files.length) await onUploadFiles(files);
             event.target.value = "";
           }}
         />
       </div>
     </div>
+  );
+}
+
+function SelectionLimitModal({ show, onClose, limit }) {
+  if (!show) return null;
+  return (
+    <div style={S.modalOverlay} onClick={onClose}>
+      <div style={S.selectionLimitModal} onClick={(event) => event.stopPropagation()}>
+        <div style={S.selectionLimitTitle}>Selection limit reached</div>
+        <div style={S.selectionLimitText}>You can select up to {limit} images for atlas export.</div>
+      </div>
+    </div>
+  );
+}
+
+function ImageActionBar({ onSave, onRetry, onAppend, compact = false, busy = false, allowSave = true }) {
+  const buttonStyle = compact ? S.imageActionBtnCompact : S.imageActionBtn;
+  const iconStyle = compact ? S.imageActionIconCompact : S.imageActionIcon;
+  const plusStyle = compact ? S.imageActionPlusCompact : S.imageActionPlus;
+  return (
+    <div style={{ ...S.imageActionBar, ...(compact ? S.imageActionBarCompact : null) }}>
+      <button
+        type="button"
+        style={{ ...buttonStyle, ...(allowSave ? null : S.imageActionBtnDisabled) }}
+        onClick={onSave}
+        disabled={!allowSave}
+        title="Save"
+      >
+        <span style={iconStyle}>↓</span>
+      </button>
+      <button
+        type="button"
+        style={{ ...buttonStyle, ...(busy ? S.imageActionBtnBusy : null) }}
+        onClick={onRetry}
+        disabled={busy || typeof onRetry !== "function"}
+        title="Retry"
+      >
+        <span style={iconStyle}>↻</span>
+      </button>
+      <button
+        type="button"
+        style={{ ...buttonStyle, ...(busy ? S.imageActionBtnBusy : null) }}
+        onClick={onAppend}
+        disabled={busy || typeof onAppend !== "function"}
+        title="Add one more"
+      >
+        <span style={plusStyle}>+1</span>
+      </button>
+    </div>
+  );
+}
+
+function AtlasThumbnailModal({ show, onClose, items, onReorder, onGenerate, thumbnail, busy, onPreview }) {
+  const [dragKey, setDragKey] = useState(null);
+
+  useEffect(() => {
+    if (!show) setDragKey(null);
+  }, [show]);
+
+  if (!show) return null;
+
+  return (
+    <div style={S.modalOverlay} onClick={onClose}>
+      <div style={{ ...S.settingsModal, maxWidth: 880 }} onClick={(event) => event.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>Thumbnail</h2>
+          <button onClick={onClose} style={S.closeBtn}>✕</button>
+        </div>
+        <div style={S.atlasModalHint}>Drag to reorder. Atlas export and thumbnail follow this order.</div>
+        {items.length ? (
+          <div style={S.atlasModalGrid}>
+            {items.map((item, index) => (
+              <div
+                key={item.key}
+                draggable
+                onDragStart={() => setDragKey(item.key)}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={() => {
+                  if (!dragKey || dragKey === item.key) return;
+                  onReorder?.(dragKey, item.key);
+                  setDragKey(null);
+                }}
+                onDragEnd={() => setDragKey(null)}
+                style={{
+                  ...S.atlasModalCard,
+                  ...(dragKey === item.key ? S.atlasModalCardDragging : null),
+                }}
+              >
+                <div style={S.atlasModalCardOrder}>{index + 1}</div>
+                <img src={item.image} alt={item.theme || item.modelName || `Selected ${index + 1}`} style={S.atlasModalCardThumb} />
+                <div style={S.atlasModalCardMeta}>
+                  <div style={S.atlasModalCardTitle}>{item.theme || item.modelName || `Image ${index + 1}`}</div>
+                  <div style={S.atlasModalCardSub}>{item.modelName || item.modelId || "-"}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={S.turnStyleImageEmpty}>No selected images yet.</div>
+        )}
+        <div style={{ ...S.modalInputImagesActions, justifyContent: "space-between", marginTop: 16 }}>
+          <button
+            type="button"
+            style={{ ...S.zipBtn, padding: "8px 14px", fontSize: 12, opacity: thumbnail ? 1 : 0.5, cursor: thumbnail ? "pointer" : "not-allowed" }}
+            onClick={() => thumbnail && onPreview?.(thumbnail)}
+            disabled={!thumbnail}
+          >
+            Preview
+          </button>
+          <button
+            type="button"
+            style={{ ...S.apiSaveBtn, opacity: items.length ? 1 : 0.5, cursor: items.length ? "pointer" : "not-allowed" }}
+            onClick={onGenerate}
+            disabled={!items.length || busy}
+          >
+            {busy ? "Processing..." : thumbnail ? "Refresh Thumbnail" : "Generate Thumbnail"}
+          </button>
+        </div>
+        {thumbnail && (
+          <div style={S.atlasModalPreview}>
+            <img src={thumbnail} alt="Atlas thumbnail" style={S.atlasModalPreviewImg} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function HelpRichText({ text, style }) {
+  const source = typeof text === "string" ? text : "";
+  const parts = source.split(/(`[^`]+`)/g).filter(Boolean);
+  return (
+    <p style={style}>
+      {parts.map((part, index) =>
+        part.startsWith("`") && part.endsWith("`") ? (
+          <code key={`${part}-${index}`} style={S.helpInlineCode}>
+            {part.slice(1, -1)}
+          </code>
+        ) : (
+          <span key={`${part}-${index}`}>{part}</span>
+        )
+      )}
+    </p>
+  );
+}
+
+function HelpParagraphs({ text, style }) {
+  const lines = Array.isArray(text)
+    ? text.filter((item) => typeof item === "string" && item.trim())
+    : [typeof text === "string" ? text : ""].filter((item) => item.trim());
+  return (
+    <div style={S.helpParagraphGroup}>
+      {lines.map((line, index) => (
+        <div key={`${line}-${index}`} style={S.helpParagraphItem}>
+          <HelpRichText text={line} style={style} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function HelpPage() {
+  const sections = [
+    {
+      title: "Getting Started",
+      fullWidth: true,
+      en: [
+        "There is no built-in account login inside this app.",
+        "First sign in to DeerAPI on the web, create or copy your API key, open this app, click `API`, and paste the key.",
+        "Then choose a `History Folder` if you want local history and templates, select a mode, pick models, fill prompt or images, and click `Enqueue Task`.",
+      ],
+      cn: [
+        "这个工具本身没有内置账号登录页面。",
+        "先去 DeerAPI 网页端登录，创建或复制你的 API Key；回到本工具后点击 `API` 填入密钥。",
+        "如果你想保存本地历史和模板，再选择一个 `History Folder`；之后选择模式、勾选模型、填写提示词或上传图片，再点击 `Enqueue Task` 即可开始。",
+      ],
+    },
+    {
+      title: "Modes",
+      en: [
+        "`Single` runs one prompt across selected models.",
+        "`Prompt Compare` runs prompt A and B with the same input image.",
+        "`Style` runs one model across many themes with optional reference images.",
+      ],
+      cn: [
+        "`Single` 会把一个提示词发给多个已选模型。",
+        "`Prompt Compare` 会用同一张输入图同时运行 A、B 两套提示词。",
+        "`Style` 会用一个模型批量跑多个主题词，并可搭配风格参考图。",
+      ],
+    },
+    {
+      title: "Image Actions",
+      en: [
+        "Each image has three actions: `Save` downloads it.",
+        "`Retry` replaces that image with a new render.",
+        "`+1` keeps the current images and adds one more render to the same task.",
+      ],
+      cn: [
+        "每张图片下面都有三个操作：`Save` 下载当前图。",
+        "`Retry` 会替换当前这张图。",
+        "`+1` 会保留原图并在同一任务里再追加一张新图。",
+      ],
+    },
+    {
+      title: "GPT Assistant",
+      en: [
+        "The GPT assistant currently has two uses.",
+        "In `Single` and `Prompt Compare`, click the small human button above the prompt box to rewrite only the text inside `{{ }}` while keeping the outer prompt unchanged.",
+        "In `Style`, use the `GPT 12` assistant next to the theme seed input to expand one seed idea into 12 related visual themes.",
+      ],
+      cn: [
+        "GPT 助手目前有两种用法。",
+        "在 `Single` 和 `Prompt Compare` 中，点击提示词输入框上方的人形按钮，它只会改写 `{{ }}` 内的内容，不会改动外部提示词。",
+        "在 `Style` 中，使用主题联想输入框旁边的 `GPT 12`，把一个主题种子扩展成 12 个相关视觉元素。",
+      ],
+    },
+    {
+      title: "Selections",
+      en: [
+        "Selections work across all pages and modes.",
+        "You can keep up to 20 images selected at once, clear them together, and export them into one atlas folder.",
+      ],
+      cn: [
+        "选图功能在所有页面和模式之间共用。",
+        "你最多可以同时保留 20 张选中图片，并统一清空或一起导出到同一个 atlas 文件夹。",
+      ],
+    },
+    {
+      title: "History Folder",
+      en: [
+        "Templates, API key, GPT prompt, atlas exports, and history are tied to the selected history folder.",
+        "Switching folders replaces the current loaded history instead of merging it.",
+      ],
+      cn: [
+        "模板、API Key、GPT Prompt、atlas 导出和历史记录都会绑定到当前选中的历史文件夹。",
+        "切换文件夹时，会直接替换当前历史，不会和旧内容混合。",
+      ],
+    },
+    {
+      title: "Inputs",
+      en: [
+        "Input images support multi-select uploads.",
+        "The main input box uploads directly, while `Edit` opens a manager to add or remove images.",
+        "In `Style`, reference images open their own editor modal.",
+      ],
+      cn: [
+        "输入图支持一次多选上传。",
+        "主输入框点击后会直接上传，`Edit` 会打开管理弹窗用于删除或新增图片。",
+        "在 `Style` 里，参考图使用独立的编辑弹窗。",
+      ],
+    },
+    {
+      title: "Common Errors",
+      en: [
+        "`Failed to fetch` usually means the proxy URL, network, or API endpoint is unreachable.",
+        "`No images returned` means the model accepted the request but did not return usable images, so you can try `Retry` or `+1`.",
+        "If saving or export buttons do not work, first check whether a `History Folder` has been selected.",
+      ],
+      cn: [
+        "`Failed to fetch` 通常表示代理地址、网络，或者 API 端点不可达。",
+        "`No images returned` 表示模型接收了请求，但没有返回可用图片，这时可以尝试 `Retry` 或 `+1`。",
+        "如果保存或导出按钮不能用，请先检查是否已经选择了 `History Folder`。",
+      ],
+    },
+    {
+      title: "Thumbnail",
+      en: [
+        "In `Style`, open `Thumbnail` to drag selected images into the order you want.",
+        "That order is used for both the generated thumbnail and atlas export.",
+      ],
+      cn: [
+        "在 `Style` 页面里，打开 `Thumbnail` 可以拖拽调整已选图片顺序。",
+        "这个顺序会同时用于缩略图生成和 atlas 文件夹导出。",
+      ],
+    },
+  ];
+
+  return (
+    <section style={S.helpWrap}>
+      <div style={S.helpHero}>
+        <h2 style={S.helpTitle}>Help</h2>
+        <div style={S.helpTextBlock}>
+          <HelpRichText
+            style={S.helpIntro}
+            text="Polyimage compares image models, re-runs tasks quickly, and exports selected images into one atlas folder."
+          />
+          <HelpRichText
+            style={S.helpIntroCn}
+            text="Polyimage 用来对比不同生图模型、快速重跑任务，并把选中的图片导出成一个图集文件夹。"
+          />
+        </div>
+      </div>
+      <div style={S.helpGrid}>
+        {sections.map((section) => (
+          <article key={section.title} style={{ ...S.helpCard, ...(section.fullWidth ? S.helpCardFull : null) }}>
+            <h3 style={S.helpCardTitle}>{section.title}</h3>
+            <div style={S.helpTextBlock}>
+              <HelpParagraphs text={section.en} style={S.helpCardText} />
+              <div style={S.helpLangGap} />
+              <HelpParagraphs text={section.cn} style={S.helpCardTextCn} />
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -2686,6 +3007,7 @@ function ResultColumn({
   selectedImageKeys,
   onToggleImageSelect,
   onRetryImage,
+  onAppendImage,
   retryingImageKeys,
   enableSelect = false,
   showImageLabel = false,
@@ -2697,6 +3019,7 @@ function ResultColumn({
   const visibleImages = Array.isArray(result.images) ? result.images : [];
   const generatedCount = visibleImages.length;
   const requestedCount = Math.max(1, Number(result?.requestedCount) || 1);
+  const resultTaskKey = buildTurnTaskKey(turnId, result.modelId, getResultPromptKey(result));
   const prov = PROVIDER_COLORS[model?.provider] || { bg: "#666" };
   const sc =
     result.status === "success"
@@ -2730,17 +3053,16 @@ function ResultColumn({
           <button style={{ ...S.dlBtn, marginTop: 10, borderRadius: 8, width: 120 }} onClick={onCancel}>Stop</button>
         </div>
       )}
-      {result.status === "error" && <div style={S.errArea}><p style={{ color: "#ef4444", fontSize: 13, wordBreak: "break-word" }}>{result.error}</p></div>}
-      {result.status === "cancelled" && <div style={S.errArea}><p style={{ color: "#9ca3af", fontSize: 13 }}>Cancelled by user</p></div>}
       {(result.status === "success" || result.status === "loading") && visibleImages.length > 0 && (
         <div style={compactImages ? S.imgGridCompact : S.imgGrid}>
           {visibleImages.map((img, i) => {
             const imageIndex = i + 1;
             const promptKey = getResultPromptKey(result);
             const imageKey = buildTurnImageKey(turnId, result.modelId, promptKey, imageIndex);
+            const isSelected = enableSelect ? !!selectedImageKeys?.has?.(imageKey) : false;
             return (
               <ImageCard
-                key={imageKey}
+                key={`${imageKey}:${isSelected ? "selected" : "idle"}`}
                 img={img}
                 fileStem={buildResultFileStem(result)}
                 index={imageIndex}
@@ -2749,8 +3071,9 @@ function ResultColumn({
                 compact={compactImages}
                 showSelect={enableSelect}
                 selectPosition={selectPosition}
-                selected={enableSelect ? selectedImageKeys?.has?.(imageKey) : false}
-                retrying={retryingImageKeys?.has?.(imageKey)}
+                selected={isSelected}
+                replacing={retryingImageKeys?.has?.(imageKey)}
+                busy={retryingImageKeys?.has?.(imageKey) || retryingImageKeys?.has?.(resultTaskKey)}
                 onRetry={() =>
                   onRetryImage?.({
                     key: imageKey,
@@ -2758,6 +3081,14 @@ function ResultColumn({
                     modelId: result.modelId,
                     promptKey,
                     index: imageIndex,
+                  })
+                }
+                onAppend={() =>
+                  onAppendImage?.({
+                    key: resultTaskKey,
+                    turnId,
+                    modelId: result.modelId,
+                    promptKey,
                   })
                 }
                 onToggleSelect={() =>
@@ -2779,7 +3110,40 @@ function ResultColumn({
           })}
         </div>
       )}
-      {result.status === "success" && !visibleImages.length && <div style={S.errArea}><p style={{ color: "#f59e0b", fontSize: 13 }}>No images returned.</p></div>}
+      {(result.status === "error" || result.status === "cancelled" || (result.status === "success" && !visibleImages.length)) && (
+        <div style={S.errArea}>
+          {result.status === "error" ? (
+            <p style={{ color: "#ef4444", fontSize: 13, wordBreak: "break-word" }}>{result.error}</p>
+          ) : null}
+          {result.status === "cancelled" ? (
+            <p style={{ color: "#9ca3af", fontSize: 13 }}>Cancelled by user</p>
+          ) : null}
+          {result.status === "success" && !visibleImages.length ? (
+            <p style={{ color: "#f59e0b", fontSize: 13 }}>No images returned.</p>
+          ) : null}
+          <ImageActionBar
+            allowSave={false}
+            compact
+            busy={retryingImageKeys?.has?.(resultTaskKey)}
+            onRetry={() =>
+              onRetryImage?.({
+                key: resultTaskKey,
+                turnId,
+                modelId: result.modelId,
+                promptKey: getResultPromptKey(result),
+              })
+            }
+            onAppend={() =>
+              onAppendImage?.({
+                key: resultTaskKey,
+                turnId,
+                modelId: result.modelId,
+                promptKey: getResultPromptKey(result),
+              })
+            }
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -2793,7 +3157,9 @@ function ImageCard({
   selected,
   onToggleSelect,
   onRetry,
-  retrying = false,
+  onAppend,
+  replacing = false,
+  busy = false,
   showSelect = true,
   selectPosition = "top-right",
   compact = false,
@@ -2818,17 +3184,6 @@ function ImageCard({
 
   return (
     <div style={{ ...S.imgCard, ...(compact ? S.imgCardCompact : null), ...(selected ? S.imgCardSelected : null) }}>
-      {typeof onRetry === "function" && (
-        <button
-          type="button"
-          style={{ ...S.imageRetryBtn, ...(compact ? S.imageRetryBtnCompact : null), ...(retrying ? S.imageRetryBtnBusy : null) }}
-          onClick={onRetry}
-          disabled={retrying}
-          title={retrying ? "Retrying..." : "Retry"}
-        >
-          {retrying ? "…" : "↻"}
-        </button>
-      )}
       {showSelect && (
         <button
           type="button"
@@ -2838,6 +3193,7 @@ function ImageCard({
             ...(selectPosition === "bottom-right" ? S.imageSelectBtnBottom : null),
             ...(selected ? S.imageSelectBtnActive : null),
           }}
+          onMouseDown={(event) => event.preventDefault()}
           onClick={onToggleSelect}
           title={selected ? "Unselect" : "Select"}
         >
@@ -2845,23 +3201,22 @@ function ImageCard({
         </button>
       )}
       {!!label && <div style={{ ...S.imageThemeTag, ...(compact ? S.imageThemeTagCompact : null) }}>{label}</div>}
-      {!retrying ? (
+      {!replacing ? (
         <img src={src} alt={`Gen ${index}`} style={compact ? S.thumbCompact : S.thumb} onClick={() => onPreview(src)} onError={onImgError} />
       ) : (
         <div style={compact ? S.thumbRetryingCompact : S.thumbRetrying}>Retrying…</div>
       )}
-      {!compact && (
-        <button
-          style={S.dlBtn}
-          onClick={() =>
-            src.startsWith("data:image/")
-              ? downloadDataUrl(src, `${fileStem}_${index}.png`)
-              : downloadImageUrl(src, `${fileStem}_${index}.png`)
-          }
-        >
-          ↓ Save
-        </button>
-      )}
+      <ImageActionBar
+        compact={compact}
+        busy={busy}
+        onSave={() =>
+          src.startsWith("data:image/")
+            ? downloadDataUrl(src, `${fileStem}_${index}.png`)
+            : downloadImageUrl(src, `${fileStem}_${index}.png`)
+        }
+        onRetry={onRetry}
+        onAppend={onAppend}
+      />
     </div>
   );
 }
@@ -2878,9 +3233,11 @@ function TurnPanel({
   selectedImageKeys,
   onToggleImageSelect,
   onRetryImage,
+  onAppendImage,
   retryingImageKeys,
   compactStyleHistory = false,
   truncatePromptText = false,
+  showModelSummary = true,
 }) {
   const promptVariants = getTurnPromptVariants(turn);
   const turnMode = getTurnMode(turn);
@@ -2973,9 +3330,11 @@ function TurnPanel({
           {isStyleMode && <span style={S.turnModeBadge}>Style</span>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <div style={{ fontSize: 12, color: "#71717a", fontFamily: mono }}>
-            {selectedModelIds.length ? selectedModelIds.join(" · ") : "-"}
-          </div>
+          {showModelSummary && (
+            <div style={{ fontSize: 12, color: "#71717a", fontFamily: mono }}>
+              {selectedModelIds.length ? selectedModelIds.join(" · ") : "-"}
+            </div>
+          )}
           {onSyncTemplate && (
             <button
               style={{ ...S.turnActionBtn, opacity: canSyncTemplate ? 1 : 0.45, cursor: canSyncTemplate ? "pointer" : "not-allowed" }}
@@ -3128,9 +3487,9 @@ function TurnPanel({
                           label={item.promptLabel}
                           compact
                           showSelect
-                          selectPosition="bottom-right"
                           selected={selectedImageKeys?.has?.(imageKey)}
-                          retrying={retryingImageKeys?.has?.(imageKey)}
+                          replacing={retryingImageKeys?.has?.(imageKey)}
+                          busy={retryingImageKeys?.has?.(imageKey) || retryingImageKeys?.has?.(buildTurnTaskKey(turn.id, item.modelId, item.promptKey))}
                           onRetry={() =>
                             onRetryImage?.({
                               key: imageKey,
@@ -3138,6 +3497,14 @@ function TurnPanel({
                               modelId: item.modelId,
                               promptKey: item.promptKey,
                               index: item.index,
+                            })
+                          }
+                          onAppend={() =>
+                            onAppendImage?.({
+                              key: buildTurnTaskKey(turn.id, item.modelId, item.promptKey),
+                              turnId: turn.id,
+                              modelId: item.modelId,
+                              promptKey: item.promptKey,
                             })
                           }
                           onToggleSelect={() =>
@@ -3208,8 +3575,9 @@ function TurnPanel({
                         selectedImageKeys={selectedImageKeys}
                         onToggleImageSelect={onToggleImageSelect}
                         onRetryImage={onRetryImage}
+                        onAppendImage={onAppendImage}
                         retryingImageKeys={retryingImageKeys}
-                        enableSelect={false}
+                        enableSelect
                         showImageLabel={false}
                       />
                     ))}
@@ -3235,6 +3603,7 @@ export default function App() {
     () => ({ a: compareAEditor.value, b: compareBEditor.value }),
     [compareAEditor.value, compareBEditor.value]
   );
+  const [activePage, setActivePage] = useState("workspace");
   const [taskMode, setTaskMode] = useState(DEFAULT_TASK_MODE);
   const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_BASE_URL);
   const [apiKey, setApiKey] = useState(DEFAULT_API_KEY);
@@ -3254,7 +3623,7 @@ export default function App() {
   const [activeTemplateId, setActiveTemplateId] = useState(null);
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [editingTemplateId, setEditingTemplateId] = useState(null);
-  const [templateDraft, setTemplateDraft] = useState({ title: "", body: "", backup: "" });
+  const [templateDraft, setTemplateDraft] = useState({ title: "", body: "", backup: "", memo: "" });
   const [styleTemplates, setStyleTemplates] = useState(normalizeStyleTemplates(DEFAULT_STYLE_TEMPLATES));
   const [activeStyleTemplateId, setActiveStyleTemplateId] = useState(DEFAULT_STYLE_TEMPLATES[0]?.id || null);
   const [showStyleTemplateModal, setShowStyleTemplateModal] = useState(false);
@@ -3285,6 +3654,8 @@ export default function App() {
   const [selectedAtlasItems, setSelectedAtlasItems] = useState([]);
   const [atlasThumbnail, setAtlasThumbnail] = useState(null);
   const [atlasBusy, setAtlasBusy] = useState(false);
+  const [showSelectionLimitModal, setShowSelectionLimitModal] = useState(false);
+  const [showAtlasThumbnailModal, setShowAtlasThumbnailModal] = useState(false);
   const [retryingImageKeys, setRetryingImageKeys] = useState(new Set());
   const fileRef = useRef(null);
   const activePromptFieldRef = useRef("single");
@@ -3312,34 +3683,6 @@ export default function App() {
       const raw = localStorage.getItem(LOCAL_STATE_KEY);
       if (raw) {
         const saved = JSON.parse(raw);
-        if (Array.isArray(saved.turns)) {
-          const migratedTurns = saved.turns.map((turn) => ({
-            ...turn,
-            selectedModelIds: Array.isArray(turn?.selectedModelIds) ? turn.selectedModelIds.map((id) => normalizeModelId(id)) : turn?.selectedModelIds,
-            modelCounts:
-              turn?.modelCounts && typeof turn.modelCounts === "object"
-                ? {
-                    ...turn.modelCounts,
-                    ...(typeof turn.modelCounts["nano-banana-pro-all"] === "number" &&
-                    typeof turn.modelCounts[NANO_PRO_OFFICIAL_MODEL_ID] !== "number"
-                      ? { [NANO_PRO_OFFICIAL_MODEL_ID]: turn.modelCounts["nano-banana-pro-all"] }
-                      : null),
-                    ...(typeof turn.modelCounts["gemini-3-pro-preview"] === "number" &&
-                    typeof turn.modelCounts[NANO_PRO_OFFICIAL_MODEL_ID] !== "number"
-                      ? { [NANO_PRO_OFFICIAL_MODEL_ID]: turn.modelCounts["gemini-3-pro-preview"] }
-                      : null),
-                  }
-                : turn?.modelCounts,
-            results: Array.isArray(turn?.results)
-              ? turn.results.map((result) => ({
-                  ...result,
-                  modelId: normalizeModelId(result?.modelId),
-                }))
-              : turn?.results,
-          }));
-          setTurns(migratedTurns);
-        }
-        if (typeof saved.activeTurnId === "number") setActiveTurnId(saved.activeTurnId);
         if (typeof saved.historyLimit === "number") setHistoryLimit(saved.historyLimit);
         if (Array.isArray(saved.selectedModels) && saved.selectedModels.length) {
           const migrated = saved.selectedModels.map((id) => normalizeModelId(id));
@@ -3381,9 +3724,6 @@ export default function App() {
         if (typeof saved.aspectRatio === "string" || typeof saved.geminiAspectRatio === "string") {
           setAspectRatio(normalizeAspectRatio(saved.aspectRatio ?? saved.geminiAspectRatio));
         }
-        if (Array.isArray(saved.hiddenTurnIds)) {
-          setHiddenTurnIds(saved.hiddenTurnIds.filter((id) => typeof id === "number"));
-        }
         if (typeof saved.proxyUrl === "string" && saved.proxyUrl.trim()) setProxyUrl(saved.proxyUrl);
         if (typeof saved.nextSeq === "number" && Number.isFinite(saved.nextSeq)) seqRef.current = saved.nextSeq;
       } else {
@@ -3397,8 +3737,6 @@ export default function App() {
   useEffect(() => { window.__apiKey = apiKey; }, [apiKey]);
   useEffect(() => {
     const state = {
-      turns: toPersistableTurns(turns),
-      activeTurnId,
       historyLimit,
       selectedModels,
       modelCounts,
@@ -3408,7 +3746,6 @@ export default function App() {
       styleThemes,
       styleReferenceImages,
       apiBaseUrl,
-      hiddenTurnIds,
       lastEditedCount,
       aspectRatio,
       proxyUrl,
@@ -3416,15 +3753,8 @@ export default function App() {
     };
     try {
       localStorage.setItem(LOCAL_STATE_KEY, JSON.stringify(state));
-    } catch {
-      try {
-        localStorage.setItem(
-          LOCAL_STATE_KEY,
-          JSON.stringify({ ...state, turns: toLightweightTurns(turns) })
-        );
-      } catch {}
-    }
-  }, [turns, activeTurnId, historyLimit, selectedModels, modelCounts, prompt, taskMode, comparePrompts, styleThemes, styleReferenceImages, apiBaseUrl, hiddenTurnIds, lastEditedCount, aspectRatio, proxyUrl]);
+    } catch {}
+  }, [historyLimit, selectedModels, modelCounts, prompt, taskMode, comparePrompts, styleThemes, styleReferenceImages, apiBaseUrl, lastEditedCount, aspectRatio, proxyUrl]);
 
   useEffect(() => {
     if (selectedAtlasItems.length > 0) return;
@@ -3461,6 +3791,7 @@ export default function App() {
       title: template.title || "",
       body: template.body || "",
       backup: template.backup || "",
+      memo: template.memo || "",
     });
     setShowTemplateModal(true);
   }, [templates, historyDirHandle]);
@@ -3470,8 +3801,9 @@ export default function App() {
     const title = templateDraft.title.trim() || editingTemplateId.replace("template-", "Preset ");
     const body = templateDraft.body || "";
     const backup = templateDraft.backup || "";
+    const memo = templateDraft.memo || "";
     setTemplates((prev) => {
-      return prev.map((item) => (item.id === editingTemplateId ? { ...item, title, body, backup } : item));
+      return prev.map((item) => (item.id === editingTemplateId ? { ...item, title, body, backup, memo } : item));
     });
     if (activeTemplateId === editingTemplateId) {
       const promptA = body;
@@ -3867,24 +4199,21 @@ export default function App() {
       if (existing) {
         return prev.filter((item) => item.key !== payload.key);
       }
-      const taskKey = `${payload.turnId}:${payload.modelId}:${payload.promptKey}`;
-      const removedSameTask = prev.filter((item) => item.taskKey !== taskKey);
-      if (removedSameTask.length >= MAX_STYLE_SELECTED_IMAGES) {
-        setHistoryFolderMsg(`最多选择 ${MAX_STYLE_SELECTED_IMAGES} 张图片。`);
-        return removedSameTask;
+      if (prev.length >= MAX_ATLAS_SELECTED_IMAGES) {
+        setShowSelectionLimitModal(true);
+        return prev;
       }
       return [
-        ...removedSameTask,
+        ...prev,
         {
           ...payload,
-          taskKey,
           selectedAt: Date.now(),
         },
       ];
     });
   }, []);
 
-  const retryImage = useCallback(async (payload) => {
+  const runResultImageAction = useCallback(async (payload, mode = "replace") => {
     const key = payload?.key;
     const turnId = payload?.turnId;
     const modelId = payload?.modelId;
@@ -3916,10 +4245,12 @@ export default function App() {
         : matchedVariant?.prompt || targetTurn.prompt || "";
     const turnImageInputs = normalizeImageInputs(targetTurn.referenceImage, targetTurn.styleReferenceImages);
     const replaceAt = imageIndex - 1;
+    const taskKey = buildTurnTaskKey(turnId, modelId, promptKey);
+    const busyKeys = [taskKey, key].filter(Boolean);
 
     setRetryingImageKeys((prev) => {
       const next = new Set(prev);
-      next.add(key);
+      busyKeys.forEach((item) => next.add(item));
       return next;
     });
 
@@ -3936,6 +4267,10 @@ export default function App() {
                       ...result,
                       status: "loading",
                       error: null,
+                      requestedCount:
+                        mode === "append"
+                          ? Math.max(1, Number(result.requestedCount || 1)) + 1
+                          : result.requestedCount,
                     }
                   : result
               ),
@@ -3964,10 +4299,12 @@ export default function App() {
                 results: (turn.results || []).map((result) => {
                   if (!isSameResultTask(result, modelId, promptKey)) return result;
                   const baseImages = Array.isArray(result.images) ? [...result.images] : [];
-                  if (replaceAt >= 0 && replaceAt < baseImages.length) {
+                  if (mode === "append") {
+                    baseImages.push(nextImage);
+                  } else if (replaceAt >= 0 && replaceAt < baseImages.length) {
                     baseImages[replaceAt] = nextImage;
                   } else {
-                    baseImages.push(nextImage);
+                    baseImages.splice(0, baseImages.length, nextImage);
                   }
                   return {
                     ...result,
@@ -3979,9 +4316,13 @@ export default function App() {
               }
         )
       );
-      setSelectedAtlasItems((prev) => prev.filter((item) => item.key !== key));
+      if (mode === "replace" && key) {
+        setSelectedAtlasItems((prev) =>
+          prev.map((item) => (item.key === key ? { ...item, image: nextImage } : item))
+        );
+      }
       setAtlasThumbnail(null);
-      setHistoryFolderMsg("已重试并替换图片。");
+      setHistoryFolderMsg(mode === "append" ? "已追加 1 张图片。" : "已重试并替换图片。");
     } catch (err) {
       const message = err?.message || "未知错误";
       setTurns((prev) =>
@@ -4011,16 +4352,35 @@ export default function App() {
       setHistoryFolderMsg(`重试失败：${message}`);
     } finally {
       setRetryingImageKeys((prev) => {
-        if (!prev.has(key)) return prev;
         const next = new Set(prev);
-        next.delete(key);
+        busyKeys.forEach((item) => next.delete(item));
         return next;
       });
     }
   }, [turns, proxyUrl, apiBaseUrl, apiKey, aspectRatio]);
 
+  const retryImage = useCallback((payload) => runResultImageAction(payload, "replace"), [runResultImageAction]);
+  const appendResultImage = useCallback((payload) => runResultImageAction(payload, "append"), [runResultImageAction]);
+
   const clearAllSelections = useCallback(() => {
+    if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     setSelectedAtlasItems([]);
+    setAtlasThumbnail(null);
+  }, []);
+
+  const reorderAtlasSelection = useCallback((fromKey, toKey) => {
+    if (!fromKey || !toKey || fromKey === toKey) return;
+    setSelectedAtlasItems((prev) => {
+      const fromIndex = prev.findIndex((item) => item.key === fromKey);
+      const toIndex = prev.findIndex((item) => item.key === toKey);
+      if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
     setAtlasThumbnail(null);
   }, []);
 
@@ -4031,7 +4391,7 @@ export default function App() {
     }
     setAtlasBusy(true);
     try {
-      const ordered = [...selectedAtlasItems].sort((a, b) => (a.selectedAt || 0) - (b.selectedAt || 0));
+      const ordered = [...selectedAtlasItems];
       const sources = await Promise.all(
         ordered.map(async (item) => {
           const normalized = normalizeImageValue(item.image, apiBaseUrl);
@@ -4072,7 +4432,7 @@ export default function App() {
         return;
       }
 
-      const ordered = [...selectedAtlasItems].sort((a, b) => (a.selectedAt || 0) - (b.selectedAt || 0));
+      const ordered = [...selectedAtlasItems];
       let thumbDataUrl = atlasThumbnail;
       if (!thumbDataUrl) {
         const sources = await Promise.all(
@@ -4136,7 +4496,7 @@ export default function App() {
           {
             createdAt: Date.now(),
             itemCount: manifestItems.length,
-            maxSelectable: MAX_STYLE_SELECTED_IMAGES,
+            maxSelectable: MAX_ATLAS_SELECTED_IMAGES,
             rows: 3,
             items: manifestItems,
           },
@@ -4191,16 +4551,15 @@ export default function App() {
     const loadedTurns = await loadTurnsFromLocalFolder(dirHandle);
     setSelectedAtlasItems([]);
     setAtlasThumbnail(null);
-    setTurns((prev) => {
-      const map = new Map();
-      [...prev, ...loadedTurns].forEach((t) => {
-        map.set(t.id, t);
-      });
-      return Array.from(map.values()).sort((a, b) => b.seq - a.seq);
-    });
+    const nextTurns = [...loadedTurns].sort((a, b) => b.seq - a.seq);
+    setTurns(nextTurns);
+    setHiddenTurnIds([]);
+    setActiveTurnId(nextTurns[0]?.id || null);
     if (loadedTurns.length) {
       const maxSeq = loadedTurns.reduce((m, t) => Math.max(m, Number(t.seq) || 0), 0);
-      seqRef.current = Math.max(seqRef.current, maxSeq + 1);
+      seqRef.current = maxSeq + 1;
+    } else {
+      seqRef.current = 1;
     }
     setHistoryFolderMsg(
       templatePayload
@@ -4657,6 +5016,9 @@ export default function App() {
     !!proxyUrl.trim() &&
     !!styleThemeSeedInput.trim();
   const canGenerate = selectedModels.length > 0 && (hasPromptInput || hasImageInput);
+  const inputImageCount = inputImageList.length;
+  const inputPrimaryPreview = inputImageList[0] || null;
+  const canEditInputImages = inputImageCount > 0;
   const isApiKeyDirty = normalizeApiKey(draftApiKey) !== normalizeApiKey(apiKey);
   const isGptAssistPromptDirty =
     normalizeGptAssistPrompt(draftGptAssistPrompt) !== normalizeGptAssistPrompt(gptAssistPrompt) ||
@@ -4690,22 +5052,31 @@ export default function App() {
           <nav style={S.modeNav}>
             <button
               type="button"
-              style={{ ...S.modeTab, ...(taskMode === "single" ? S.modeTabActive : null) }}
-              onClick={() => setTaskMode("single")}
+              style={{ ...S.modeTab, ...(activePage === "workspace" && taskMode === "single" ? S.modeTabActive : null) }}
+              onClick={() => {
+                setActivePage("workspace");
+                setTaskMode("single");
+              }}
             >
               Single
             </button>
             <button
               type="button"
-              style={{ ...S.modeTab, ...(taskMode === "compare" ? S.modeTabActive : null) }}
-              onClick={() => setTaskMode("compare")}
+              style={{ ...S.modeTab, ...(activePage === "workspace" && taskMode === "compare" ? S.modeTabActive : null) }}
+              onClick={() => {
+                setActivePage("workspace");
+                setTaskMode("compare");
+              }}
             >
               Prompt Compare
             </button>
             <button
               type="button"
-              style={{ ...S.modeTab, ...(taskMode === "style" ? S.modeTabActive : null) }}
-              onClick={() => setTaskMode("style")}
+              style={{ ...S.modeTab, ...(activePage === "workspace" && taskMode === "style" ? S.modeTabActive : null) }}
+              onClick={() => {
+                setActivePage("workspace");
+                setTaskMode("style");
+              }}
             >
               Style
             </button>
@@ -4713,13 +5084,10 @@ export default function App() {
           <div style={S.apiSwitchWrap}>
             <button
               type="button"
-              style={{ ...S.apiSwitchBtn, ...(showApiModal ? S.apiSwitchBtnActive : null) }}
-              onClick={() => {
-                setDraftApiKey(apiKey);
-                setShowApiModal(true);
-              }}
+              style={{ ...S.apiSwitchBtn, ...(activePage === "help" ? S.apiSwitchBtnActive : null) }}
+              onClick={() => setActivePage("help")}
             >
-              API
+              Help
             </button>
           </div>
           <div style={S.apiSwitchWrap}>
@@ -4735,11 +5103,27 @@ export default function App() {
               GPT Prompt
             </button>
           </div>
+          <div style={S.apiSwitchWrap}>
+            <button
+              type="button"
+              style={{ ...S.apiSwitchBtn, ...(showApiModal ? S.apiSwitchBtnActive : null) }}
+              onClick={() => {
+                setDraftApiKey(apiKey);
+                setShowApiModal(true);
+              }}
+            >
+              API
+            </button>
+          </div>
           <button style={S.settingsBtn} onClick={() => setShowSettings(true)}>⚙</button>
         </div>
       </header>
 
       <main style={S.main}>
+        {activePage === "help" ? (
+          <HelpPage />
+        ) : (
+          <>
         <section style={{ marginBottom: 24 }}>
           <div style={taskMode === "style" ? S.inputGridStyle : S.inputGrid}>
             <div>
@@ -4808,18 +5192,6 @@ export default function App() {
                 <>
                   <div style={S.uploadPairRow}>
                     <div style={S.uploadPairCol}>
-                      <div style={S.uploadPairTopLabel}>INPUT</div>
-                      <button type="button" style={S.uploadPairBox} onClick={() => setShowInputImageModal(true)}>
-                        <div style={S.uploadPairBody}>
-                          {inputImageList[0] ? (
-                            <img src={inputImageList[0]} alt="Input" style={S.uploadPairMainThumb} />
-                          ) : (
-                            <div style={S.inputImagesEmpty}>+</div>
-                          )}
-                        </div>
-                      </button>
-                    </div>
-                    <div style={S.uploadPairCol}>
                       <div style={S.uploadPairTopLabel}>REFERENCE ({styleImageList.length}/{MAX_STYLE_REFERENCE_IMAGES})</div>
                       <button type="button" style={S.uploadPairBox} onClick={() => setShowStyleReferenceModal(true)}>
                         <div style={S.inputImagesGrid}>
@@ -4838,24 +5210,118 @@ export default function App() {
                         </div>
                       </button>
                     </div>
+                    <div style={S.uploadPairCol}>
+                      <div style={S.uploadPairTopLabel}>INPUT</div>
+                      <div
+                        style={S.uploadPairBox}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => fileRef.current?.click()}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            fileRef.current?.click();
+                          }
+                        }}
+                      >
+                        {inputImageCount > 0 && <span style={S.inputCountBadge}>{inputImageCount}</span>}
+                        {canEditInputImages && (
+                          <button
+                            type="button"
+                            style={S.inputEditBtn}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setShowInputImageModal(true);
+                            }}
+                          >
+                            Edit
+                          </button>
+                        )}
+                        <div style={S.uploadPairBody}>
+                          {inputPrimaryPreview ? (
+                            <img src={inputPrimaryPreview} alt="Input" style={S.uploadPairMainThumb} />
+                          ) : (
+                            <div style={S.inputImagesEmpty}>+</div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </>
               ) : (
                 <>
                   <label style={S.label}>REFERENCE IMAGE</label>
-                  {uploadedPreview ? (
-                    <div style={S.uploadedBox}>
-                      <img src={uploadedPreview} alt="Ref" style={S.uploadedThumb} />
-                      <button style={S.removeBtn} onClick={removeImage}>✕</button>
+                  {inputPrimaryPreview ? (
+                    <div
+                      style={S.uploadedBox}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => fileRef.current?.click()}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          fileRef.current?.click();
+                        }
+                      }}
+                    >
+                      {inputImageCount > 0 && <span style={S.inputCountBadge}>{inputImageCount}</span>}
+                      {canEditInputImages && (
+                        <button
+                          type="button"
+                          style={S.inputEditBtn}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setShowInputImageModal(true);
+                          }}
+                        >
+                          Edit
+                        </button>
+                      )}
+                      <img src={inputPrimaryPreview} alt="Ref" style={S.uploadedThumb} />
+                      <button
+                        type="button"
+                        style={S.removeBtn}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          removeImage();
+                        }}
+                      >
+                        ✕
+                      </button>
                     </div>
                   ) : (
-                    <div style={S.dropZone} onClick={() => fileRef.current?.click()}>
+                    <button type="button" style={S.dropZone} onClick={() => fileRef.current?.click()}>
                       <span style={{ fontSize: 28, opacity: 0.4 }}>+</span>
                       <span style={{ fontSize: 12, color: "#888", marginTop: 4 }}>Upload</span>
-                    </div>
+                    </button>
                   )}
-                  <input ref={fileRef} type="file" accept="image/*" multiple onChange={handleFileChange} style={{ display: "none" }} />
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={async (event) => {
+                      const files = Array.from(event.target.files || []);
+                      if (files.length) await appendInputImageFiles(files);
+                      event.target.value = "";
+                    }}
+                    style={{ display: "none" }}
+                  />
                 </>
+              )}
+              {taskMode === "style" && (
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={async (event) => {
+                    const files = Array.from(event.target.files || []);
+                    if (files.length) await appendInputImageFiles(files);
+                    event.target.value = "";
+                  }}
+                  style={{ display: "none" }}
+                />
               )}
             </div>
           </div>
@@ -5047,45 +5513,45 @@ export default function App() {
               : "Folder API unsupported in this browser"}
           </span>
         </div>
-        {taskMode === "style" && (
-          <div style={S.atlasRow}>
-            <span style={S.atlasCount}>Selected {selectedAtlasItems.length}/{MAX_STYLE_SELECTED_IMAGES}</span>
+        <div style={S.atlasRow}>
+          <span style={S.atlasCount}>Selected {selectedAtlasItems.length}/{MAX_ATLAS_SELECTED_IMAGES}</span>
+          <button
+            type="button"
+            style={{ ...S.zipBtn, padding: "8px 14px", fontSize: 12, opacity: selectedAtlasItems.length ? 1 : 0.5, cursor: selectedAtlasItems.length ? "pointer" : "not-allowed" }}
+            onClick={clearAllSelections}
+            disabled={!selectedAtlasItems.length || atlasBusy}
+          >
+            Clear Selections
+          </button>
+          <button
+            type="button"
+            style={{ ...S.zipBtn, padding: "8px 14px", fontSize: 12, opacity: historyDirHandle && selectedAtlasItems.length ? 1 : 0.5, cursor: historyDirHandle && selectedAtlasItems.length ? "pointer" : "not-allowed" }}
+            onClick={exportAtlasSelection}
+            disabled={!historyDirHandle || !selectedAtlasItems.length || atlasBusy}
+          >
+            Export Atlas Folder
+          </button>
+          {taskMode === "style" && (
             <button
               type="button"
               style={{ ...S.zipBtn, padding: "8px 14px", fontSize: 12, opacity: selectedAtlasItems.length ? 1 : 0.5, cursor: selectedAtlasItems.length ? "pointer" : "not-allowed" }}
-              onClick={clearAllSelections}
+              onClick={() => setShowAtlasThumbnailModal(true)}
               disabled={!selectedAtlasItems.length || atlasBusy}
             >
-              Clear Selections
+              Thumbnail
             </button>
+          )}
+          {atlasThumbnail && (
             <button
               type="button"
-              style={{ ...S.zipBtn, padding: "8px 14px", fontSize: 12, opacity: selectedAtlasItems.length ? 1 : 0.5, cursor: selectedAtlasItems.length ? "pointer" : "not-allowed" }}
-              onClick={generateAtlasThumbnail}
-              disabled={!selectedAtlasItems.length || atlasBusy}
+              style={S.atlasThumbBtn}
+              onClick={() => setShowAtlasThumbnailModal(true)}
+              title="Open thumbnail editor"
             >
-              {atlasBusy ? "Processing..." : "Generate Thumbnail"}
+              <img src={atlasThumbnail} alt="Atlas Thumbnail" style={S.atlasThumbImg} />
             </button>
-            <button
-              type="button"
-              style={{ ...S.zipBtn, padding: "8px 14px", fontSize: 12, opacity: historyDirHandle && selectedAtlasItems.length ? 1 : 0.5, cursor: historyDirHandle && selectedAtlasItems.length ? "pointer" : "not-allowed" }}
-              onClick={exportAtlasSelection}
-              disabled={!historyDirHandle || !selectedAtlasItems.length || atlasBusy}
-            >
-              Export Atlas Folder
-            </button>
-            {atlasThumbnail && (
-              <button
-                type="button"
-                style={S.atlasThumbBtn}
-                onClick={() => setPreviewImage(atlasThumbnail)}
-                title="Preview atlas thumbnail"
-              >
-                <img src={atlasThumbnail} alt="Atlas Thumbnail" style={S.atlasThumbImg} />
-              </button>
-            )}
-          </div>
-        )}
+          )}
+        </div>
         {!!historyFolderMsg && <div style={S.folderMsg}>{historyFolderMsg}</div>}
 
         {activeTurn && (
@@ -5105,9 +5571,11 @@ export default function App() {
               selectedImageKeys={selectedImageKeys}
               onToggleImageSelect={toggleImageSelection}
               onRetryImage={retryImage}
+              onAppendImage={appendResultImage}
               retryingImageKeys={retryingImageKeys}
               compactStyleHistory={false}
               truncatePromptText={false}
+              showModelSummary={true}
             />
           </section>
         )}
@@ -5132,9 +5600,11 @@ export default function App() {
                     selectedImageKeys={selectedImageKeys}
                     onToggleImageSelect={toggleImageSelection}
                     onRetryImage={retryImage}
+                    onAppendImage={appendResultImage}
                     retryingImageKeys={retryingImageKeys}
                     compactStyleHistory={false}
                     truncatePromptText={true}
+                    showModelSummary={false}
                   />
                 </div>
               ))}
@@ -5145,6 +5615,8 @@ export default function App() {
               )}
             </div>
           </section>
+        )}
+          </>
         )}
       </main>
 
@@ -5177,7 +5649,7 @@ export default function App() {
         draft={templateDraft}
         setDraft={setTemplateDraft}
         onSave={saveTemplateDraft}
-        canSave={!!templateDraft.title.trim() || !!templateDraft.body.trim() || !!templateDraft.backup.trim()}
+        canSave={!!templateDraft.title.trim() || !!templateDraft.body.trim() || !!templateDraft.backup.trim() || !!templateDraft.memo.trim()}
       />
       <StyleTemplateEditorModal
         show={showStyleTemplateModal}
@@ -5190,9 +5662,9 @@ export default function App() {
       <InputImagesModal
         show={showInputImageModal}
         onClose={() => setShowInputImageModal(false)}
-        title="Input Image"
+        title="Input Images"
         images={inputImageList}
-        maxCount={1}
+        maxCount={MAX_INPUT_IMAGES_PER_BATCH}
         onUploadFiles={appendInputImageFiles}
         onRemoveAt={removeInputImageAt}
       />
@@ -5204,6 +5676,21 @@ export default function App() {
         maxCount={MAX_STYLE_REFERENCE_IMAGES}
         onUploadFiles={appendStyleReferenceFiles}
         onRemoveAt={removeStyleReferenceAt}
+      />
+      <SelectionLimitModal
+        show={showSelectionLimitModal}
+        onClose={() => setShowSelectionLimitModal(false)}
+        limit={MAX_ATLAS_SELECTED_IMAGES}
+      />
+      <AtlasThumbnailModal
+        show={showAtlasThumbnailModal}
+        onClose={() => setShowAtlasThumbnailModal(false)}
+        items={selectedAtlasItems}
+        onReorder={reorderAtlasSelection}
+        onGenerate={generateAtlasThumbnail}
+        thumbnail={atlasThumbnail}
+        busy={atlasBusy}
+        onPreview={setPreviewImage}
       />
       <ImagePreviewModal src={previewImage} onClose={() => setPreviewImage(null)} />
 
@@ -5264,20 +5751,22 @@ const S = {
   comparePromptGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 },
   textarea: { width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "14px 16px", color: "#e4e4e7", fontFamily: sans, fontSize: 14, resize: "vertical", outline: "none", lineHeight: 1.6 },
   tokenEditor: { width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "14px 16px", color: "#e4e4e7", fontFamily: sans, fontSize: 14, outline: "none", lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word" },
-  dropZone: { width: "100%", height: PROMPT_EDITOR_MIN_HEIGHT, borderRadius: 10, border: "1px dashed rgba(255,255,255,0.12)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer" },
-  uploadedBox: { position: "relative", width: "100%", height: PROMPT_EDITOR_MIN_HEIGHT, borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)" },
+  dropZone: { width: "100%", height: PROMPT_EDITOR_MIN_HEIGHT, borderRadius: 10, border: "1px dashed rgba(255,255,255,0.12)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", background: "rgba(255,255,255,0.02)" },
+  uploadedBox: { position: "relative", width: "100%", height: PROMPT_EDITOR_MIN_HEIGHT, borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)", cursor: "pointer", background: "rgba(255,255,255,0.02)" },
   uploadedThumb: { width: "100%", height: "100%", objectFit: "cover" },
-  removeBtn: { position: "absolute", top: 6, right: 6, width: 22, height: 22, borderRadius: 11, background: "rgba(0,0,0,0.7)", border: "none", color: "#fff", fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  removeBtn: { position: "absolute", bottom: 6, right: 6, width: 22, height: 22, borderRadius: 11, background: "rgba(0,0,0,0.7)", border: "none", color: "#fff", fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3 },
   uploadPairRow: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, alignItems: "stretch" },
   uploadPairCol: { display: "flex", flexDirection: "column", gap: 6, minWidth: 0 },
   uploadPairTopLabel: { fontSize: 11, color: "#71717a", fontFamily: mono, letterSpacing: 0.5, textTransform: "uppercase" },
-  uploadPairBox: { width: "100%", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 10, background: "rgba(255,255,255,0.03)", padding: 6, cursor: "pointer", textAlign: "left" },
+  uploadPairBox: { position: "relative", width: "100%", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 10, background: "rgba(255,255,255,0.03)", padding: 6, cursor: "pointer", textAlign: "left" },
   uploadPairBody: { borderRadius: 8, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.02)", minHeight: 106 },
   uploadPairMainThumb: { width: "100%", height: 106, objectFit: "cover", display: "block" },
   inputImagesGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 6, minHeight: 106 },
   inputImagesCell: { borderRadius: 8, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.02)", minHeight: 50 },
   inputImagesThumb: { width: "100%", height: 50, objectFit: "cover", display: "block" },
   inputImagesEmpty: { minHeight: 50, borderRadius: 8, border: "1px dashed rgba(255,255,255,0.2)", color: "#71717a", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.02)", width: "100%" },
+  inputCountBadge: { position: "absolute", top: 8, right: 8, zIndex: 3, minWidth: 22, height: 22, padding: "0 6px", borderRadius: 11, border: `1px solid ${THEME_PRIMARY_BORDER}`, background: "rgba(8,47,73,0.88)", color: "#dbeafe", fontFamily: mono, fontSize: 11, display: "inline-flex", alignItems: "center", justifyContent: "center" },
+  inputEditBtn: { position: "absolute", top: 8, left: 8, zIndex: 3, height: 22, padding: "0 8px", borderRadius: 11, border: "1px solid rgba(255,255,255,0.16)", background: "rgba(15,23,42,0.82)", color: "#e2e8f0", fontFamily: mono, fontSize: 11, cursor: "pointer" },
   modelsPanel: { border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10, background: "rgba(255,255,255,0.02)", display: "flex", flexDirection: "column", gap: 10, height: "100%" },
   modelsPanelStyle: { width: "100%", maxWidth: "100%" },
   modelsHeadRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
@@ -5325,8 +5814,24 @@ const S = {
   folderRow: { display: "flex", gap: 10, marginBottom: 10, alignItems: "center", flexWrap: "wrap" },
   atlasRow: { display: "flex", gap: 8, marginBottom: 10, alignItems: "center", flexWrap: "wrap" },
   atlasCount: { fontSize: 12, color: THEME_PRIMARY_TEXT, fontFamily: mono, minWidth: 120 },
-  atlasThumbBtn: { width: 54, height: 54, borderRadius: 8, border: `1px solid ${THEME_PRIMARY_BORDER}`, background: "rgba(8,47,73,0.65)", overflow: "hidden", padding: 0, cursor: "zoom-in", display: "inline-flex", alignItems: "center", justifyContent: "center" },
+  atlasThumbBtn: { width: 54, height: 54, borderRadius: 8, border: `1px solid ${THEME_PRIMARY_BORDER}`, background: "rgba(8,47,73,0.65)", overflow: "hidden", padding: 0, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" },
   atlasThumbImg: { width: "100%", height: "100%", objectFit: "cover", display: "block" },
+  helpWrap: { display: "grid", gap: 16 },
+  helpHero: { borderRadius: 16, border: "1px solid rgba(255,255,255,0.08)", background: "linear-gradient(135deg, rgba(26,115,232,0.2), rgba(16,163,127,0.08))", padding: "22px 24px" },
+  helpTitle: { margin: 0, fontSize: 28, fontFamily: mono, color: "#f8fafc", letterSpacing: -0.5 },
+  helpTextBlock: { display: "grid", gap: 8 },
+  helpIntro: { margin: "10px 0 0", fontSize: 14, color: "#9ca3af", lineHeight: 1.7, maxWidth: 760 },
+  helpIntroCn: { margin: 0, fontSize: 14, color: "#a7b0bf", lineHeight: 1.8, maxWidth: 760 },
+  helpGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14 },
+  helpCard: { borderRadius: 14, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: "18px 18px 16px" },
+  helpCardFull: { gridColumn: "1 / -1" },
+  helpCardTitle: { margin: "0 0 8px", fontSize: 13, color: "#f8fafc", fontFamily: mono, textTransform: "uppercase", letterSpacing: 0.6 },
+  helpCardText: { margin: 0, fontSize: 13, color: "#98a2b3", lineHeight: 1.7 },
+  helpCardTextCn: { margin: 0, fontSize: 13, color: "#a8b1c0", lineHeight: 1.8 },
+  helpParagraphGroup: { display: "grid", gap: 8 },
+  helpParagraphItem: { display: "grid" },
+  helpLangGap: { height: 8 },
+  helpInlineCode: { fontFamily: mono, fontSize: "0.95em", color: "#f8fafc", background: "rgba(148,163,184,0.12)", border: "1px solid rgba(148,163,184,0.18)", borderRadius: 6, padding: "1px 6px", margin: "0 2px" },
   folderHint: { fontSize: 12, color: "#a1a1aa", fontFamily: mono },
   folderMsg: { fontSize: 12, color: THEME_PRIMARY_TEXT, marginBottom: 18, fontFamily: mono },
   genBtn: { padding: "12px 32px", borderRadius: 10, border: "none", background: "linear-gradient(135deg, #1a73e8, #10a37f)", color: "#fff", fontFamily: mono, fontSize: 14, fontWeight: 600, cursor: "pointer" },
@@ -5341,13 +5846,10 @@ const S = {
   errArea: { padding: "20px 12px" },
   imgGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 10 },
   imgGridCompact: { display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 6 },
-  imgCard: { position: "relative", borderRadius: 8, overflow: "hidden", background: "#111", border: "1px solid rgba(255,255,255,0.06)" },
+  imgCard: { position: "relative", borderRadius: 8, overflow: "hidden", background: "#111", border: "1px solid transparent", boxShadow: "none" },
   imgCardCompact: { borderRadius: 6 },
   imgCardSelected: { borderColor: "rgba(59,130,246,0.9)", boxShadow: "0 0 0 1px rgba(59,130,246,0.35) inset" },
-  imageRetryBtn: { position: "absolute", top: 8, right: 8, zIndex: 4, width: 24, height: 24, borderRadius: 12, border: "1px solid rgba(226,232,240,0.7)", background: "rgba(15,23,42,0.72)", color: "#e2e8f0", fontFamily: mono, fontSize: 13, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 },
-  imageRetryBtnCompact: { top: 4, right: 4, width: 16, height: 16, borderRadius: 8, fontSize: 10 },
-  imageRetryBtnBusy: { opacity: 0.7, cursor: "wait" },
-  imageSelectBtn: { position: "absolute", top: 8, right: 8, zIndex: 3, width: 24, height: 24, borderRadius: 12, border: "1px solid rgba(226,232,240,0.7)", background: "rgba(15,23,42,0.72)", color: "#e2e8f0", fontFamily: mono, fontSize: 12, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 },
+  imageSelectBtn: { position: "absolute", top: 8, right: 8, zIndex: 3, width: 24, height: 24, borderRadius: 12, border: "1px solid rgba(226,232,240,0.7)", background: "rgba(15,23,42,0.72)", color: "rgba(226,232,240,0.88)", fontFamily: mono, fontSize: 12, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1, outline: "none", boxShadow: "none", WebkitAppearance: "none", appearance: "none", WebkitTapHighlightColor: "transparent" },
   imageSelectBtnCompact: { top: 4, right: 4, width: 16, height: 16, borderRadius: 8, fontSize: 10 },
   imageSelectBtnBottom: { top: "auto", bottom: 4, right: 4 },
   imageSelectBtnActive: { borderColor: "rgba(16,163,127,0.9)", background: "rgba(5,150,105,0.92)", color: "#dcfce7" },
@@ -5357,6 +5859,16 @@ const S = {
   thumbCompact: { width: "100%", aspectRatio: "1 / 1", objectFit: "cover", cursor: "pointer", display: "block", background: "#0b0b0d" },
   thumbRetrying: { width: "100%", aspectRatio: "4 / 3", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(2,6,23,0.65)", color: "#cbd5e1", fontFamily: mono, fontSize: 12 },
   thumbRetryingCompact: { width: "100%", aspectRatio: "1 / 1", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(2,6,23,0.65)", color: "#cbd5e1", fontFamily: mono, fontSize: 10 },
+  imageActionBar: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", borderTop: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.03)" },
+  imageActionBarCompact: { minHeight: 28 },
+  imageActionBtn: { height: 34, border: "none", borderRight: "1px solid rgba(255,255,255,0.06)", background: "transparent", color: "#cbd5e1", fontFamily: mono, fontSize: 12, cursor: "pointer" },
+  imageActionBtnCompact: { height: 28, border: "none", borderRight: "1px solid rgba(255,255,255,0.06)", background: "transparent", color: "#cbd5e1", fontFamily: mono, fontSize: 11, cursor: "pointer" },
+  imageActionBtnBusy: { opacity: 0.6, cursor: "wait" },
+  imageActionBtnDisabled: { opacity: 0.35, cursor: "not-allowed" },
+  imageActionIcon: { fontSize: 18, lineHeight: 1, fontWeight: 700 },
+  imageActionIconCompact: { fontSize: 16, lineHeight: 1, fontWeight: 700 },
+  imageActionPlus: { fontSize: 13, lineHeight: 1, fontWeight: 700 },
+  imageActionPlusCompact: { fontSize: 12, lineHeight: 1, fontWeight: 700 },
   dlBtn: { width: "100%", padding: "8px 0", border: "none", borderTop: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.04)", color: "#aaa", fontSize: 12, fontFamily: mono, cursor: "pointer" },
   modalOverlay: { position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.8)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", animation: "fadeIn 0.15s ease" },
   settingsModal: { width: "90%", maxWidth: 560, background: "#161618", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 16, padding: 28, maxHeight: "80vh", overflow: "auto" },
@@ -5369,12 +5881,31 @@ const S = {
   apiModalActions: { marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 },
   apiModalState: { fontSize: 12, color: "#a1a1aa", fontFamily: mono },
   apiSaveBtn: { padding: "8px 14px", borderRadius: 8, border: `1px solid ${THEME_PRIMARY_BORDER}`, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT, fontFamily: mono, fontSize: 12, cursor: "pointer" },
-  modalInputImagesGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, marginBottom: 14 },
+  inputImagesModal: { maxWidth: 820 },
+  modalInputImagesHint: { marginBottom: 12, fontSize: 12, color: "#a1a1aa", fontFamily: mono, lineHeight: 1.5 },
+  modalInputImagesGrid: { display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 10 },
   modalInputImageCell: { position: "relative", borderRadius: 10, overflow: "hidden", border: `1px solid ${THEME_PRIMARY_BORDER}`, background: THEME_PRIMARY_SOFT },
-  modalInputImageThumb: { width: "100%", height: 140, objectFit: "cover", display: "block" },
+  modalInputImageThumb: { width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block" },
   modalInputImageRemoveBtn: { position: "absolute", top: 8, right: 8, width: 22, height: 22, borderRadius: 11, border: "none", background: "rgba(15,23,42,0.8)", color: "#e2e8f0", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" },
-  modalInputImageEmpty: { height: 140, borderRadius: 10, border: `1px dashed ${THEME_PRIMARY_BORDER}`, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT, fontFamily: mono, fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center" },
+  modalInputImageEmpty: { aspectRatio: "1 / 1", borderRadius: 10, border: `1px dashed ${THEME_PRIMARY_BORDER}`, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT, fontFamily: mono, fontSize: 24, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0, gap: 6 },
+  modalInputImageEmptyDisabled: { opacity: 0.45, cursor: "not-allowed" },
+  modalInputImageUploadPlus: { fontSize: 28, lineHeight: 1 },
+  modalInputImageUploadText: { fontSize: 12, letterSpacing: 0.4, textTransform: "uppercase" },
   modalInputImagesActions: { marginTop: 10, display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" },
+  selectionLimitModal: { width: "min(420px, 90vw)", borderRadius: 16, border: "1px solid rgba(255,255,255,0.12)", background: "#161618", padding: "24px 22px", boxShadow: "0 18px 60px rgba(0,0,0,0.35)" },
+  selectionLimitTitle: { fontSize: 18, color: "#f8fafc", fontFamily: mono, marginBottom: 8 },
+  selectionLimitText: { fontSize: 13, color: "#cbd5e1", lineHeight: 1.6 },
+  atlasModalHint: { fontSize: 12, color: "#a1a1aa", fontFamily: mono, marginBottom: 14 },
+  atlasModalGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 12 },
+  atlasModalCard: { position: "relative", borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", overflow: "hidden", cursor: "grab" },
+  atlasModalCardDragging: { opacity: 0.5, transform: "scale(0.98)" },
+  atlasModalCardOrder: { position: "absolute", top: 8, left: 8, zIndex: 2, minWidth: 24, height: 24, padding: "0 6px", borderRadius: 12, background: "rgba(2,6,23,0.78)", color: "#f8fafc", fontFamily: mono, fontSize: 11, display: "inline-flex", alignItems: "center", justifyContent: "center" },
+  atlasModalCardThumb: { width: "100%", aspectRatio: "1 / 1", objectFit: "cover", display: "block", background: "#0b0b0d" },
+  atlasModalCardMeta: { padding: "10px 10px 12px", display: "grid", gap: 4 },
+  atlasModalCardTitle: { fontSize: 12, color: "#f4f4f5", fontFamily: mono, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  atlasModalCardSub: { fontSize: 11, color: "#a1a1aa", fontFamily: mono, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  atlasModalPreview: { marginTop: 16, borderRadius: 12, overflow: "hidden", border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)" },
+  atlasModalPreviewImg: { width: "100%", display: "block", objectFit: "contain", background: "#0b0b0d" },
   turnActionBtn: { height: 28, padding: "0 10px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.04)", color: "#d4d4d8", fontSize: 11, fontFamily: mono, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1 },
   turnPromptRow: { marginBottom: 10, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" },
   turnModeBadge: { display: "inline-flex", alignItems: "center", marginLeft: 8, padding: "2px 8px", borderRadius: 999, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT, fontSize: 11, fontFamily: mono },
