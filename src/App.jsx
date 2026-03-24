@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { createContext, useContext, useState, useRef, useCallback, useEffect, useMemo } from "react";
 
 // ─── DeerAPI Model Registry ───
 // Each model has its own apiType defining which DeerAPI endpoint/format to use
@@ -80,6 +80,431 @@ const DEFAULT_STYLE_TEMPLATES = Array.from({ length: MAX_STYLE_TEMPLATES }, (_, 
 const DEFAULT_STYLE_THEMES = Array.from({ length: STYLE_THEME_SLOTS }, () => "");
 const NANO_PRO_OFFICIAL_MODEL_ID = "gemini-3-pro-image";
 const NANO_PRO_LEGACY_MODEL_IDS = ["nano-banana-pro-all", "gemini-3-pro-preview"];
+const DEFAULT_UI_LANGUAGE = "en";
+const I18nContext = createContext({
+  uiLanguage: DEFAULT_UI_LANGUAGE,
+  t: (key, params) => interpolateTemplate(key, params),
+});
+
+const UI_TEXT = {
+  en: {
+    "settings.title": "Configuration",
+    "settings.proxyLabel": "Cloudflare Worker Proxy URL",
+    "settings.showWorkerCode": "Show Worker Code",
+    "settings.hideWorkerCode": "Hide Worker Code",
+    "settings.language": "Language",
+    "settings.languageEnglish": "English",
+    "settings.languageChinese": "中文",
+    "api.title": "API Key",
+    "api.label": "Deer API Key",
+    "gpt.title": "GPT Prompt",
+    "gpt.rewriteLabel": "GPT Rewrite Instruction",
+    "gpt.themeLabel": "Style Theme Association Instruction",
+    "common.save": "Save",
+    "common.saved": "Saved",
+    "common.unsavedChanges": "Unsaved changes",
+    "common.savedAt": "Saved at {{time}}",
+    "common.upload": "Upload",
+    "common.processing": "Processing...",
+    "common.unknownError": "Unknown error",
+    "common.edit": "Edit",
+    "common.title": "Title",
+    "common.body": "Body",
+    "common.backup": "Backup",
+    "common.memo": "Memo",
+    "template.title": "Template Modify",
+    "template.titlePlaceholder": "Template title",
+    "template.bodyPlaceholder": "Main template content",
+    "template.backupPlaceholder": "Backup template content",
+    "template.memoPlaceholder": "Notes, spare prompts, or copied backups",
+    "template.styleTitle": "Style Template",
+    "template.styleTitlePlaceholder": "Style template title",
+    "template.styleBodyPlaceholder": "Style template prompt",
+    "template.insertPlaceholder": "Insert placeholder {{ }}",
+    "template.edit": "Edit template",
+    "template.editStyle": "Edit style template",
+    "images.defaultTitle": "Images",
+    "images.inputTitle": "Input Images",
+    "images.referenceTitle": "Reference Images",
+    "images.modalHint": "First slot is upload. Changes save automatically when you close.",
+    "selectionLimit.title": "Selection limit reached",
+    "selectionLimit.text": "You can select up to {{limit}} images for atlas export.",
+    "action.save": "Save",
+    "action.retry": "Retry",
+    "action.addOne": "Add one more",
+    "atlas.title": "Thumbnail",
+    "atlas.hint": "Drag to reorder. Atlas export and thumbnail follow this order.",
+    "atlas.empty": "No selected images yet.",
+    "atlas.refresh": "Refresh Thumbnail",
+    "atlas.generate": "Generate Thumbnail",
+    "atlas.openEditor": "Open thumbnail editor",
+    "help.title": "Help",
+    "help.hero": "Polyimage compares image models, re-runs tasks quickly, and exports selected images into one atlas folder.",
+    "nav.single": "Single",
+    "nav.compare": "Prompt Compare",
+    "nav.style": "Style",
+    "nav.help": "Help",
+    "nav.gptPrompt": "GPT Prompt",
+    "nav.api": "API",
+    "header.subtitle": "Multi-Model Generation · DeerAPI",
+    "workspace.prompt": "PROMPT",
+    "workspace.prompts": "PROMPTS",
+    "workspace.compareHint": "Shared image, dual prompt runs",
+    "workspace.referenceImage": "REFERENCE IMAGE",
+    "workspace.reference": "REFERENCE",
+    "workspace.input": "INPUT",
+    "workspace.models": "SELECT MODELS",
+    "workspace.syncCount": "Sync Last Edited Count",
+    "workspace.imageRatio": "IMAGE RATIO",
+    "workspace.templates": "TEMPLATES",
+    "workspace.styleTemplates": "STYLE TEMPLATES",
+    "workspace.themes": "THEMES (12)",
+    "workspace.clearAll": "Clear All",
+    "workspace.themeSeedPlaceholder": "Theme association seed, e.g. coffee",
+    "workspace.themePlaceholder": "Theme {{index}}",
+    "workspace.promptAPlaceholder": "Describe prompt A...",
+    "workspace.promptBPlaceholder": "Describe prompt B...",
+    "workspace.promptPlaceholder": "Describe the image you want to generate...",
+    "workspace.rewriteByGpt": "Rewrite {{ }} by GPT",
+    "workspace.noPlaceholder": "No {{ }} placeholder found",
+    "workspace.enqueueTask": "⬡ Enqueue Task",
+    "workspace.enqueueCompare": "⬡ Enqueue Compare Tasks",
+    "workspace.enqueueStyle": "⬡ Enqueue Style Tasks",
+    "workspace.runningQueued": "Running {{running}} · Queued {{queued}}",
+    "workspace.downloadAll": "↓ Download All Dialogs (.zip)",
+    "workspace.selectHistoryFolder": "Select History Folder",
+    "workspace.switchHistoryFolder": "Switch History Folder",
+    "workspace.reloadHistory": "Reload Folder History",
+    "workspace.connected": "Connected: {{name}}",
+    "workspace.noFolderSelected": "No folder selected",
+    "workspace.folderUnsupported": "Folder API unsupported in this browser",
+    "workspace.selectedCount": "Selected {{count}}/{{max}}",
+    "workspace.clearSelections": "Clear Selections",
+    "workspace.exportAtlas": "Export Atlas Folder",
+    "workspace.thumbnail": "Thumbnail",
+    "workspace.currentDialog": "Current Dialog",
+    "workspace.historyDialogs": "History Dialogs",
+    "workspace.loadMore": "Load 4 More Dialogs",
+    "turn.compare": "Compare",
+    "turn.style": "Style",
+    "turn.syncTemplate": "Sync Template",
+    "turn.reuse": "Reuse",
+    "turn.delete": "Delete",
+    "turn.summaryModel": "Model",
+    "turn.summaryPerTask": "Per Task",
+    "turn.summaryGenerated": "Generated",
+    "turn.summarySuccess": "Success",
+    "turn.summaryFailed": "Failed",
+    "turn.summaryRunning": "Running",
+    "turn.failedThemes": "Failed themes: {{themes}}",
+    "turn.styleResults": "Style Results",
+    "turn.generatingCount": "Generating {{generated}}/{{expected}}",
+    "turn.generatingImages": "Generating images...",
+    "turn.noSuccessfulImages": "No successful images. Check failed themes.",
+    "turn.noImagesReturned": "No images returned.",
+    "turn.noStyleResults": "No style results yet.",
+    "turn.modelTasks": "{{count}} model tasks",
+    "status.loading": "loading",
+    "status.success": "success",
+    "status.error": "error",
+    "status.cancelled": "cancelled",
+    "status.queued": "queued",
+    "status.running": "running",
+    "status.done": "done",
+    "status.cancelledByUser": "Cancelled by user",
+    "status.generating": "Generating... {{generated}}/{{requested}}",
+    "status.stop": "Stop",
+    "status.noPrompt": "(no prompt)",
+    "viewer.collapse": "Collapse",
+    "viewer.previewReference": "Preview reference image",
+    "viewer.inlineViewer": "Open inline viewer",
+    "viewer.previewStyleImage": "Preview style image {{index}}",
+    "viewer.fullImage": "Full",
+    "viewer.inputImageAlt": "Input Image",
+    "select.select": "Select",
+    "select.unselect": "Unselect",
+    "errors.failedToFetch": "Failed to fetch",
+    "history.needFolderForGpt": "Select History Folder first before saving GPT Prompt.",
+    "history.noPlaceholder": "No {{ }} placeholder found. GPT did not run.",
+    "history.gptRewrote": "GPT rewrote {{count}} prompt(s).",
+    "history.gptRewriteFailed": "GPT rewrite failed: {{error}}",
+    "history.enterThemeSeed": "Enter a theme seed first.",
+    "history.themeAssistInvalid": "Theme association failed: GPT returned no valid themes.",
+    "history.generatedThemes": "Generated {{count}} theme(s).",
+    "history.themeAssistFailed": "Theme association failed: {{error}}",
+    "history.retryTurnNotFound": "Retry failed: task not found.",
+    "history.retryResultNotFound": "Retry failed: result not found.",
+    "history.retryModelMissing": "Retry failed: model not found.",
+    "history.appendedOne": "Added 1 image.",
+    "history.replacedOne": "Retried and replaced image.",
+    "history.retryFailed": "Retry failed: {{error}}",
+    "history.selectImagesFirst": "Select images first.",
+    "history.thumbnailFailed": "Thumbnail generation failed.",
+    "history.thumbnailFailedDetail": "Thumbnail generation failed: {{error}}",
+    "history.thumbnailReady": "Thumbnail created ({{count}} images, 3 rows).",
+    "history.selectHistoryFolderFirst": "Select History Folder first.",
+    "history.selectExportImagesFirst": "Select images to export first.",
+    "history.folderWriteDeniedExport": "Folder write permission denied. Atlas export unavailable.",
+    "history.atlasExported": "Atlas exported: atlas/{{folder}}",
+    "history.exportFailed": "Export failed: {{error}}",
+    "history.folderReadDenied": "Folder read permission denied. History cannot be loaded.",
+    "history.folderLoadedWithTemplates": "Loaded folder history: {{turns}} dialogs, templates: {{templates}} + style templates: {{styleTemplates}}, API/GPT config loaded.",
+    "history.folderLoadedInitialized": "Loaded folder history: {{turns}} dialogs, templates: {{templates}} + style templates: {{styleTemplates}} (initialized), API/GPT config initialized.",
+    "history.browserUnsupported": "Folder read/write is unsupported in this browser. Use a recent Chrome or Edge.",
+    "history.pickFolderFailed": "Folder selection failed: {{error}}",
+    "history.createdTasks": "Created {{count}} tasks (split by input image).",
+    "history.folderWriteDeniedDelete": "Folder write permission denied. Local record cannot be deleted.",
+    "history.deletedLocal": "Deleted local history: #{{seq}}",
+    "history.deleteLocalFailed": "Failed to delete local history: #{{seq}} ({{error}})",
+    "history.folderWriteDeniedAutosave": "Folder write permission denied. Auto-save paused.",
+    "history.wroteLocal": "Wrote local history: #{{seq}}",
+    "history.writeLocalFailed": "Failed to write local history: #{{seq}} ({{error}})",
+  },
+  zh: {
+    "settings.title": "设置",
+    "settings.proxyLabel": "Cloudflare Worker 代理地址",
+    "settings.showWorkerCode": "显示 Worker 代码",
+    "settings.hideWorkerCode": "隐藏 Worker 代码",
+    "settings.language": "语言",
+    "settings.languageEnglish": "English",
+    "settings.languageChinese": "中文",
+    "api.title": "API Key",
+    "api.label": "Deer API Key",
+    "gpt.title": "GPT 提示词",
+    "gpt.rewriteLabel": "GPT 改写指令",
+    "gpt.themeLabel": "主题联想指令",
+    "common.save": "保存",
+    "common.saved": "已保存",
+    "common.unsavedChanges": "有未保存改动",
+    "common.savedAt": "保存于 {{time}}",
+    "common.upload": "上传",
+    "common.processing": "处理中...",
+    "common.unknownError": "未知错误",
+    "common.edit": "编辑",
+    "common.title": "标题",
+    "common.body": "正文",
+    "common.backup": "备用",
+    "common.memo": "备忘",
+    "template.title": "模板修改",
+    "template.titlePlaceholder": "模板标题",
+    "template.bodyPlaceholder": "主模板内容",
+    "template.backupPlaceholder": "备用模板内容",
+    "template.memoPlaceholder": "备忘、备用提示词或复制内容",
+    "template.styleTitle": "风格模板",
+    "template.styleTitlePlaceholder": "风格模板标题",
+    "template.styleBodyPlaceholder": "风格模板提示词",
+    "template.insertPlaceholder": "插入占位框 {{ }}",
+    "template.edit": "编辑模板",
+    "template.editStyle": "编辑风格模板",
+    "images.defaultTitle": "图片",
+    "images.inputTitle": "输入图",
+    "images.referenceTitle": "参考图",
+    "images.modalHint": "第一个格子用于上传。关闭弹窗后会自动保存变更。",
+    "selectionLimit.title": "已达到选择上限",
+    "selectionLimit.text": "图集导出最多只能选择 {{limit}} 张图片。",
+    "action.save": "下载",
+    "action.retry": "重试",
+    "action.addOne": "再来一张",
+    "atlas.title": "缩略图",
+    "atlas.hint": "拖拽即可调整顺序。图集导出和缩略图都会按这个顺序生成。",
+    "atlas.empty": "还没有选中的图片。",
+    "atlas.refresh": "刷新缩略图",
+    "atlas.generate": "生成缩略图",
+    "atlas.openEditor": "打开缩略图编辑器",
+    "help.title": "帮助",
+    "help.hero": "Polyimage 用来对比不同生图模型、快速重跑任务，并把选中的图片导出成一个图集文件夹。",
+    "nav.single": "单任务",
+    "nav.compare": "提示词对比",
+    "nav.style": "风格",
+    "nav.help": "帮助",
+    "nav.gptPrompt": "GPT 提示词",
+    "nav.api": "API",
+    "header.subtitle": "多模型生图工作台 · DeerAPI",
+    "workspace.prompt": "提示词",
+    "workspace.prompts": "提示词",
+    "workspace.compareHint": "共享输入图，双提示词同时运行",
+    "workspace.referenceImage": "参考图",
+    "workspace.reference": "参考图",
+    "workspace.input": "输入图",
+    "workspace.models": "选择模型",
+    "workspace.syncCount": "同步最近修改数量",
+    "workspace.imageRatio": "画幅比例",
+    "workspace.templates": "模板",
+    "workspace.styleTemplates": "风格模板",
+    "workspace.themes": "主题词（12）",
+    "workspace.clearAll": "清空全部",
+    "workspace.themeSeedPlaceholder": "输入一个主题种子，例如：咖啡",
+    "workspace.themePlaceholder": "主题 {{index}}",
+    "workspace.promptAPlaceholder": "描述提示词 A...",
+    "workspace.promptBPlaceholder": "描述提示词 B...",
+    "workspace.promptPlaceholder": "描述你想生成的画面...",
+    "workspace.rewriteByGpt": "用 GPT 改写 {{ }}",
+    "workspace.noPlaceholder": "没有找到 {{ }} 占位符",
+    "workspace.enqueueTask": "⬡ 开始任务",
+    "workspace.enqueueCompare": "⬡ 开始对比任务",
+    "workspace.enqueueStyle": "⬡ 开始风格任务",
+    "workspace.runningQueued": "运行中 {{running}} · 排队中 {{queued}}",
+    "workspace.downloadAll": "↓ 下载全部记录（.zip）",
+    "workspace.selectHistoryFolder": "选择历史文件夹",
+    "workspace.switchHistoryFolder": "切换历史文件夹",
+    "workspace.reloadHistory": "重新读取文件夹历史",
+    "workspace.connected": "已连接：{{name}}",
+    "workspace.noFolderSelected": "未选择文件夹",
+    "workspace.folderUnsupported": "当前浏览器不支持文件夹 API",
+    "workspace.selectedCount": "已选 {{count}}/{{max}}",
+    "workspace.clearSelections": "清空选择",
+    "workspace.exportAtlas": "导出图集文件夹",
+    "workspace.thumbnail": "缩略图",
+    "workspace.currentDialog": "当前任务",
+    "workspace.historyDialogs": "历史记录",
+    "workspace.loadMore": "再加载 4 条记录",
+    "turn.compare": "对比",
+    "turn.style": "风格",
+    "turn.syncTemplate": "同步模板",
+    "turn.reuse": "复用",
+    "turn.delete": "删除",
+    "turn.summaryModel": "模型",
+    "turn.summaryPerTask": "单任务数量",
+    "turn.summaryGenerated": "已生成",
+    "turn.summarySuccess": "成功",
+    "turn.summaryFailed": "失败",
+    "turn.summaryRunning": "运行中",
+    "turn.failedThemes": "失败主题：{{themes}}",
+    "turn.styleResults": "风格结果",
+    "turn.generatingCount": "生成中 {{generated}}/{{expected}}",
+    "turn.generatingImages": "正在生成图片...",
+    "turn.noSuccessfulImages": "没有成功图片，请检查失败主题。",
+    "turn.noImagesReturned": "没有返回图片。",
+    "turn.noStyleResults": "还没有风格结果。",
+    "turn.modelTasks": "{{count}} 个模型任务",
+    "status.loading": "生成中",
+    "status.success": "成功",
+    "status.error": "失败",
+    "status.cancelled": "已取消",
+    "status.queued": "排队中",
+    "status.running": "运行中",
+    "status.done": "已完成",
+    "status.cancelledByUser": "已由用户取消",
+    "status.generating": "生成中... {{generated}}/{{requested}}",
+    "status.stop": "停止",
+    "status.noPrompt": "（无提示词）",
+    "viewer.collapse": "收起",
+    "viewer.previewReference": "预览参考图",
+    "viewer.inlineViewer": "打开内嵌查看器",
+    "viewer.previewStyleImage": "预览风格图 {{index}}",
+    "viewer.fullImage": "大图",
+    "viewer.inputImageAlt": "输入图",
+    "select.select": "选中",
+    "select.unselect": "取消选中",
+    "errors.failedToFetch": "请求失败：无法连接到接口或代理地址。",
+    "history.needFolderForGpt": "请先选择历史文件夹，再保存 GPT 提示词。",
+    "history.noPlaceholder": "未找到 {{ }} 占位符，GPT 未执行。",
+    "history.gptRewrote": "GPT 已改写 {{count}} 个提示词。",
+    "history.gptRewriteFailed": "GPT 改写失败：{{error}}",
+    "history.enterThemeSeed": "请输入主题联想关键词。",
+    "history.themeAssistInvalid": "主题联想失败：GPT 未返回有效主题。",
+    "history.generatedThemes": "已生成 {{count}} 个主题元素。",
+    "history.themeAssistFailed": "主题联想失败：{{error}}",
+    "history.retryTurnNotFound": "重试失败：找不到对应任务。",
+    "history.retryResultNotFound": "重试失败：找不到对应结果。",
+    "history.retryModelMissing": "重试失败：模型不存在。",
+    "history.appendedOne": "已追加 1 张图片。",
+    "history.replacedOne": "已重试并替换图片。",
+    "history.retryFailed": "重试失败：{{error}}",
+    "history.selectImagesFirst": "请先选择要拼接的图片。",
+    "history.thumbnailFailed": "缩略图生成失败。",
+    "history.thumbnailFailedDetail": "缩略图生成失败：{{error}}",
+    "history.thumbnailReady": "缩略图已生成（{{count}} 张，3 行）。",
+    "history.selectHistoryFolderFirst": "请先选择历史文件夹。",
+    "history.selectExportImagesFirst": "请先选择要导出的图片。",
+    "history.folderWriteDeniedExport": "文件夹写入权限未授权，无法导出图集。",
+    "history.atlasExported": "图集已导出：atlas/{{folder}}",
+    "history.exportFailed": "导出失败：{{error}}",
+    "history.folderReadDenied": "文件夹读取权限未授权，无法加载历史。",
+    "history.folderLoadedWithTemplates": "已读取文件夹历史：{{turns}} 条，模板：{{templates}} + 风格模板：{{styleTemplates}}，API/GPT 配置已加载。",
+    "history.folderLoadedInitialized": "已读取文件夹历史：{{turns}} 条，模板：{{templates}} + 风格模板：{{styleTemplates}}（已初始化），API/GPT 配置已初始化。",
+    "history.browserUnsupported": "当前浏览器不支持文件夹读写（请使用较新版本 Chrome/Edge）。",
+    "history.pickFolderFailed": "选择文件夹失败：{{error}}",
+    "history.createdTasks": "已创建 {{count}} 个任务（按输入图拆分）。",
+    "history.folderWriteDeniedDelete": "文件夹写入权限未授权，无法删除本地记录。",
+    "history.deletedLocal": "已删除本地历史：#{{seq}}",
+    "history.deleteLocalFailed": "删除本地历史失败：#{{seq}}（{{error}}）",
+    "history.folderWriteDeniedAutosave": "文件夹写入权限未授权，自动保存已暂停。",
+    "history.wroteLocal": "已写入本地历史：#{{seq}}",
+    "history.writeLocalFailed": "写入本地历史失败：#{{seq}}（{{error}}）",
+  },
+};
+
+function interpolateTemplate(template, params = {}) {
+  return String(template ?? "").replace(/\{\{(\w+)\}\}/g, (_, key) => String(params?.[key] ?? ""));
+}
+
+function translateUiText(uiLanguage, key, params) {
+  const locale = uiLanguage === "zh" ? "zh" : "en";
+  const template = UI_TEXT[locale]?.[key] ?? UI_TEXT.en?.[key] ?? key;
+  return interpolateTemplate(template, params);
+}
+
+function normalizeUiLanguage(value) {
+  return value === "zh" ? "zh" : "en";
+}
+
+function useI18n() {
+  return useContext(I18nContext);
+}
+
+function formatUiTime(value, uiLanguage) {
+  return new Date(value).toLocaleTimeString(uiLanguage === "zh" ? "zh-CN" : "en-US");
+}
+
+function formatUiDateTime(value, uiLanguage) {
+  return new Date(value).toLocaleString(uiLanguage === "zh" ? "zh-CN" : "en-US");
+}
+
+function getDefaultTemplateTitle(templateId, uiLanguage) {
+  const match = String(templateId || "").match(/(\d+)/);
+  const index = Number(match?.[1] || 1);
+  return uiLanguage === "zh" ? `预设 ${index}` : `Preset ${index}`;
+}
+
+function getDefaultStyleTemplateTitle(templateId, uiLanguage) {
+  const match = String(templateId || "").match(/(\d+)/);
+  const index = Number(match?.[1] || 1);
+  return uiLanguage === "zh" ? `风格 ${index}` : `Style ${index}`;
+}
+
+function getLocalizedTemplateTitle(title, templateId, uiLanguage, isStyle = false) {
+  const fallback = isStyle ? getDefaultStyleTemplateTitle(templateId, uiLanguage) : getDefaultTemplateTitle(templateId, uiLanguage);
+  const altFallback = isStyle
+    ? getDefaultStyleTemplateTitle(templateId, uiLanguage === "zh" ? "en" : "zh")
+    : getDefaultTemplateTitle(templateId, uiLanguage === "zh" ? "en" : "zh");
+  if (!title || title === altFallback || title === fallback) return fallback;
+  return title;
+}
+
+function getLocalizedPromptLabel(label, key, uiLanguage) {
+  if (key === "a" || label === "PROMPT A") return uiLanguage === "zh" ? "提示词 A" : "PROMPT A";
+  if (key === "b" || label === "PROMPT B") return uiLanguage === "zh" ? "提示词 B" : "PROMPT B";
+  if (key === "single" || label === "PROMPT") return uiLanguage === "zh" ? "提示词" : "PROMPT";
+  return label;
+}
+
+function getLocalizedStatusLabel(status, t) {
+  return t(`status.${status || "done"}`);
+}
+
+function localizeRuntimeMessage(message, t) {
+  const text = String(message || "").trim();
+  if (!text) return t("common.unknownError");
+  const exactMap = new Map([
+    ["No images returned", t("turn.noImagesReturned").replace(/\.$/, "")],
+    ["No images returned.", t("turn.noImagesReturned")],
+    ["Cancelled by user", t("status.cancelledByUser")],
+    ["Unknown error", t("common.unknownError")],
+    ["Failed to fetch", t("errors.failedToFetch")],
+  ]);
+  return exactMap.get(text) || message;
+}
 
 // ─── Cloudflare Worker Proxy Code ───
 const CF_WORKER_CODE = `// Deploy this as a Cloudflare Worker
@@ -2359,21 +2784,37 @@ function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placeholder, ro
   );
 }
 
-function SettingsModal({ show, onClose, proxyUrl, setProxyUrl }) {
+function SettingsModal({ show, onClose, proxyUrl, setProxyUrl, uiLanguage, setUiLanguage }) {
+  const { t } = useI18n();
   const [showWorkerCode, setShowWorkerCode] = useState(false);
   if (!show) return null;
   return (
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.settingsModal} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>⚙ Configuration</h2>
+          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>⚙ {t("settings.title")}</h2>
           <button onClick={onClose} style={S.closeBtn}>✕</button>
         </div>
-        <label style={S.fieldLabel}>Cloudflare Worker Proxy URL</label>
+        <label style={S.fieldLabel}>{t("settings.proxyLabel")}</label>
         <input style={S.proxyInput} value={proxyUrl} onChange={(e) => setProxyUrl(e.target.value)} placeholder="https://your-worker.workers.dev" />
-        <p style={S.hint}>Deploy the Worker below. Set <code style={{ color: "#a78bfa" }}>DEERAPI_KEY</code> (your DeerAPI key <code style={{ color: "#a78bfa" }}>sk-...</code>) as environment variable.</p>
+        <label style={{ ...S.fieldLabel, marginTop: 14 }}>{t("settings.language")}</label>
+        <select style={S.proxyInput} value={uiLanguage} onChange={(event) => setUiLanguage(normalizeUiLanguage(event.target.value))}>
+          <option value="en">{t("settings.languageEnglish")}</option>
+          <option value="zh">{t("settings.languageChinese")}</option>
+        </select>
+        <p style={S.hint}>
+          {uiLanguage === "zh" ? (
+            <>
+              请先部署下面的 Worker，并在环境变量中设置 <code style={{ color: "#a78bfa" }}>DEERAPI_KEY</code>（你的 DeerAPI Key，格式如 <code style={{ color: "#a78bfa" }}>sk-...</code>）。
+            </>
+          ) : (
+            <>
+              Deploy the Worker below. Set <code style={{ color: "#a78bfa" }}>DEERAPI_KEY</code> (your DeerAPI key <code style={{ color: "#a78bfa" }}>sk-...</code>) as environment variable.
+            </>
+          )}
+        </p>
         <button style={{ ...S.toggleCodeBtn, marginTop: 16 }} onClick={() => setShowWorkerCode(!showWorkerCode)}>
-          {showWorkerCode ? "Hide" : "Show"} Worker Code
+          {showWorkerCode ? t("settings.hideWorkerCode") : t("settings.showWorkerCode")}
         </button>
         {showWorkerCode && <pre style={S.codeBlock}>{CF_WORKER_CODE}</pre>}
       </div>
@@ -2382,16 +2823,17 @@ function SettingsModal({ show, onClose, proxyUrl, setProxyUrl }) {
 }
 
 function ApiKeyModal({ show, onClose, apiKey, draftApiKey, setDraftApiKey, onSave, saveStateText }) {
+  const { uiLanguage, t } = useI18n();
   if (!show) return null;
   const isDirty = normalizeApiKey(draftApiKey) !== normalizeApiKey(apiKey);
   return (
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.settingsModal} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>🔑 API Key</h2>
+          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>🔑 {t("api.title")}</h2>
           <button onClick={onClose} style={S.closeBtn}>✕</button>
         </div>
-        <label style={S.fieldLabel}>Deer API Key</label>
+        <label style={S.fieldLabel}>{t("api.label")}</label>
         <input
           style={S.proxyInput}
           value={draftApiKey}
@@ -2405,10 +2847,14 @@ function ApiKeyModal({ show, onClose, apiKey, draftApiKey, setDraftApiKey, onSav
             onClick={onSave}
             disabled={!isDirty}
           >
-            Save
+            {t("common.save")}
           </button>
         </div>
-        <p style={S.hint}>点 Save 后才会用于请求。留空后保存，将回退 Worker 环境变量。</p>
+        <p style={S.hint}>
+          {uiLanguage === "zh"
+            ? "点保存后才会用于请求。留空后保存，将回退到 Worker 环境变量。"
+            : "Requests use the key only after you click Save. Saving an empty key falls back to the Worker environment variable."}
+        </p>
       </div>
     </div>
   );
@@ -2427,6 +2873,7 @@ function GptAssistModal({
   saveStateText,
   canSave,
 }) {
+  const { uiLanguage, t } = useI18n();
   if (!show) return null;
   const isDirty =
     normalizeGptAssistPrompt(draftPrompt) !== normalizeGptAssistPrompt(prompt) ||
@@ -2435,23 +2882,23 @@ function GptAssistModal({
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.settingsModal} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>👤 GPT Prompt</h2>
+          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>👤 {t("gpt.title")}</h2>
           <button onClick={onClose} style={S.closeBtn}>✕</button>
         </div>
-        <label style={S.fieldLabel}>GPT Rewrite Instruction</label>
+        <label style={S.fieldLabel}>{t("gpt.rewriteLabel")}</label>
         <textarea
           style={S.textarea}
           value={draftPrompt}
           onChange={(event) => setDraftPrompt(event.target.value)}
-          placeholder="告诉 GPT 如何改写 {{ }} 内文字..."
+          placeholder={uiLanguage === "zh" ? "告诉 GPT 如何改写 {{ }} 内文字..." : "Tell GPT how to rewrite text inside {{ }}..."}
           rows={6}
         />
-        <label style={{ ...S.fieldLabel, marginTop: 14 }}>Style Theme Association Instruction</label>
+        <label style={{ ...S.fieldLabel, marginTop: 14 }}>{t("gpt.themeLabel")}</label>
         <textarea
           style={S.textarea}
           value={draftStyleThemePrompt}
           onChange={(event) => setDraftStyleThemePrompt(event.target.value)}
-          placeholder="告诉 GPT 如何联想 12 个主题元素..."
+          placeholder={uiLanguage === "zh" ? "告诉 GPT 如何联想 12 个主题元素..." : "Tell GPT how to expand one seed into 12 related themes..."}
           rows={5}
         />
         <div style={S.apiModalActions}>
@@ -2461,16 +2908,21 @@ function GptAssistModal({
             onClick={onSave}
             disabled={!isDirty || !canSave}
           >
-            Save
+            {t("common.save")}
           </button>
         </div>
-        <p style={S.hint}>两套提示词都会存到历史文件夹（与模板相同），不会保存输入图。</p>
+        <p style={S.hint}>
+          {uiLanguage === "zh"
+            ? "两套提示词都会存到历史文件夹（与模板相同），不会保存输入图。"
+            : "Both prompts are stored in the selected history folder, while input images are not saved."}
+        </p>
       </div>
     </div>
   );
 }
 
 function TemplateEditorModal({ show, onClose, draft, setDraft, onSave, canSave }) {
+  const { t } = useI18n();
   const bodyEditorRef = useRef(null);
   const backupEditorRef = useRef(null);
   const memoEditorRef = useRef(null);
@@ -2492,47 +2944,47 @@ function TemplateEditorModal({ show, onClose, draft, setDraft, onSave, canSave }
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.settingsModal} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>Template Modify</h2>
+          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>{t("template.title")}</h2>
           <button onClick={onClose} style={S.closeBtn}>✕</button>
         </div>
-        <label style={S.fieldLabel}>Title</label>
+        <label style={S.fieldLabel}>{t("common.title")}</label>
         <input
           style={S.proxyInput}
           value={draft.title}
           onChange={(e) => setDraft((prev) => ({ ...prev, title: e.target.value }))}
-          placeholder="Template title"
+          placeholder={t("template.titlePlaceholder")}
         />
         <div style={{ ...S.templateFieldHead, marginTop: 14 }}>
-          <label style={{ ...S.fieldLabel, marginBottom: 0 }}>Body</label>
-          <button type="button" style={S.placeholderBtn} onClick={() => insertPlaceholderInTemplate("body")} title="插入占位框 {{ }}">【】</button>
+          <label style={{ ...S.fieldLabel, marginBottom: 0 }}>{t("common.body")}</label>
+          <button type="button" style={S.placeholderBtn} onClick={() => insertPlaceholderInTemplate("body")} title={t("template.insertPlaceholder")}>【】</button>
         </div>
         <TokenPromptInput
           value={draft.body}
           onChange={(next) => setDraft((prev) => ({ ...prev, body: next }))}
           editorRef={bodyEditorRef}
-          placeholder="Main template content"
+          placeholder={t("template.bodyPlaceholder")}
           rows={4}
         />
         <div style={{ ...S.templateFieldHead, marginTop: 14 }}>
-          <label style={{ ...S.fieldLabel, marginBottom: 0 }}>Backup</label>
-          <button type="button" style={S.placeholderBtn} onClick={() => insertPlaceholderInTemplate("backup")} title="插入占位框 {{ }}">【】</button>
+          <label style={{ ...S.fieldLabel, marginBottom: 0 }}>{t("common.backup")}</label>
+          <button type="button" style={S.placeholderBtn} onClick={() => insertPlaceholderInTemplate("backup")} title={t("template.insertPlaceholder")}>【】</button>
         </div>
         <TokenPromptInput
           value={draft.backup}
           onChange={(next) => setDraft((prev) => ({ ...prev, backup: next }))}
           editorRef={backupEditorRef}
-          placeholder="Backup template content"
+          placeholder={t("template.backupPlaceholder")}
           rows={4}
         />
         <div style={{ ...S.templateFieldHead, marginTop: 14 }}>
-          <label style={{ ...S.fieldLabel, marginBottom: 0 }}>Memo</label>
-          <button type="button" style={S.placeholderBtn} onClick={() => insertPlaceholderInTemplate("memo")} title="插入占位框 {{ }}">【】</button>
+          <label style={{ ...S.fieldLabel, marginBottom: 0 }}>{t("common.memo")}</label>
+          <button type="button" style={S.placeholderBtn} onClick={() => insertPlaceholderInTemplate("memo")} title={t("template.insertPlaceholder")}>【】</button>
         </div>
         <TokenPromptInput
           value={draft.memo}
           onChange={(next) => setDraft((prev) => ({ ...prev, memo: next }))}
           editorRef={memoEditorRef}
-          placeholder="Notes, spare prompts, or copied backups"
+          placeholder={t("template.memoPlaceholder")}
           rows={4}
         />
         <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
@@ -2541,7 +2993,7 @@ function TemplateEditorModal({ show, onClose, draft, setDraft, onSave, canSave }
             onClick={onSave}
             disabled={!canSave}
           >
-            Save
+            {t("common.save")}
           </button>
         </div>
       </div>
@@ -2550,31 +3002,32 @@ function TemplateEditorModal({ show, onClose, draft, setDraft, onSave, canSave }
 }
 
 function StyleTemplateEditorModal({ show, onClose, draft, setDraft, onSave, canSave }) {
+  const { t } = useI18n();
   const bodyEditorRef = useRef(null);
   if (!show) return null;
   return (
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.settingsModal} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>Style Template</h2>
+          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>{t("template.styleTitle")}</h2>
           <button onClick={onClose} style={S.closeBtn}>✕</button>
         </div>
-        <label style={S.fieldLabel}>Title</label>
+        <label style={S.fieldLabel}>{t("common.title")}</label>
         <input
           style={S.proxyInput}
           value={draft.title}
           onChange={(e) => setDraft((prev) => ({ ...prev, title: e.target.value }))}
-          placeholder="Style template title"
+          placeholder={t("template.styleTitlePlaceholder")}
         />
         <div style={{ ...S.templateFieldHead, marginTop: 14 }}>
-          <label style={{ ...S.fieldLabel, marginBottom: 0 }}>Body</label>
-          <button type="button" style={S.placeholderBtn} onClick={() => bodyEditorRef.current?.insertPlaceholder?.()} title="插入占位框 {{ }}">【】</button>
+          <label style={{ ...S.fieldLabel, marginBottom: 0 }}>{t("common.body")}</label>
+          <button type="button" style={S.placeholderBtn} onClick={() => bodyEditorRef.current?.insertPlaceholder?.()} title={t("template.insertPlaceholder")}>【】</button>
         </div>
         <TokenPromptInput
           value={draft.body}
           onChange={(next) => setDraft((prev) => ({ ...prev, body: next }))}
           editorRef={bodyEditorRef}
-          placeholder="Style template prompt"
+          placeholder={t("template.styleBodyPlaceholder")}
           rows={5}
         />
         <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
@@ -2583,7 +3036,7 @@ function StyleTemplateEditorModal({ show, onClose, draft, setDraft, onSave, canS
             onClick={onSave}
             disabled={!canSave}
           >
-            Save
+            {t("common.save")}
           </button>
         </div>
       </div>
@@ -2592,6 +3045,7 @@ function StyleTemplateEditorModal({ show, onClose, draft, setDraft, onSave, canS
 }
 
 function InputImagesModal({ show, onClose, title, images, maxCount, onUploadFiles, onRemoveAt }) {
+  const { t } = useI18n();
   const fileInputRef = useRef(null);
   if (!show) return null;
   const safeImages = Array.isArray(images)
@@ -2603,12 +3057,10 @@ function InputImagesModal({ show, onClose, title, images, maxCount, onUploadFile
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={{ ...S.settingsModal, ...S.inputImagesModal }} onClick={(event) => event.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>{title || "Images"}</h2>
+          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>{title || t("images.defaultTitle")}</h2>
           <button onClick={onClose} style={S.closeBtn}>✕</button>
         </div>
-        <div style={S.modalInputImagesHint}>
-          First slot is upload. Changes save automatically when you close.
-        </div>
+        <div style={S.modalInputImagesHint}>{t("images.modalHint")}</div>
         <div style={S.modalInputImagesGrid}>
           <button
             type="button"
@@ -2617,7 +3069,7 @@ function InputImagesModal({ show, onClose, title, images, maxCount, onUploadFile
             disabled={remainingCount <= 0}
           >
             <span style={S.modalInputImageUploadPlus}>+</span>
-            <span style={S.modalInputImageUploadText}>Upload</span>
+            <span style={S.modalInputImageUploadText}>{t("common.upload")}</span>
           </button>
           {safeImages.map((image, index) => (
             <div key={`modal-image-${index}`} style={S.modalInputImageCell}>
@@ -2644,18 +3096,20 @@ function InputImagesModal({ show, onClose, title, images, maxCount, onUploadFile
 }
 
 function SelectionLimitModal({ show, onClose, limit }) {
+  const { t } = useI18n();
   if (!show) return null;
   return (
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.selectionLimitModal} onClick={(event) => event.stopPropagation()}>
-        <div style={S.selectionLimitTitle}>Selection limit reached</div>
-        <div style={S.selectionLimitText}>You can select up to {limit} images for atlas export.</div>
+        <div style={S.selectionLimitTitle}>{t("selectionLimit.title")}</div>
+        <div style={S.selectionLimitText}>{t("selectionLimit.text", { limit })}</div>
       </div>
     </div>
   );
 }
 
 function ImageActionBar({ onSave, onRetry, onAppend, compact = false, busy = false, allowSave = true }) {
+  const { t } = useI18n();
   const buttonStyle = compact ? S.imageActionBtnCompact : S.imageActionBtn;
   const iconStyle = compact ? S.imageActionIconCompact : S.imageActionIcon;
   const plusStyle = compact ? S.imageActionPlusCompact : S.imageActionPlus;
@@ -2666,7 +3120,7 @@ function ImageActionBar({ onSave, onRetry, onAppend, compact = false, busy = fal
         style={{ ...buttonStyle, ...(allowSave ? null : S.imageActionBtnDisabled) }}
         onClick={onSave}
         disabled={!allowSave}
-        title="Save"
+        title={t("action.save")}
       >
         <span style={iconStyle}>↓</span>
       </button>
@@ -2675,7 +3129,7 @@ function ImageActionBar({ onSave, onRetry, onAppend, compact = false, busy = fal
         style={{ ...buttonStyle, ...(busy ? S.imageActionBtnBusy : null) }}
         onClick={onRetry}
         disabled={busy || typeof onRetry !== "function"}
-        title="Retry"
+        title={t("action.retry")}
       >
         <span style={iconStyle}>↻</span>
       </button>
@@ -2684,7 +3138,7 @@ function ImageActionBar({ onSave, onRetry, onAppend, compact = false, busy = fal
         style={{ ...buttonStyle, ...(busy ? S.imageActionBtnBusy : null) }}
         onClick={onAppend}
         disabled={busy || typeof onAppend !== "function"}
-        title="Add one more"
+        title={t("action.addOne")}
       >
         <span style={plusStyle}>+1</span>
       </button>
@@ -2693,6 +3147,7 @@ function ImageActionBar({ onSave, onRetry, onAppend, compact = false, busy = fal
 }
 
 function AtlasThumbnailModal({ show, onClose, items, onReorder, onGenerate, thumbnail, busy, onPreview }) {
+  const { uiLanguage, t } = useI18n();
   const [dragKey, setDragKey] = useState(null);
 
   useEffect(() => {
@@ -2705,10 +3160,10 @@ function AtlasThumbnailModal({ show, onClose, items, onReorder, onGenerate, thum
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={{ ...S.settingsModal, maxWidth: 880 }} onClick={(event) => event.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>Thumbnail</h2>
+          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>{t("atlas.title")}</h2>
           <button onClick={onClose} style={S.closeBtn}>✕</button>
         </div>
-        <div style={S.atlasModalHint}>Drag to reorder. Atlas export and thumbnail follow this order.</div>
+        <div style={S.atlasModalHint}>{t("atlas.hint")}</div>
         {items.length ? (
           <div style={S.atlasModalGrid}>
             {items.map((item, index) => (
@@ -2729,16 +3184,16 @@ function AtlasThumbnailModal({ show, onClose, items, onReorder, onGenerate, thum
                 }}
               >
                 <div style={S.atlasModalCardOrder}>{index + 1}</div>
-                <img src={item.image} alt={item.theme || item.modelName || `Selected ${index + 1}`} style={S.atlasModalCardThumb} />
+                <img src={item.image} alt={item.theme || item.modelName || (uiLanguage === "zh" ? `已选图片 ${index + 1}` : `Selected ${index + 1}`)} style={S.atlasModalCardThumb} />
                 <div style={S.atlasModalCardMeta}>
-                  <div style={S.atlasModalCardTitle}>{item.theme || item.modelName || `Image ${index + 1}`}</div>
+                  <div style={S.atlasModalCardTitle}>{item.theme || item.modelName || (uiLanguage === "zh" ? `图片 ${index + 1}` : `Image ${index + 1}`)}</div>
                   <div style={S.atlasModalCardSub}>{item.modelName || item.modelId || "-"}</div>
                 </div>
               </div>
             ))}
           </div>
         ) : (
-          <div style={S.turnStyleImageEmpty}>No selected images yet.</div>
+          <div style={S.turnStyleImageEmpty}>{t("atlas.empty")}</div>
         )}
         <div style={{ ...S.modalInputImagesActions, justifyContent: "space-between", marginTop: 16 }}>
           <button
@@ -2747,7 +3202,7 @@ function AtlasThumbnailModal({ show, onClose, items, onReorder, onGenerate, thum
             onClick={() => thumbnail && onPreview?.(thumbnail)}
             disabled={!thumbnail}
           >
-            Preview
+            {uiLanguage === "zh" ? "预览" : "Preview"}
           </button>
           <button
             type="button"
@@ -2755,12 +3210,12 @@ function AtlasThumbnailModal({ show, onClose, items, onReorder, onGenerate, thum
             onClick={onGenerate}
             disabled={!items.length || busy}
           >
-            {busy ? "Processing..." : thumbnail ? "Refresh Thumbnail" : "Generate Thumbnail"}
+            {busy ? t("common.processing") : thumbnail ? t("atlas.refresh") : t("atlas.generate")}
           </button>
         </div>
         {thumbnail && (
           <div style={S.atlasModalPreview}>
-            <img src={thumbnail} alt="Atlas thumbnail" style={S.atlasModalPreviewImg} />
+            <img src={thumbnail} alt={uiLanguage === "zh" ? "图集缩略图" : "Atlas thumbnail"} style={S.atlasModalPreviewImg} />
           </div>
         )}
       </div>
@@ -2802,136 +3257,161 @@ function HelpParagraphs({ text, style }) {
 }
 
 function HelpPage() {
-  const sections = [
-    {
-      title: "Getting Started",
-      fullWidth: true,
-      en: [
-        "There is no built-in account login inside this app.",
-        "First sign in to DeerAPI on the web, create or copy your API key, open this app, click `API`, and paste the key.",
-        "Then choose a `History Folder` if you want local history and templates, select a mode, pick models, fill prompt or images, and click `Enqueue Task`.",
-      ],
-      cn: [
-        "这个工具本身没有内置账号登录页面。",
-        "先去 DeerAPI 网页端登录，创建或复制你的 API Key；回到本工具后点击 `API` 填入密钥。",
-        "如果你想保存本地历史和模板，再选择一个 `History Folder`；之后选择模式、勾选模型、填写提示词或上传图片，再点击 `Enqueue Task` 即可开始。",
-      ],
-    },
-    {
-      title: "Modes",
-      en: [
-        "`Single` runs one prompt across selected models.",
-        "`Prompt Compare` runs prompt A and B with the same input image.",
-        "`Style` runs one model across many themes with optional reference images.",
-      ],
-      cn: [
-        "`Single` 会把一个提示词发给多个已选模型。",
-        "`Prompt Compare` 会用同一张输入图同时运行 A、B 两套提示词。",
-        "`Style` 会用一个模型批量跑多个主题词，并可搭配风格参考图。",
-      ],
-    },
-    {
-      title: "Image Actions",
-      en: [
-        "Each image has three actions: `Save` downloads it.",
-        "`Retry` replaces that image with a new render.",
-        "`+1` keeps the current images and adds one more render to the same task.",
-      ],
-      cn: [
-        "每张图片下面都有三个操作：`Save` 下载当前图。",
-        "`Retry` 会替换当前这张图。",
-        "`+1` 会保留原图并在同一任务里再追加一张新图。",
-      ],
-    },
-    {
-      title: "GPT Assistant",
-      en: [
-        "The GPT assistant currently has two uses.",
-        "In `Single` and `Prompt Compare`, click the small human button above the prompt box to rewrite only the text inside `{{ }}` while keeping the outer prompt unchanged.",
-        "In `Style`, use the `GPT 12` assistant next to the theme seed input to expand one seed idea into 12 related visual themes.",
-      ],
-      cn: [
-        "GPT 助手目前有两种用法。",
-        "在 `Single` 和 `Prompt Compare` 中，点击提示词输入框上方的人形按钮，它只会改写 `{{ }}` 内的内容，不会改动外部提示词。",
-        "在 `Style` 中，使用主题联想输入框旁边的 `GPT 12`，把一个主题种子扩展成 12 个相关视觉元素。",
-      ],
-    },
-    {
-      title: "Selections",
-      en: [
-        "Selections work across all pages and modes.",
-        "You can keep up to 20 images selected at once, clear them together, and export them into one atlas folder.",
-      ],
-      cn: [
-        "选图功能在所有页面和模式之间共用。",
-        "你最多可以同时保留 20 张选中图片，并统一清空或一起导出到同一个 atlas 文件夹。",
-      ],
-    },
-    {
-      title: "History Folder",
-      en: [
-        "Templates, API key, GPT prompt, atlas exports, and history are tied to the selected history folder.",
-        "Switching folders replaces the current loaded history instead of merging it.",
-      ],
-      cn: [
-        "模板、API Key、GPT Prompt、atlas 导出和历史记录都会绑定到当前选中的历史文件夹。",
-        "切换文件夹时，会直接替换当前历史，不会和旧内容混合。",
-      ],
-    },
-    {
-      title: "Inputs",
-      en: [
-        "Input images support multi-select uploads.",
-        "The main input box uploads directly, while `Edit` opens a manager to add or remove images.",
-        "In `Current Dialog` and `History Dialogs`, click the magnifier on the input image to expand it in place. Click the enlarged image first, then use the wheel to zoom, drag to pan, and click the corner collapse button to restore the thumbnail.",
-        "In `Style`, reference images open their own editor modal.",
-      ],
-      cn: [
-        "输入图支持一次多选上传。",
-        "主输入框点击后会直接上传，`Edit` 会打开管理弹窗用于删除或新增图片。",
-        "在 `Current Dialog` 和 `History Dialogs` 中，点击输入图上的放大镜，可以在原位置展开大图。先点一下大图，再用滚轮缩放、拖拽平移，点击右上角缩小按钮即可恢复缩略图。",
-        "在 `Style` 里，参考图使用独立的编辑弹窗。",
-      ],
-    },
-    {
-      title: "Common Errors",
-      en: [
-        "`Failed to fetch` usually means the proxy URL, network, or API endpoint is unreachable.",
-        "`No images returned` means the model accepted the request but did not return usable images, so you can try `Retry` or `+1`.",
-        "If saving or export buttons do not work, first check whether a `History Folder` has been selected.",
-      ],
-      cn: [
-        "`Failed to fetch` 通常表示代理地址、网络，或者 API 端点不可达。",
-        "`No images returned` 表示模型接收了请求，但没有返回可用图片，这时可以尝试 `Retry` 或 `+1`。",
-        "如果保存或导出按钮不能用，请先检查是否已经选择了 `History Folder`。",
-      ],
-    },
-    {
-      title: "Thumbnail",
-      en: [
-        "In `Style`, open `Thumbnail` to drag selected images into the order you want.",
-        "That order is used for both the generated thumbnail and atlas export.",
-      ],
-      cn: [
-        "在 `Style` 页面里，打开 `Thumbnail` 可以拖拽调整已选图片顺序。",
-        "这个顺序会同时用于缩略图生成和 atlas 文件夹导出。",
-      ],
-    },
-  ];
+  const { uiLanguage, t } = useI18n();
+  const sections = uiLanguage === "zh"
+    ? [
+        {
+          title: "开始使用",
+          fullWidth: true,
+          lines: [
+            "这个工具本身没有内置账号登录页面。",
+            "先去 DeerAPI 网页端登录，创建或复制你的 API Key；回到本工具后点击 `API` 填入密钥。",
+            "如果你想保存本地历史和模板，再选择一个 `History Folder`；之后选择模式、勾选模型、填写提示词或上传图片，再点击 `开始任务` 即可开始。",
+          ],
+        },
+        {
+          title: "模式",
+          lines: [
+            "`单任务` 会把一个提示词发给多个已选模型。",
+            "`提示词对比` 会用同一张输入图同时运行 A、B 两套提示词。",
+            "`风格` 会用一个模型批量跑多个主题词，并可搭配风格参考图。",
+          ],
+        },
+        {
+          title: "图片操作",
+          lines: [
+            "每张图片下面都有三个操作：`下载` 下载当前图。",
+            "`重试` 会替换当前这张图。",
+            "`+1` 会保留原图并在同一任务里再追加一张新图。",
+          ],
+        },
+        {
+          title: "GPT 助手",
+          lines: [
+            "GPT 助手目前有两种用法。",
+            "在 `单任务` 和 `提示词对比` 中，点击提示词输入框上方的人形按钮，它只会改写 `{{ }}` 内的内容，不会改动外部提示词。",
+            "在 `风格` 中，使用主题联想输入框旁边的 `GPT 12`，把一个主题种子扩展成 12 个相关视觉元素。",
+          ],
+        },
+        {
+          title: "选图与图集",
+          lines: [
+            "选图功能在所有页面和模式之间共用。",
+            "你最多可以同时保留 20 张选中图片，并统一清空或一起导出到同一个 atlas 文件夹。",
+          ],
+        },
+        {
+          title: "历史文件夹",
+          lines: [
+            "模板、API Key、GPT Prompt、atlas 导出和历史记录都会绑定到当前选中的历史文件夹。",
+            "切换文件夹时，会直接替换当前历史，不会和旧内容混合。",
+          ],
+        },
+        {
+          title: "图片输入",
+          lines: [
+            "输入图支持一次多选上传。",
+            "主输入框点击后会直接上传，`编辑` 会打开管理弹窗用于删除或新增图片。",
+            "在 `当前任务` 和 `历史记录` 中，点击输入图上的放大镜，可以在原位置展开大图。先点一下大图，再用滚轮缩放、拖拽平移，点击右上角缩小按钮即可恢复缩略图。",
+            "在 `风格` 里，参考图使用独立的编辑弹窗。",
+          ],
+        },
+        {
+          title: "常见报错",
+          lines: [
+            "`Failed to fetch` 通常表示代理地址、网络，或者 API 端点不可达。",
+            "`No images returned` 表示模型接收了请求，但没有返回可用图片，这时可以尝试 `重试` 或 `+1`。",
+            "如果保存或导出按钮不能用，请先检查是否已经选择了 `History Folder`。",
+          ],
+        },
+        {
+          title: "缩略图",
+          lines: [
+            "在 `风格` 页面里，打开 `缩略图` 可以拖拽调整已选图片顺序。",
+            "这个顺序会同时用于缩略图生成和 atlas 文件夹导出。",
+          ],
+        },
+      ]
+    : [
+        {
+          title: "Getting Started",
+          fullWidth: true,
+          lines: [
+            "There is no built-in account login inside this app.",
+            "First sign in to DeerAPI on the web, create or copy your API key, open this app, click `API`, and paste the key.",
+            "Then choose a `History Folder` if you want local history and templates, select a mode, pick models, fill prompt or images, and click `Enqueue Task`.",
+          ],
+        },
+        {
+          title: "Modes",
+          lines: [
+            "`Single` runs one prompt across selected models.",
+            "`Prompt Compare` runs prompt A and B with the same input image.",
+            "`Style` runs one model across many themes with optional reference images.",
+          ],
+        },
+        {
+          title: "Image Actions",
+          lines: [
+            "Each image has three actions: `Save` downloads it.",
+            "`Retry` replaces that image with a new render.",
+            "`+1` keeps the current images and adds one more render to the same task.",
+          ],
+        },
+        {
+          title: "GPT Assistant",
+          lines: [
+            "The GPT assistant currently has two uses.",
+            "In `Single` and `Prompt Compare`, click the small human button above the prompt box to rewrite only the text inside `{{ }}` while keeping the outer prompt unchanged.",
+            "In `Style`, use the `GPT 12` assistant next to the theme seed input to expand one seed idea into 12 related visual themes.",
+          ],
+        },
+        {
+          title: "Selections",
+          lines: [
+            "Selections work across all pages and modes.",
+            "You can keep up to 20 images selected at once, clear them together, and export them into one atlas folder.",
+          ],
+        },
+        {
+          title: "History Folder",
+          lines: [
+            "Templates, API key, GPT prompt, atlas exports, and history are tied to the selected history folder.",
+            "Switching folders replaces the current loaded history instead of merging it.",
+          ],
+        },
+        {
+          title: "Inputs",
+          lines: [
+            "Input images support multi-select uploads.",
+            "The main input box uploads directly, while `Edit` opens a manager to add or remove images.",
+            "In `Current Dialog` and `History Dialogs`, click the magnifier on the input image to expand it in place. Click the enlarged image first, then use the wheel to zoom, drag to pan, and click the corner collapse button to restore the thumbnail.",
+            "In `Style`, reference images open their own editor modal.",
+          ],
+        },
+        {
+          title: "Common Errors",
+          lines: [
+            "`Failed to fetch` usually means the proxy URL, network, or API endpoint is unreachable.",
+            "`No images returned` means the model accepted the request but did not return usable images, so you can try `Retry` or `+1`.",
+            "If saving or export buttons do not work, first check whether a `History Folder` has been selected.",
+          ],
+        },
+        {
+          title: "Thumbnail",
+          lines: [
+            "In `Style`, open `Thumbnail` to drag selected images into the order you want.",
+            "That order is used for both the generated thumbnail and atlas export.",
+          ],
+        },
+      ];
 
   return (
     <section style={S.helpWrap}>
       <div style={S.helpHero}>
-        <h2 style={S.helpTitle}>Help</h2>
+        <h2 style={S.helpTitle}>{t("help.title")}</h2>
         <div style={S.helpTextBlock}>
-          <HelpRichText
-            style={S.helpIntro}
-            text="Polyimage compares image models, re-runs tasks quickly, and exports selected images into one atlas folder."
-          />
-          <HelpRichText
-            style={S.helpIntroCn}
-            text="Polyimage 用来对比不同生图模型、快速重跑任务，并把选中的图片导出成一个图集文件夹。"
-          />
+          <HelpRichText style={uiLanguage === "zh" ? S.helpIntroCn : S.helpIntro} text={t("help.hero")} />
         </div>
       </div>
       <div style={S.helpGrid}>
@@ -2939,9 +3419,7 @@ function HelpPage() {
           <article key={section.title} style={{ ...S.helpCard, ...(section.fullWidth ? S.helpCardFull : null) }}>
             <h3 style={S.helpCardTitle}>{section.title}</h3>
             <div style={S.helpTextBlock}>
-              <HelpParagraphs text={section.en} style={S.helpCardText} />
-              <div style={S.helpLangGap} />
-              <HelpParagraphs text={section.cn} style={S.helpCardTextCn} />
+              <HelpParagraphs text={section.lines} style={uiLanguage === "zh" ? S.helpCardTextCn : S.helpCardText} />
             </div>
           </article>
         ))}
@@ -2989,18 +3467,20 @@ function ModelChip({ model, selected, onToggle, disabled, count, onCountChange, 
 }
 
 function ImagePreviewModal({ src, onClose }) {
+  const { t } = useI18n();
   if (!src) return null;
   return (
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
         <button onClick={onClose} style={{ ...S.closeBtn, position: "absolute", top: 12, right: 12, zIndex: 10 }}>✕</button>
-        <img src={src} alt="Full" style={{ maxWidth: "90vw", maxHeight: "85vh", borderRadius: 8 }} />
+        <img src={src} alt={t("viewer.fullImage")} style={{ maxWidth: "90vw", maxHeight: "85vh", borderRadius: 8 }} />
       </div>
     </div>
   );
 }
 
 function InlineZoomViewer({ src, onCollapse }) {
+  const { t } = useI18n();
   const viewportRef = useRef(null);
   const dragRef = useRef(null);
   const [scale, setScale] = useState(1);
@@ -3081,7 +3561,7 @@ function InlineZoomViewer({ src, onCollapse }) {
 
   return (
     <div style={S.inlineZoomViewer}>
-      <button type="button" style={S.inlineZoomViewerCollapseBtn} onClick={onCollapse} title="Collapse">
+      <button type="button" style={S.inlineZoomViewerCollapseBtn} onClick={onCollapse} title={t("viewer.collapse")}>
         ↙
       </button>
       <div
@@ -3096,7 +3576,7 @@ function InlineZoomViewer({ src, onCollapse }) {
       >
         <img
           src={src}
-          alt="Input Image"
+          alt={t("viewer.inputImageAlt")}
           draggable={false}
           style={{
             ...S.inlineZoomViewerImage,
@@ -3127,6 +3607,7 @@ function ResultColumn({
   compactImages = false,
   showPromptBadge = true,
 }) {
+  const { uiLanguage, t } = useI18n();
   const model = IMAGE_MODELS.find((m) => m.id === result.modelId);
   const visibleImages = Array.isArray(result.images) ? result.images : [];
   const generatedCount = visibleImages.length;
@@ -3148,21 +3629,21 @@ function ResultColumn({
         <span style={S.resultName}>{model?.name || result.modelId}</span>
         {showPromptBadge && getResultPromptKey(result) !== "single" && (
           <span style={{ ...S.statusBadge, background: "rgba(59,130,246,0.14)", color: "#93c5fd" }}>
-            {result.promptLabel || getResultPromptKey(result)}
+            {getLocalizedPromptLabel(result.promptLabel || getResultPromptKey(result), getResultPromptKey(result), uiLanguage)}
           </span>
         )}
         {!!result.requestedCount && <span style={{ ...S.statusBadge, background: "rgba(250,204,21,0.14)", color: "#facc15" }}>x{result.requestedCount}</span>}
         <span style={{ ...S.statusBadge, background: sc + "22", color: sc }}>
-          {result.status === "loading" ? "⏳" : result.status === "success" ? "✓" : "✗"} {result.status}
+          {result.status === "loading" ? "⏳" : result.status === "success" ? "✓" : "✗"} {getLocalizedStatusLabel(result.status, t)}
         </span>
       </div>
       {result.status === "loading" && (
         <div style={S.loadingArea}>
           <div style={S.spinner} />
           <p style={{ color: "#888", fontSize: 13, marginTop: 12 }}>
-            Generating... {generatedCount}/{requestedCount}
+            {t("status.generating", { generated: generatedCount, requested: requestedCount })}
           </p>
-          <button style={{ ...S.dlBtn, marginTop: 10, borderRadius: 8, width: 120 }} onClick={onCancel}>Stop</button>
+          <button style={{ ...S.dlBtn, marginTop: 10, borderRadius: 8, width: 120 }} onClick={onCancel}>{t("status.stop")}</button>
         </div>
       )}
       {(result.status === "success" || result.status === "loading") && visibleImages.length > 0 && (
@@ -3225,13 +3706,13 @@ function ResultColumn({
       {(result.status === "error" || result.status === "cancelled" || (result.status === "success" && !visibleImages.length)) && (
         <div style={S.errArea}>
           {result.status === "error" ? (
-            <p style={{ color: "#ef4444", fontSize: 13, wordBreak: "break-word" }}>{result.error}</p>
+            <p style={{ color: "#ef4444", fontSize: 13, wordBreak: "break-word" }}>{localizeRuntimeMessage(result.error, t)}</p>
           ) : null}
           {result.status === "cancelled" ? (
-            <p style={{ color: "#9ca3af", fontSize: 13 }}>Cancelled by user</p>
+            <p style={{ color: "#9ca3af", fontSize: 13 }}>{t("status.cancelledByUser")}</p>
           ) : null}
           {result.status === "success" && !visibleImages.length ? (
-            <p style={{ color: "#f59e0b", fontSize: 13 }}>No images returned.</p>
+            <p style={{ color: "#f59e0b", fontSize: 13 }}>{t("turn.noImagesReturned")}</p>
           ) : null}
           <ImageActionBar
             allowSave={false}
@@ -3276,6 +3757,7 @@ function ImageCard({
   selectPosition = "top-right",
   compact = false,
 }) {
+  const { t } = useI18n();
   const [src, setSrc] = useState(img);
   const [triedProxy, setTriedProxy] = useState(false);
 
@@ -3307,7 +3789,7 @@ function ImageCard({
           }}
           onMouseDown={(event) => event.preventDefault()}
           onClick={onToggleSelect}
-          title={selected ? "Unselect" : "Select"}
+          title={selected ? t("select.unselect") : t("select.select")}
         >
           {selected ? "●" : "○"}
         </button>
@@ -3316,7 +3798,7 @@ function ImageCard({
       {!replacing ? (
         <img src={src} alt={`Gen ${index}`} style={compact ? S.thumbCompact : S.thumb} onClick={() => onPreview(src)} onError={onImgError} />
       ) : (
-        <div style={compact ? S.thumbRetryingCompact : S.thumbRetrying}>Retrying…</div>
+        <div style={compact ? S.thumbRetryingCompact : S.thumbRetrying}>{t("action.retry")}…</div>
       )}
       <ImageActionBar
         compact={compact}
@@ -3352,6 +3834,7 @@ function TurnPanel({
   showModelSummary = true,
   enableInlineReferenceViewer = false,
 }) {
+  const { uiLanguage, t } = useI18n();
   const [inlineViewerSrc, setInlineViewerSrc] = useState(null);
   const expandPromptPreview = truncatePromptText && !!inlineViewerSrc;
   const promptVariants = getTurnPromptVariants(turn);
@@ -3447,9 +3930,9 @@ function TurnPanel({
     <section style={{ marginBottom: 20 }}>
       <div style={{ marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div style={{ fontSize: 12, color: "#a1a1aa", fontFamily: mono }}>
-          #{turn.seq} · {new Date(turn.createdAt).toLocaleString()} · {turn.status}
-          {isCompareMode && <span style={S.turnModeBadge}>Compare</span>}
-          {isStyleMode && <span style={S.turnModeBadge}>Style</span>}
+          #{turn.seq} · {formatUiDateTime(turn.createdAt, uiLanguage)} · {getLocalizedStatusLabel(turn.status, t)}
+          {isCompareMode && <span style={S.turnModeBadge}>{t("turn.compare")}</span>}
+          {isStyleMode && <span style={S.turnModeBadge}>{t("turn.style")}</span>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {showModelSummary && (
@@ -3463,38 +3946,38 @@ function TurnPanel({
               onClick={() => onSyncTemplate(turn)}
               disabled={!canSyncTemplate}
             >
-              Sync Template
+              {t("turn.syncTemplate")}
             </button>
           )}
-          {onReuse && <button style={S.turnActionBtn} onClick={() => onReuse(turn)}>Reuse</button>}
+          {onReuse && <button style={S.turnActionBtn} onClick={() => onReuse(turn)}>{t("turn.reuse")}</button>}
           {onHide && <button style={{ ...S.turnActionBtn, width: 28, padding: 0 }} onClick={() => onHide(turn.id)}>x</button>}
-          {onDelete && <button style={{ ...S.turnActionBtn, color: "#fca5a5", borderColor: "rgba(252,165,165,0.4)" }} onClick={() => onDelete(turn.id)}>Delete</button>}
+          {onDelete && <button style={{ ...S.turnActionBtn, color: "#fca5a5", borderColor: "rgba(252,165,165,0.4)" }} onClick={() => onDelete(turn.id)}>{t("turn.delete")}</button>}
         </div>
       </div>
       {isStyleMode && compactStyleHistory ? (
         <div style={S.styleHistorySummary}>
           <div style={S.styleSummaryItem}>
-            <span style={S.styleSummaryKey}>Model</span>
+            <span style={S.styleSummaryKey}>{t("turn.summaryModel")}</span>
             <span style={S.styleSummaryVal}>{styleModelName}</span>
           </div>
           <div style={S.styleSummaryItem}>
-            <span style={S.styleSummaryKey}>Per Task</span>
+            <span style={S.styleSummaryKey}>{t("turn.summaryPerTask")}</span>
             <span style={S.styleSummaryVal}>x{styleRequestedCount || 0}</span>
           </div>
           <div style={S.styleSummaryItem}>
-            <span style={S.styleSummaryKey}>Generated</span>
+            <span style={S.styleSummaryKey}>{t("turn.summaryGenerated")}</span>
             <span style={S.styleSummaryVal}>{styleGeneratedCount}</span>
           </div>
           <div style={S.styleSummaryItem}>
-            <span style={S.styleSummaryKey}>Success</span>
+            <span style={S.styleSummaryKey}>{t("turn.summarySuccess")}</span>
             <span style={S.styleSummaryVal}>{styleSuccessCount}/{styleResults.length || 0}</span>
           </div>
           <div style={S.styleSummaryItem}>
-            <span style={S.styleSummaryKey}>Failed</span>
+            <span style={S.styleSummaryKey}>{t("turn.summaryFailed")}</span>
             <span style={S.styleSummaryVal}>{styleErrorCount + styleCancelledCount}</span>
           </div>
           <div style={S.styleSummaryItem}>
-            <span style={S.styleSummaryKey}>Running</span>
+            <span style={S.styleSummaryKey}>{t("turn.summaryRunning")}</span>
             <span style={S.styleSummaryVal}>{styleLoadingCount}</span>
           </div>
         </div>
@@ -3522,8 +4005,8 @@ function TurnPanel({
                       ...(truncatePromptText ? S.turnPromptTextCompact : null),
                       ...(expandPromptPreview ? S.turnPromptTextExpanded : null),
                     }}
-                  >
-                    {styleBasePrompt ? <PromptTextWithChips text={getPromptPreviewText(styleBasePrompt, expandPromptPreview ? 960 : 220)} /> : "(no prompt)"}
+                    >
+                    {styleBasePrompt ? <PromptTextWithChips text={getPromptPreviewText(styleBasePrompt, expandPromptPreview ? 960 : 220)} /> : t("status.noPrompt")}
                   </div>
                 </div>
               ) : (
@@ -3535,8 +4018,8 @@ function TurnPanel({
                       ...(truncatePromptText ? S.turnPromptCardCompact : null),
                       ...(expandPromptPreview ? S.turnPromptCardExpanded : null),
                     }}
-                  >
-                    {isCompareMode && <div style={S.turnPromptBadge}>{variant.label}</div>}
+                    >
+                    {isCompareMode && <div style={S.turnPromptBadge}>{getLocalizedPromptLabel(variant.label, variant.key, uiLanguage)}</div>}
                     <div
                       style={{
                         ...S.turnPromptText,
@@ -3544,7 +4027,7 @@ function TurnPanel({
                         ...(expandPromptPreview ? S.turnPromptTextExpanded : null),
                       }}
                     >
-                      {variant.prompt ? <PromptTextWithChips text={getPromptPreviewText(variant.prompt, expandPromptPreview ? 960 : 220)} /> : "(no prompt)"}
+                      {variant.prompt ? <PromptTextWithChips text={getPromptPreviewText(variant.prompt, expandPromptPreview ? 960 : 220)} /> : t("status.noPrompt")}
                     </div>
                   </div>
                 ))
@@ -3567,7 +4050,7 @@ function TurnPanel({
                           type="button"
                           style={S.turnRefImageBtn}
                           onClick={() => onPreview?.(turn.referenceImage)}
-                          title="Preview reference image"
+                          title={t("viewer.previewReference")}
                         >
                           <img src={turn.referenceImage} alt="Reference" style={S.turnRefImage} />
                         </button>
@@ -3579,7 +4062,7 @@ function TurnPanel({
                               event.stopPropagation();
                               setInlineViewerSrc(turn.referenceImage);
                             }}
-                            title="Open inline viewer"
+                            title={t("viewer.inlineViewer")}
                           >
                             🔍
                           </button>
@@ -3593,7 +4076,7 @@ function TurnPanel({
                       type="button"
                       style={S.turnRefImageBtn}
                       onClick={() => onPreview?.(image)}
-                      title={`Preview style image ${index + 1}`}
+                      title={t("viewer.previewStyleImage", { index: index + 1 })}
                     >
                       <img src={image} alt={`Style ${index + 1}`} style={S.turnRefImage} />
                     </button>
@@ -3606,43 +4089,43 @@ function TurnPanel({
             <div style={S.turnStyleUnifiedWrap}>
               <div style={S.styleHistorySummary}>
                 <div style={S.styleSummaryItem}>
-                  <span style={S.styleSummaryKey}>Model</span>
+                  <span style={S.styleSummaryKey}>{t("turn.summaryModel")}</span>
                   <span style={S.styleSummaryVal}>{styleModelName}</span>
                 </div>
                 <div style={S.styleSummaryItem}>
-                  <span style={S.styleSummaryKey}>Per Task</span>
+                  <span style={S.styleSummaryKey}>{t("turn.summaryPerTask")}</span>
                   <span style={S.styleSummaryVal}>x{styleRequestedCount || 0}</span>
                 </div>
                 <div style={S.styleSummaryItem}>
-                  <span style={S.styleSummaryKey}>Generated</span>
+                  <span style={S.styleSummaryKey}>{t("turn.summaryGenerated")}</span>
                   <span style={S.styleSummaryVal}>{styleGeneratedCount}</span>
                 </div>
                 <div style={S.styleSummaryItem}>
-                  <span style={S.styleSummaryKey}>Success</span>
+                  <span style={S.styleSummaryKey}>{t("turn.summarySuccess")}</span>
                   <span style={S.styleSummaryVal}>{styleSuccessCount}/{styleResults.length || 0}</span>
                 </div>
                 <div style={S.styleSummaryItem}>
-                  <span style={S.styleSummaryKey}>Failed</span>
+                  <span style={S.styleSummaryKey}>{t("turn.summaryFailed")}</span>
                   <span style={S.styleSummaryVal}>{styleErrorCount + styleCancelledCount}</span>
                 </div>
                 <div style={S.styleSummaryItem}>
-                  <span style={S.styleSummaryKey}>Running</span>
+                  <span style={S.styleSummaryKey}>{t("turn.summaryRunning")}</span>
                   <span style={S.styleSummaryVal}>{styleLoadingCount}</span>
                 </div>
               </div>
 
               {styleTurnFinished && styleFailedThemes.length > 0 && (
                 <div style={S.turnStyleFailedLine}>
-                  Failed themes: {styleFailedThemes.join(" · ")}
+                  {t("turn.failedThemes", { themes: styleFailedThemes.join(" · ") })}
                 </div>
               )}
 
               <div style={S.turnStyleImageBox}>
                 <div style={S.turnStyleImageHead}>
-                  <span style={S.turnResultMeta}>Style Results</span>
+                  <span style={S.turnResultMeta}>{t("turn.styleResults")}</span>
                   {styleLoadingCount > 0 && (
                     <span style={S.turnResultMeta}>
-                      Generating {styleGeneratedCount}/{styleExpectedCount || 0}
+                      {t("turn.generatingCount", { generated: styleGeneratedCount, expected: styleExpectedCount || 0 })}
                     </span>
                   )}
                 </div>
@@ -3658,7 +4141,7 @@ function TurnPanel({
                           fileStem={item.fileStem}
                           index={item.index}
                           onPreview={onPreview}
-                          label={item.promptLabel}
+                          label={getLocalizedPromptLabel(item.promptLabel, item.promptKey, uiLanguage)}
                           compact
                           showSelect
                           selected={selectedImageKeys?.has?.(imageKey)}
@@ -3702,12 +4185,12 @@ function TurnPanel({
                 ) : (
                   <div style={S.turnStyleImageEmpty}>
                     {styleStillRunning
-                      ? "Generating images..."
+                      ? t("turn.generatingImages")
                       : styleFailedCount > 0
-                      ? "No successful images. Check failed themes."
+                      ? t("turn.noSuccessfulImages")
                       : styleResults.length
-                      ? "No images returned."
-                      : "No style results yet."}
+                      ? t("turn.noImagesReturned")
+                      : t("turn.noStyleResults")}
                   </div>
                 )}
               </div>
@@ -3725,8 +4208,8 @@ function TurnPanel({
                 <div key={variant.key} style={isMultiPromptMode ? S.turnResultGroup : undefined}>
                   {isCompareMode && (
                     <div style={S.turnResultGroupHead}>
-                      <span style={S.turnPromptBadge}>{variant.label}</span>
-                      <span style={S.turnResultMeta}>{groupResults.length} model tasks</span>
+                      <span style={S.turnPromptBadge}>{getLocalizedPromptLabel(variant.label, variant.key, uiLanguage)}</span>
+                      <span style={S.turnResultMeta}>{t("turn.modelTasks", { count: groupResults.length })}</span>
                     </div>
                   )}
                   <div
@@ -3778,6 +4261,7 @@ export default function App() {
     [compareAEditor.value, compareBEditor.value]
   );
   const [activePage, setActivePage] = useState("workspace");
+  const [uiLanguage, setUiLanguage] = useState(DEFAULT_UI_LANGUAGE);
   const [taskMode, setTaskMode] = useState(DEFAULT_TASK_MODE);
   const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_BASE_URL);
   const [apiKey, setApiKey] = useState(DEFAULT_API_KEY);
@@ -3839,6 +4323,7 @@ export default function App() {
   const seqRef = useRef(1);
   const controllersRef = useRef({});
   const savingToFolderRef = useRef(new Set());
+  const t = useCallback((key, params) => translateUiText(uiLanguage, key, params), [uiLanguage]);
 
   const insertPlaceholderChip = useCallback(() => {
     if (taskMode === "compare") {
@@ -3899,6 +4384,7 @@ export default function App() {
           setAspectRatio(normalizeAspectRatio(saved.aspectRatio ?? saved.geminiAspectRatio));
         }
         if (typeof saved.proxyUrl === "string" && saved.proxyUrl.trim()) setProxyUrl(saved.proxyUrl);
+        if (typeof saved.uiLanguage === "string") setUiLanguage(normalizeUiLanguage(saved.uiLanguage));
         if (typeof saved.nextSeq === "number" && Number.isFinite(saved.nextSeq)) seqRef.current = saved.nextSeq;
       } else {
         const s = window.__proxyUrl;
@@ -3909,6 +4395,11 @@ export default function App() {
   useEffect(() => { window.__proxyUrl = proxyUrl; }, [proxyUrl]);
   useEffect(() => { window.__apiBaseUrl = apiBaseUrl; }, [apiBaseUrl]);
   useEffect(() => { window.__apiKey = apiKey; }, [apiKey]);
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.documentElement.lang = uiLanguage === "zh" ? "zh-CN" : "en";
+    }
+  }, [uiLanguage]);
   useEffect(() => {
     const state = {
       historyLimit,
@@ -3923,12 +4414,13 @@ export default function App() {
       lastEditedCount,
       aspectRatio,
       proxyUrl,
+      uiLanguage,
       nextSeq: seqRef.current,
     };
     try {
       localStorage.setItem(LOCAL_STATE_KEY, JSON.stringify(state));
     } catch {}
-  }, [historyLimit, selectedModels, modelCounts, prompt, taskMode, comparePrompts, styleThemes, styleReferenceImages, apiBaseUrl, lastEditedCount, aspectRatio, proxyUrl]);
+  }, [historyLimit, selectedModels, modelCounts, prompt, taskMode, comparePrompts, styleThemes, styleReferenceImages, apiBaseUrl, lastEditedCount, aspectRatio, proxyUrl, uiLanguage]);
 
   useEffect(() => {
     if (selectedAtlasItems.length > 0) return;
@@ -3943,7 +4435,7 @@ export default function App() {
 
   const handleSaveGptAssistPrompt = useCallback(() => {
     if (!historyDirHandle) {
-      setHistoryFolderMsg("请先选择 History Folder，再保存 GPT Prompt。");
+      setHistoryFolderMsg(t("history.needFolderForGpt"));
       return;
     }
     const nextPrompt = normalizeGptAssistPrompt(draftGptAssistPrompt);
@@ -3954,7 +4446,7 @@ export default function App() {
     setDraftStyleThemeAssistPrompt(nextStyleThemePrompt);
     setGptAssistSavedAt(Date.now());
     setShowGptAssistModal(false);
-  }, [draftGptAssistPrompt, draftStyleThemeAssistPrompt, historyDirHandle]);
+  }, [draftGptAssistPrompt, draftStyleThemeAssistPrompt, historyDirHandle, t]);
 
   const openTemplateEditor = useCallback((templateId) => {
     if (!historyDirHandle) return;
@@ -3962,17 +4454,17 @@ export default function App() {
     if (!template) return;
     setEditingTemplateId(template.id);
     setTemplateDraft({
-      title: template.title || "",
+      title: getLocalizedTemplateTitle(template.title, template.id, uiLanguage, false),
       body: template.body || "",
       backup: template.backup || "",
       memo: template.memo || "",
     });
     setShowTemplateModal(true);
-  }, [templates, historyDirHandle]);
+  }, [templates, historyDirHandle, uiLanguage]);
 
   const saveTemplateDraft = useCallback(() => {
     if (!editingTemplateId || !historyDirHandle) return;
-    const title = templateDraft.title.trim() || editingTemplateId.replace("template-", "Preset ");
+    const title = templateDraft.title.trim() || getDefaultTemplateTitle(editingTemplateId, uiLanguage);
     const body = templateDraft.body || "";
     const backup = templateDraft.backup || "";
     const memo = templateDraft.memo || "";
@@ -3990,7 +4482,7 @@ export default function App() {
       }
     }
     setShowTemplateModal(false);
-  }, [templateDraft, editingTemplateId, historyDirHandle, activeTemplateId, taskMode, comparePrompts.a, comparePrompts.b, prompt, compareAEditor, compareBEditor, promptEditor]);
+  }, [templateDraft, editingTemplateId, historyDirHandle, activeTemplateId, taskMode, comparePrompts.a, comparePrompts.b, prompt, compareAEditor, compareBEditor, promptEditor, uiLanguage]);
 
   const openStyleTemplateEditor = useCallback((templateId) => {
     if (!historyDirHandle) return;
@@ -3998,22 +4490,22 @@ export default function App() {
     if (!template) return;
     setEditingStyleTemplateId(template.id);
     setStyleTemplateDraft({
-      title: template.title || "",
+      title: getLocalizedTemplateTitle(template.title, template.id, uiLanguage, true),
       body: template.body || "",
     });
     setShowStyleTemplateModal(true);
-  }, [styleTemplates, historyDirHandle]);
+  }, [styleTemplates, historyDirHandle, uiLanguage]);
 
   const saveStyleTemplateDraft = useCallback(() => {
     if (!editingStyleTemplateId || !historyDirHandle) return;
-    const title = styleTemplateDraft.title.trim() || editingStyleTemplateId.replace("style-template-", "Style ");
+    const title = styleTemplateDraft.title.trim() || getDefaultStyleTemplateTitle(editingStyleTemplateId, uiLanguage);
     const body = styleTemplateDraft.body || "";
     setStyleTemplates((prev) => prev.map((item) => (item.id === editingStyleTemplateId ? { ...item, title, body } : item)));
     if (activeStyleTemplateId === editingStyleTemplateId && prompt !== body) {
       promptEditor.setText(body, { record: false });
     }
     setShowStyleTemplateModal(false);
-  }, [styleTemplateDraft, editingStyleTemplateId, historyDirHandle, activeStyleTemplateId, prompt, promptEditor]);
+  }, [styleTemplateDraft, editingStyleTemplateId, historyDirHandle, activeStyleTemplateId, prompt, promptEditor, uiLanguage]);
 
   const selectTemplateUsage = useCallback((templateId) => {
     if (!historyDirHandle) return;
@@ -4088,7 +4580,7 @@ export default function App() {
       : [{ key: "single", prompt, clearedPrompt: clearPlaceholderValues(prompt) }];
     const targetItems = items.filter((item) => extractPlaceholderTokens(item.prompt).length > 0);
     if (!targetItems.length) {
-      setHistoryFolderMsg("未找到 {{ }} 占位符，GPT 未执行。");
+      setHistoryFolderMsg(t("history.noPlaceholder"));
       return;
     }
 
@@ -4137,15 +4629,15 @@ export default function App() {
         promptEditor.setText(rewritten.single, { record: false });
       }
 
-      setHistoryFolderMsg(`GPT 已改写 ${Object.keys(rewritten).length} 个提示词。`);
+      setHistoryFolderMsg(t("history.gptRewrote", { count: Object.keys(rewritten).length }));
     } catch (err) {
       if (!isAbortError(err)) {
-        setHistoryFolderMsg(`GPT 改写失败：${err?.message || "未知错误"}`);
+        setHistoryFolderMsg(t("history.gptRewriteFailed", { error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t) }));
       }
     } finally {
       setGptAssistBusy(false);
     }
-  }, [gptAssistBusy, proxyUrl, taskMode, comparePrompts.a, comparePrompts.b, prompt, uploadedImage, gptAssistPrompt, apiBaseUrl, apiKey, compareAEditor, compareBEditor, promptEditor]);
+  }, [gptAssistBusy, proxyUrl, taskMode, comparePrompts.a, comparePrompts.b, prompt, uploadedImage, gptAssistPrompt, apiBaseUrl, apiKey, compareAEditor, compareBEditor, promptEditor, t]);
 
   const clearAllStyleThemes = useCallback(() => {
     setStyleThemes(Array.from({ length: STYLE_THEME_SLOTS }, () => ""));
@@ -4160,7 +4652,7 @@ export default function App() {
     }
     const seed = styleThemeSeedInput.trim();
     if (!seed) {
-      setHistoryFolderMsg("请输入主题联想关键词。");
+      setHistoryFolderMsg(t("history.enterThemeSeed"));
       return;
     }
 
@@ -4173,7 +4665,7 @@ export default function App() {
         { apiBaseUrl, apiKey }
       );
       if (!generated.length) {
-        setHistoryFolderMsg("主题联想失败：GPT 未返回有效主题。");
+        setHistoryFolderMsg(t("history.themeAssistInvalid"));
         return;
       }
       setStyleThemes((prev) => {
@@ -4183,15 +4675,15 @@ export default function App() {
         }
         return next;
       });
-      setHistoryFolderMsg(`已生成 ${Math.min(generated.length, STYLE_THEME_SLOTS)} 个主题元素。`);
+      setHistoryFolderMsg(t("history.generatedThemes", { count: Math.min(generated.length, STYLE_THEME_SLOTS) }));
     } catch (err) {
       if (!isAbortError(err)) {
-        setHistoryFolderMsg(`主题联想失败：${err?.message || "未知错误"}`);
+        setHistoryFolderMsg(t("history.themeAssistFailed", { error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t) }));
       }
     } finally {
       setStyleThemeAssistBusy(false);
     }
-  }, [styleThemeAssistBusy, taskMode, proxyUrl, styleThemeSeedInput, styleThemeAssistPrompt, apiBaseUrl, apiKey]);
+  }, [styleThemeAssistBusy, taskMode, proxyUrl, styleThemeSeedInput, styleThemeAssistPrompt, apiBaseUrl, apiKey, t]);
 
   const toggleModel = useCallback((id) => {
     setSelectedModels((prev) => {
@@ -4397,17 +4889,17 @@ export default function App() {
 
     const targetTurn = turns.find((item) => item.id === turnId);
     if (!targetTurn) {
-      setHistoryFolderMsg("重试失败：找不到对应任务。");
+      setHistoryFolderMsg(t("history.retryTurnNotFound"));
       return;
     }
     const targetResult = (targetTurn.results || []).find((result) => isSameResultTask(result, modelId, promptKey));
     if (!targetResult) {
-      setHistoryFolderMsg("重试失败：找不到对应结果。");
+      setHistoryFolderMsg(t("history.retryResultNotFound"));
       return;
     }
     const model = IMAGE_MODELS.find((item) => item.id === modelId);
     if (!model) {
-      setHistoryFolderMsg("重试失败：模型不存在。");
+      setHistoryFolderMsg(t("history.retryModelMissing"));
       return;
     }
 
@@ -4496,7 +4988,7 @@ export default function App() {
         );
       }
       setAtlasThumbnail(null);
-      setHistoryFolderMsg(mode === "append" ? "已追加 1 张图片。" : "已重试并替换图片。");
+      setHistoryFolderMsg(mode === "append" ? t("history.appendedOne") : t("history.replacedOne"));
     } catch (err) {
       const message = err?.message || "未知错误";
       setTurns((prev) =>
@@ -4523,7 +5015,7 @@ export default function App() {
               }
         )
       );
-      setHistoryFolderMsg(`重试失败：${message}`);
+      setHistoryFolderMsg(t("history.retryFailed", { error: localizeRuntimeMessage(message, t) }));
     } finally {
       setRetryingImageKeys((prev) => {
         const next = new Set(prev);
@@ -4531,7 +5023,7 @@ export default function App() {
         return next;
       });
     }
-  }, [turns, proxyUrl, apiBaseUrl, apiKey, aspectRatio]);
+  }, [turns, proxyUrl, apiBaseUrl, apiKey, aspectRatio, t]);
 
   const retryImage = useCallback((payload) => runResultImageAction(payload, "replace"), [runResultImageAction]);
   const appendResultImage = useCallback((payload) => runResultImageAction(payload, "append"), [runResultImageAction]);
@@ -4560,7 +5052,7 @@ export default function App() {
 
   const generateAtlasThumbnail = useCallback(async () => {
     if (!selectedAtlasItems.length) {
-      setHistoryFolderMsg("请先选择要拼接的图片。");
+      setHistoryFolderMsg(t("history.selectImagesFirst"));
       return;
     }
     setAtlasBusy(true);
@@ -4576,25 +5068,25 @@ export default function App() {
       );
       const thumbDataUrl = await createAtlasThumbnailDataUrl(sources.filter(Boolean), { rows: 3, cellWidth: 256, cellHeight: 256 });
       if (!thumbDataUrl) {
-        setHistoryFolderMsg("缩略图生成失败。");
+        setHistoryFolderMsg(t("history.thumbnailFailed"));
         return;
       }
       setAtlasThumbnail(thumbDataUrl);
-      setHistoryFolderMsg(`缩略图已生成（${ordered.length} 张，3 行）。`);
+      setHistoryFolderMsg(t("history.thumbnailReady", { count: ordered.length }));
     } catch (err) {
-      setHistoryFolderMsg(`缩略图生成失败：${err?.message || "未知错误"}`);
+      setHistoryFolderMsg(t("history.thumbnailFailedDetail", { error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t) }));
     } finally {
       setAtlasBusy(false);
     }
-  }, [selectedAtlasItems, apiBaseUrl, proxyUrl]);
+  }, [selectedAtlasItems, apiBaseUrl, proxyUrl, t]);
 
   const exportAtlasSelection = useCallback(async () => {
     if (!historyDirHandle) {
-      setHistoryFolderMsg("请先选择 History Folder。");
+      setHistoryFolderMsg(t("history.selectHistoryFolderFirst"));
       return;
     }
     if (!selectedAtlasItems.length) {
-      setHistoryFolderMsg("请先选择要导出的图片。");
+      setHistoryFolderMsg(t("history.selectExportImagesFirst"));
       return;
     }
 
@@ -4602,7 +5094,7 @@ export default function App() {
     try {
       const canWrite = await ensureDirectoryPermission(historyDirHandle, true);
       if (!canWrite) {
-        setHistoryFolderMsg("文件夹写入权限未授权，无法导出图集。");
+        setHistoryFolderMsg(t("history.folderWriteDeniedExport"));
         return;
       }
 
@@ -4678,19 +5170,19 @@ export default function App() {
           2
         )
       );
-      setHistoryFolderMsg(`图集已导出：atlas/${folderName}`);
+      setHistoryFolderMsg(t("history.atlasExported", { folder: folderName }));
     } catch (err) {
-      setHistoryFolderMsg(`导出失败：${err?.message || "未知错误"}`);
+      setHistoryFolderMsg(t("history.exportFailed", { error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t) }));
     } finally {
       setAtlasBusy(false);
     }
-  }, [historyDirHandle, selectedAtlasItems, atlasThumbnail, apiBaseUrl, proxyUrl]);
+  }, [historyDirHandle, selectedAtlasItems, atlasThumbnail, apiBaseUrl, proxyUrl, t]);
 
   const loadHistoryFromFolder = useCallback(async (dirHandle) => {
     if (!dirHandle) return false;
     const canRead = await ensureDirectoryPermission(dirHandle, false);
     if (!canRead) {
-      setHistoryFolderMsg("文件夹读取权限未授权，无法加载历史。");
+      setHistoryFolderMsg(t("history.folderReadDenied"));
       return false;
     }
     const apiConfig = await loadApiConfigFromLocalFolder(dirHandle);
@@ -4737,15 +5229,23 @@ export default function App() {
     }
     setHistoryFolderMsg(
       templatePayload
-        ? `已读取文件夹历史：${loadedTurns.length} 条，模板：${templatePayload.templates.length} + 风格模板：${styleTemplatePayload?.templates?.length || MAX_STYLE_TEMPLATES}，API/GPT 配置已加载。`
-        : `已读取文件夹历史：${loadedTurns.length} 条，模板：${MAX_TEMPLATES} + 风格模板：${styleTemplatePayload?.templates?.length || MAX_STYLE_TEMPLATES}（已初始化），API/GPT 配置已初始化。`
+        ? t("history.folderLoadedWithTemplates", {
+            turns: loadedTurns.length,
+            templates: templatePayload.templates.length,
+            styleTemplates: styleTemplatePayload?.templates?.length || MAX_STYLE_TEMPLATES,
+          })
+        : t("history.folderLoadedInitialized", {
+            turns: loadedTurns.length,
+            templates: MAX_TEMPLATES,
+            styleTemplates: styleTemplatePayload?.templates?.length || MAX_STYLE_TEMPLATES,
+          })
     );
     return true;
-  }, []);
+  }, [t]);
 
   const handlePickHistoryFolder = useCallback(async () => {
     if (!supportsFileSystemAccess()) {
-      setHistoryFolderMsg("当前浏览器不支持文件夹读写（请使用较新版本 Chrome/Edge）。");
+      setHistoryFolderMsg(t("history.browserUnsupported"));
       return;
     }
     try {
@@ -4756,9 +5256,9 @@ export default function App() {
       setHistoryDirName(dirHandle.name || "");
     } catch (err) {
       if (String(err?.name || "") === "AbortError") return;
-      setHistoryFolderMsg(`选择文件夹失败：${err?.message || "未知错误"}`);
+      setHistoryFolderMsg(t("history.pickFolderFailed", { error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t) }));
     }
-  }, [loadHistoryFromFolder]);
+  }, [loadHistoryFromFolder, t]);
 
   const handleGenerate = useCallback(async () => {
     if (!proxyUrl.trim()) { setShowSettings(true); return; }
@@ -4821,7 +5321,7 @@ export default function App() {
     setActiveTurnId(displayTurns[0]?.id || null);
     setTurns((prev) => [...displayTurns, ...prev]);
     if (queuedTurns.length > 1) {
-      setHistoryFolderMsg(`已创建 ${queuedTurns.length} 个任务（按输入图拆分）。`);
+      setHistoryFolderMsg(t("history.createdTasks", { count: queuedTurns.length }));
     }
     if (taskMode === "compare") {
       compareAEditor.setText((prev) => clearPlaceholderValues(prev), { record: false });
@@ -4829,7 +5329,7 @@ export default function App() {
     } else {
       promptEditor.setText((prev) => clearPlaceholderValues(prev), { record: false });
     }
-  }, [proxyUrl, selectedModels, modelCounts, taskMode, prompt, comparePrompts, styleThemes, styleReferenceImages, apiBaseUrl, apiKey, aspectRatio, uploadedInputImages, uploadedImage, compareAEditor, compareBEditor, promptEditor]);
+  }, [proxyUrl, selectedModels, modelCounts, taskMode, prompt, comparePrompts, styleThemes, styleReferenceImages, apiBaseUrl, apiKey, aspectRatio, uploadedInputImages, uploadedImage, compareAEditor, compareBEditor, promptEditor, t]);
 
   const cancelModelTask = useCallback((turnId, modelId, promptKey = "single") => {
     const key = `${turnId}:${modelId}:${promptKey}`;
@@ -4846,13 +5346,13 @@ export default function App() {
               ...t,
               results: t.results.map((r) =>
                 isSameResultTask(r, modelId, promptKey) && r.status === "loading"
-                  ? { ...r, status: "cancelled", error: "Cancelled by user" }
+                  ? { ...r, status: "cancelled", error: t("status.cancelledByUser") }
                   : r
               ),
             }
       )
     );
-  }, []);
+  }, [t]);
 
   const removeTurnFromPage = useCallback((turnId) => {
     const targetTurn = turns.find((item) => item.id === turnId) || null;
@@ -4887,16 +5387,16 @@ export default function App() {
     try {
       const canWrite = await ensureDirectoryPermission(historyDirHandle, true);
       if (!canWrite) {
-        setHistoryFolderMsg("文件夹写入权限未授权，无法删除本地记录。");
+        setHistoryFolderMsg(t("history.folderWriteDeniedDelete"));
         return;
       }
       const dirName = getTurnDirName(targetTurn);
       await historyDirHandle.removeEntry(dirName, { recursive: true });
-      setHistoryFolderMsg(`已删除本地历史：#${targetTurn.seq}`);
+      setHistoryFolderMsg(t("history.deletedLocal", { seq: targetTurn.seq }));
     } catch (err) {
-      setHistoryFolderMsg(`删除本地历史失败：#${targetTurn?.seq || "?"}（${err?.message || "未知错误"}）`);
+      setHistoryFolderMsg(t("history.deleteLocalFailed", { seq: targetTurn?.seq || "?", error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t) }));
     }
-  }, [historyDirHandle, removeTurnFromPage]);
+  }, [historyDirHandle, removeTurnFromPage, t]);
 
   const reuseTurn = useCallback((turn) => {
     const promptVariants = getTurnPromptVariants(turn);
@@ -5073,8 +5573,8 @@ export default function App() {
             patchTaskResult(
               task,
               isAbortError(err)
-                ? (current) => ({ ...current, status: "cancelled", error: "Cancelled by user" })
-                : (current) => ({ ...current, status: "error", error: err?.message || "Unknown error" })
+                ? (current) => ({ ...current, status: "cancelled", error: t("status.cancelledByUser") })
+                : (current) => ({ ...current, status: "error", error: err?.message || t("common.unknownError") })
             );
           } finally {
             delete controllersRef.current[key];
@@ -5095,7 +5595,7 @@ export default function App() {
     (async () => {
       const canWrite = await ensureDirectoryPermission(historyDirHandle, true);
       if (!canWrite) {
-        setHistoryFolderMsg("文件夹写入权限未授权，自动保存已暂停。");
+        setHistoryFolderMsg(t("history.folderWriteDeniedAutosave"));
         return;
       }
 
@@ -5104,18 +5604,18 @@ export default function App() {
         try {
           await saveTurnToLocalFolder(historyDirHandle, turn);
           setTurns((prev) => prev.map((t) => (t.id === turn.id ? { ...t, folderSyncedAt: Date.now(), folderSyncError: null } : t)));
-          setHistoryFolderMsg(`已写入本地历史：#${turn.seq}`);
+          setHistoryFolderMsg(t("history.wroteLocal", { seq: turn.seq }));
         } catch (err) {
           setTurns((prev) =>
             prev.map((t) => (t.id === turn.id ? { ...t, folderSyncError: err?.message || "write failed" } : t))
           );
-          setHistoryFolderMsg(`写入本地历史失败：#${turn.seq}（${err?.message || "未知错误"}）`);
+          setHistoryFolderMsg(t("history.writeLocalFailed", { seq: turn.seq, error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t) }));
         } finally {
           savingToFolderRef.current.delete(turn.id);
         }
       }
     })();
-  }, [turns, historyDirHandle]);
+  }, [turns, historyDirHandle, t]);
 
   useEffect(() => {
     if (!historyDirHandle) return;
@@ -5199,27 +5699,28 @@ export default function App() {
     normalizeStyleThemeAssistPrompt(draftStyleThemeAssistPrompt) !== normalizeStyleThemeAssistPrompt(styleThemeAssistPrompt);
   const canSaveGptAssistPrompt = !!historyDirHandle;
   const apiKeySaveStateText = isApiKeyDirty
-    ? "Unsaved changes"
+    ? t("common.unsavedChanges")
     : apiKeySavedAt
-    ? `Saved at ${new Date(apiKeySavedAt).toLocaleTimeString()}`
-    : "Saved";
+    ? t("common.savedAt", { time: formatUiTime(apiKeySavedAt, uiLanguage) })
+    : t("common.saved");
   const gptAssistSaveStateText = !historyDirHandle
-    ? "Select History Folder first"
+    ? t("history.selectHistoryFolderFirst")
     : isGptAssistPromptDirty
-    ? "Unsaved changes"
+    ? t("common.unsavedChanges")
     : gptAssistSavedAt
-    ? `Saved at ${new Date(gptAssistSavedAt).toLocaleTimeString()}`
-    : "Saved";
+    ? t("common.savedAt", { time: formatUiTime(gptAssistSavedAt, uiLanguage) })
+    : t("common.saved");
 
   return (
-    <div style={S.root}>
+    <I18nContext.Provider value={{ uiLanguage, t }}>
+    <div style={{ ...S.root, fontWeight: uiLanguage === "zh" ? 360 : undefined }}>
       <div style={S.bgGrain} />
       <header style={S.header}>
         <div style={S.logoArea}>
           <div style={S.logoCube}><span style={{ fontSize: 20 }}>◈</span></div>
           <div>
             <h1 style={S.title}>POLYIMAGE</h1>
-            <p style={S.subtitle}>Multi-Model Generation · DeerAPI</p>
+            <p style={S.subtitle}>{t("header.subtitle")}</p>
           </div>
         </div>
         <div style={S.headerActions}>
@@ -5232,7 +5733,7 @@ export default function App() {
                 setTaskMode("single");
               }}
             >
-              Single
+              {t("nav.single")}
             </button>
             <button
               type="button"
@@ -5242,7 +5743,7 @@ export default function App() {
                 setTaskMode("compare");
               }}
             >
-              Prompt Compare
+              {t("nav.compare")}
             </button>
             <button
               type="button"
@@ -5252,7 +5753,7 @@ export default function App() {
                 setTaskMode("style");
               }}
             >
-              Style
+              {t("nav.style")}
             </button>
           </nav>
           <div style={S.apiSwitchWrap}>
@@ -5261,7 +5762,7 @@ export default function App() {
               style={{ ...S.apiSwitchBtn, ...(activePage === "help" ? S.apiSwitchBtnActive : null) }}
               onClick={() => setActivePage("help")}
             >
-              Help
+              {t("nav.help")}
             </button>
           </div>
           <div style={S.apiSwitchWrap}>
@@ -5274,7 +5775,7 @@ export default function App() {
                 setShowGptAssistModal(true);
               }}
             >
-              GPT Prompt
+              {t("nav.gptPrompt")}
             </button>
           </div>
           <div style={S.apiSwitchWrap}>
@@ -5286,7 +5787,7 @@ export default function App() {
                 setShowApiModal(true);
               }}
             >
-              API
+              {t("nav.api")}
             </button>
           </div>
           <button style={S.settingsBtn} onClick={() => setShowSettings(true)}>⚙</button>
@@ -5302,14 +5803,14 @@ export default function App() {
           <div style={taskMode === "style" ? S.inputGridStyle : S.inputGrid}>
             <div>
               <div style={S.promptHead}>
-                <label style={{ ...S.label, marginBottom: 0 }}>{taskMode === "compare" ? "PROMPTS" : "PROMPT"}</label>
+                <label style={{ ...S.label, marginBottom: 0 }}>{taskMode === "compare" ? t("workspace.prompts") : t("workspace.prompt")}</label>
                 <div style={S.promptHeadActions}>
-                  {taskMode === "compare" && <span style={S.inputHint}>Shared image, dual prompt runs</span>}
+                  {taskMode === "compare" && <span style={S.inputHint}>{t("workspace.compareHint")}</span>}
                   <button
                     type="button"
                     style={S.placeholderBtn}
                     onClick={insertPlaceholderChip}
-                    title="插入占位框 {{ }}"
+                    title={t("template.insertPlaceholder")}
                   >
                     【】
                   </button>
@@ -5318,7 +5819,7 @@ export default function App() {
                     style={{ ...S.gptAssistBtn, opacity: canRunGptAssist ? 1 : 0.5, cursor: canRunGptAssist ? "pointer" : "not-allowed" }}
                     onClick={runGptAssist}
                     disabled={!canRunGptAssist}
-                    title={hasPlaceholderInComposer ? "Rewrite {{ }} by GPT" : "No {{ }} placeholder found"}
+                    title={hasPlaceholderInComposer ? t("workspace.rewriteByGpt") : t("workspace.noPlaceholder")}
                   >
                     👤
                   </button>
@@ -5333,7 +5834,7 @@ export default function App() {
                       onKeyDown={compareAEditor.handleKeyDown}
                       onFocus={() => { activePromptFieldRef.current = "a"; }}
                       editorRef={compareAInputRef}
-                      placeholder="Describe prompt A..."
+                      placeholder={t("workspace.promptAPlaceholder")}
                       rows={4}
                     />
                   </div>
@@ -5344,7 +5845,7 @@ export default function App() {
                       onKeyDown={compareBEditor.handleKeyDown}
                       onFocus={() => { activePromptFieldRef.current = "b"; }}
                       editorRef={compareBInputRef}
-                      placeholder="Describe prompt B..."
+                      placeholder={t("workspace.promptBPlaceholder")}
                       rows={4}
                     />
                   </div>
@@ -5356,7 +5857,7 @@ export default function App() {
                   onKeyDown={promptEditor.handleKeyDown}
                   onFocus={() => { activePromptFieldRef.current = "single"; }}
                   editorRef={promptInputRef}
-                  placeholder="Describe the image you want to generate..."
+                  placeholder={t("workspace.promptPlaceholder")}
                   rows={4}
                 />
               )}
@@ -5366,7 +5867,7 @@ export default function App() {
                 <>
                   <div style={S.uploadPairRow}>
                     <div style={S.uploadPairCol}>
-                      <div style={S.uploadPairTopLabel}>REFERENCE ({styleImageList.length}/{MAX_STYLE_REFERENCE_IMAGES})</div>
+                      <div style={S.uploadPairTopLabel}>{t("workspace.reference")} ({styleImageList.length}/{MAX_STYLE_REFERENCE_IMAGES})</div>
                       <button type="button" style={S.uploadPairBox} onClick={() => setShowStyleReferenceModal(true)}>
                         <div style={S.inputImagesGrid}>
                           {Array.from({ length: MAX_STYLE_REFERENCE_IMAGES }, (_, index) => {
@@ -5385,7 +5886,7 @@ export default function App() {
                       </button>
                     </div>
                     <div style={S.uploadPairCol}>
-                      <div style={S.uploadPairTopLabel}>INPUT</div>
+                      <div style={S.uploadPairTopLabel}>{t("workspace.input")}</div>
                       <div
                         style={S.uploadPairBox}
                         role="button"
@@ -5408,7 +5909,7 @@ export default function App() {
                               setShowInputImageModal(true);
                             }}
                           >
-                            Edit
+                            {t("common.edit")}
                           </button>
                         )}
                         <div style={S.uploadPairBody}>
@@ -5424,7 +5925,7 @@ export default function App() {
                 </>
               ) : (
                 <>
-                  <label style={S.label}>REFERENCE IMAGE</label>
+                  <label style={S.label}>{t("workspace.referenceImage")}</label>
                   {inputPrimaryPreview ? (
                     <div
                       style={S.uploadedBox}
@@ -5448,7 +5949,7 @@ export default function App() {
                             setShowInputImageModal(true);
                           }}
                         >
-                          Edit
+                          {t("common.edit")}
                         </button>
                       )}
                       <img src={inputPrimaryPreview} alt="Ref" style={S.uploadedThumb} />
@@ -5466,7 +5967,7 @@ export default function App() {
                   ) : (
                     <button type="button" style={S.dropZone} onClick={() => fileRef.current?.click()}>
                       <span style={{ fontSize: 28, opacity: 0.4 }}>+</span>
-                      <span style={{ fontSize: 12, color: "#888", marginTop: 4 }}>Upload</span>
+                      <span style={{ fontSize: 12, color: "#888", marginTop: 4 }}>{t("common.upload")}</span>
                     </button>
                   )}
                   <input
@@ -5506,10 +6007,10 @@ export default function App() {
             <div style={{ ...S.modelsPanel, ...(taskMode === "style" ? S.modelsPanelStyle : null) }}>
               <div style={S.modelsHeadRow}>
                 <label style={{ ...S.label, marginBottom: 0 }}>
-                  SELECT MODELS <span style={{ color: "#888", fontWeight: 400 }}>({selectedModels.length}/{taskMode === "style" ? 1 : 6})</span>
+                  {t("workspace.models")} <span style={{ color: "#888", fontWeight: 400 }}>({selectedModels.length}/{taskMode === "style" ? 1 : 6})</span>
                 </label>
                 <button style={S.syncBtn} onClick={syncSelectedCounts} disabled={!selectedModels.length}>
-                  Sync Last Edited Count
+                  {t("workspace.syncCount")}
                 </button>
               </div>
               <div style={taskMode === "style" ? S.modelGridStyle : S.modelGrid}>
@@ -5527,7 +6028,7 @@ export default function App() {
                 ))}
               </div>
               <div style={S.imageSizePanel}>
-                <label style={{ ...S.label, marginBottom: 6 }}>IMAGE RATIO</label>
+                <label style={{ ...S.label, marginBottom: 6 }}>{t("workspace.imageRatio")}</label>
                 <div style={S.imageSizeGroup}>
                   <div style={S.imageSizeBtnRow}>
                     {ASPECT_RATIO_OPTIONS.map((option) => (
@@ -5546,7 +6047,7 @@ export default function App() {
             </div>
             <aside style={S.templatePanel}>
               <div style={S.templatePanelHead}>
-                <label style={{ ...S.label, marginBottom: 0 }}>{taskMode === "style" ? "STYLE TEMPLATES" : "TEMPLATES"}</label>
+                <label style={{ ...S.label, marginBottom: 0 }}>{taskMode === "style" ? t("workspace.styleTemplates") : t("workspace.templates")}</label>
               </div>
               {taskMode === "style" ? (
                 <>
@@ -5564,7 +6065,7 @@ export default function App() {
                         selectStyleTemplateUsage(item.id);
                       }}
                     >
-                        <span style={S.templateItemTitle}>{item.title}</span>
+                        <span style={S.templateItemTitle}>{getLocalizedTemplateTitle(item.title, item.id, uiLanguage, true)}</span>
                         <span style={S.templateActions}>
                           <button
                             type="button"
@@ -5575,7 +6076,7 @@ export default function App() {
                             if (!templatesEnabled) return;
                             openStyleTemplateEditor(item.id);
                           }}
-                          title="Edit style template"
+                          title={t("template.editStyle")}
                         >
                             ✎
                           </button>
@@ -5585,14 +6086,14 @@ export default function App() {
                   </div>
                   <div style={S.styleThemesPanel}>
                     <div style={S.styleThemesHeadRow}>
-                      <label style={{ ...S.label, marginBottom: 0 }}>THEMES (12)</label>
+                      <label style={{ ...S.label, marginBottom: 0 }}>{t("workspace.themes")}</label>
                       <button
                         type="button"
                         style={{ ...S.zipBtn, padding: "6px 10px", fontSize: 11, opacity: hasAnyStyleThemeValue ? 1 : 0.5, cursor: hasAnyStyleThemeValue ? "pointer" : "not-allowed" }}
                         onClick={clearAllStyleThemes}
                         disabled={!hasAnyStyleThemeValue}
                       >
-                        Clear All
+                        {t("workspace.clearAll")}
                       </button>
                     </div>
                     <div style={S.styleThemeAssistRow}>
@@ -5600,7 +6101,7 @@ export default function App() {
                         style={S.styleThemeAssistInput}
                         value={styleThemeSeedInput}
                         onChange={(event) => setStyleThemeSeedInput(event.target.value)}
-                        placeholder="Theme association seed, e.g. coffee"
+                        placeholder={t("workspace.themeSeedPlaceholder")}
                       />
                       <button
                         type="button"
@@ -5618,7 +6119,7 @@ export default function App() {
                           style={S.styleThemeInput}
                           value={theme}
                           onChange={(event) => updateStyleTheme(index, event.target.value)}
-                          placeholder={`Theme ${index + 1}`}
+                          placeholder={t("workspace.themePlaceholder", { index: index + 1 })}
                         />
                       ))}
                     </div>
@@ -5639,7 +6140,7 @@ export default function App() {
                         selectTemplateUsage(item.id);
                       }}
                     >
-                      <span style={S.templateItemTitle}>{item.title}</span>
+                      <span style={S.templateItemTitle}>{getLocalizedTemplateTitle(item.title, item.id, uiLanguage, false)}</span>
                       <span style={S.templateActions}>
                         <button
                           type="button"
@@ -5650,7 +6151,7 @@ export default function App() {
                             if (!templatesEnabled) return;
                             openTemplateEditor(item.id);
                           }}
-                          title="Edit template"
+                          title={t("template.edit")}
                         >
                           ✎
                         </button>
@@ -5666,36 +6167,42 @@ export default function App() {
         <div style={S.genRow}>
           <button style={{ ...S.genBtn, opacity: canGenerate ? 1 : 0.5 }}
             disabled={!canGenerate} onClick={handleGenerate}>
-            {isProcessing ? <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={S.btnSpin} /> Running {runningCount} · Queued {queueCount}</span> : taskMode === "compare" ? "⬡ Enqueue Compare Tasks" : taskMode === "style" ? "⬡ Enqueue Style Tasks" : "⬡ Enqueue Task"}
+            {isProcessing
+              ? <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={S.btnSpin} /> {t("workspace.runningQueued", { running: runningCount, queued: queueCount })}</span>
+              : taskMode === "compare"
+              ? t("workspace.enqueueCompare")
+              : taskMode === "style"
+              ? t("workspace.enqueueStyle")
+              : t("workspace.enqueueTask")}
           </button>
-          {hasAnySuccess && <button style={S.zipBtn} onClick={() => downloadAllAsZip(turns)}>↓ Download All Dialogs (.zip)</button>}
+          {hasAnySuccess && <button style={S.zipBtn} onClick={() => downloadAllAsZip(turns)}>{t("workspace.downloadAll")}</button>}
         </div>
         <div style={S.folderRow}>
           <button style={S.zipBtn} onClick={handlePickHistoryFolder} disabled={!folderSupported}>
-            {historyDirHandle ? "Switch History Folder" : "Select History Folder"}
+            {historyDirHandle ? t("workspace.switchHistoryFolder") : t("workspace.selectHistoryFolder")}
           </button>
           {historyDirHandle && (
             <button style={S.zipBtn} onClick={() => loadHistoryFromFolder(historyDirHandle)}>
-              Reload Folder History
+              {t("workspace.reloadHistory")}
             </button>
           )}
           <span style={S.folderHint}>
             {folderSupported
               ? historyDirName
-                ? `Connected: ${historyDirName}`
-                : "No folder selected"
-              : "Folder API unsupported in this browser"}
+                ? t("workspace.connected", { name: historyDirName })
+                : t("workspace.noFolderSelected")
+              : t("workspace.folderUnsupported")}
           </span>
         </div>
         <div style={S.atlasRow}>
-          <span style={S.atlasCount}>Selected {selectedAtlasItems.length}/{MAX_ATLAS_SELECTED_IMAGES}</span>
+          <span style={S.atlasCount}>{t("workspace.selectedCount", { count: selectedAtlasItems.length, max: MAX_ATLAS_SELECTED_IMAGES })}</span>
           <button
             type="button"
             style={{ ...S.zipBtn, padding: "8px 14px", fontSize: 12, opacity: selectedAtlasItems.length ? 1 : 0.5, cursor: selectedAtlasItems.length ? "pointer" : "not-allowed" }}
             onClick={clearAllSelections}
             disabled={!selectedAtlasItems.length || atlasBusy}
           >
-            Clear Selections
+            {t("workspace.clearSelections")}
           </button>
           <button
             type="button"
@@ -5703,7 +6210,7 @@ export default function App() {
             onClick={exportAtlasSelection}
             disabled={!historyDirHandle || !selectedAtlasItems.length || atlasBusy}
           >
-            Export Atlas Folder
+            {t("workspace.exportAtlas")}
           </button>
           {taskMode === "style" && (
             <button
@@ -5712,7 +6219,7 @@ export default function App() {
               onClick={() => setShowAtlasThumbnailModal(true)}
               disabled={!selectedAtlasItems.length || atlasBusy}
             >
-              Thumbnail
+              {t("workspace.thumbnail")}
             </button>
           )}
           {atlasThumbnail && (
@@ -5720,9 +6227,9 @@ export default function App() {
               type="button"
               style={S.atlasThumbBtn}
               onClick={() => setShowAtlasThumbnailModal(true)}
-              title="Open thumbnail editor"
+              title={t("atlas.openEditor")}
             >
-              <img src={atlasThumbnail} alt="Atlas Thumbnail" style={S.atlasThumbImg} />
+              <img src={atlasThumbnail} alt={t("workspace.thumbnail")} style={S.atlasThumbImg} />
             </button>
           )}
         </div>
@@ -5731,7 +6238,7 @@ export default function App() {
         {activeTurn && (
           <section style={{ animation: "fadeIn 0.3s ease", marginBottom: 24 }}>
             <h3 style={{ fontSize: 12, fontFamily: mono, fontWeight: 600, letterSpacing: 1.2, textTransform: "uppercase", color: "#888", margin: "0 0 8px" }}>
-              Current Dialog
+              {t("workspace.currentDialog")}
             </h3>
             <TurnPanel
               turn={activeTurn}
@@ -5758,7 +6265,7 @@ export default function App() {
         {historyTurns.length > 0 && (
           <section style={{ marginTop: 8 }}>
             <h3 style={{ fontSize: 12, fontFamily: mono, fontWeight: 600, letterSpacing: 1.2, textTransform: "uppercase", color: "#888", margin: "0 0 8px" }}>
-              History Dialogs
+              {t("workspace.historyDialogs")}
             </h3>
             <div style={{ borderRadius: 10, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(0,0,0,0.4)", padding: 12 }}>
               {visibleHistory.map((turn) => (
@@ -5786,7 +6293,7 @@ export default function App() {
               ))}
               {hasMoreHistory && (
                 <div style={{ display: "flex", justifyContent: "center", paddingTop: 8 }}>
-                  <button style={S.zipBtn} onClick={() => setHistoryLimit((n) => n + 4)}>Load 4 More Dialogs</button>
+                  <button style={S.zipBtn} onClick={() => setHistoryLimit((n) => n + 4)}>{t("workspace.loadMore")}</button>
                 </div>
               )}
             </div>
@@ -5796,7 +6303,7 @@ export default function App() {
         )}
       </main>
 
-      <SettingsModal show={showSettings} onClose={() => setShowSettings(false)} proxyUrl={proxyUrl} setProxyUrl={setProxyUrl} />
+      <SettingsModal show={showSettings} onClose={() => setShowSettings(false)} proxyUrl={proxyUrl} setProxyUrl={setProxyUrl} uiLanguage={uiLanguage} setUiLanguage={setUiLanguage} />
       <ApiKeyModal
         show={showApiModal}
         onClose={() => setShowApiModal(false)}
@@ -5838,7 +6345,7 @@ export default function App() {
       <InputImagesModal
         show={showInputImageModal}
         onClose={() => setShowInputImageModal(false)}
-        title="Input Images"
+        title={t("images.inputTitle")}
         images={inputImageList}
         maxCount={MAX_INPUT_IMAGES_PER_BATCH}
         onUploadFiles={appendInputImageFiles}
@@ -5847,7 +6354,7 @@ export default function App() {
       <InputImagesModal
         show={showStyleReferenceModal}
         onClose={() => setShowStyleReferenceModal(false)}
-        title="Reference Images"
+        title={t("images.referenceTitle")}
         images={styleImageList}
         maxCount={MAX_STYLE_REFERENCE_IMAGES}
         onUploadFiles={appendStyleReferenceFiles}
@@ -5871,7 +6378,7 @@ export default function App() {
       <ImagePreviewModal src={previewImage} onClose={() => setPreviewImage(null)} />
 
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&family=Noto+Sans+SC:wght@300;400;500&display=swap');
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         * { box-sizing: border-box; }
@@ -5884,12 +6391,13 @@ export default function App() {
         }
       `}</style>
     </div>
+    </I18nContext.Provider>
   );
 }
 
 // ─── Styles ───
 const mono = "'JetBrains Mono', monospace";
-const sans = "'DM Sans', sans-serif";
+const sans = "'DM Sans', 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif";
 const THEME_PRIMARY = "#3b82f6";
 const THEME_PRIMARY_TEXT = "#bfdbfe";
 const THEME_PRIMARY_SOFT = "rgba(59,130,246,0.16)";
@@ -6087,14 +6595,14 @@ const S = {
   turnPromptRowExpanded: { display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px", alignItems: "stretch", justifyContent: "stretch" },
   turnModeBadge: { display: "inline-flex", alignItems: "center", marginLeft: 8, padding: "2px 8px", borderRadius: 999, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT, fontSize: 11, fontFamily: mono },
   turnPromptCards: { flex: "1 1 320px", minWidth: 220, display: "grid", gap: 10 },
-  turnPromptCardsExpanded: { minHeight: 320, alignSelf: "stretch" },
+  turnPromptCardsExpanded: { height: 320, minHeight: 320, alignSelf: "stretch", gridAutoRows: "1fr" },
   turnPromptCard: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.03)", padding: "12px 14px" },
   turnPromptCardCompact: { maxHeight: 96, overflow: "hidden" },
-  turnPromptCardExpanded: { maxHeight: 320, minHeight: 320, overflow: "hidden" },
+  turnPromptCardExpanded: { height: "100%", maxHeight: 320, minHeight: 320, overflow: "hidden", display: "flex", flexDirection: "column" },
   turnPromptBadge: { display: "inline-flex", alignItems: "center", padding: "2px 8px", borderRadius: 999, background: THEME_GOLD_SOFT, color: THEME_GOLD, fontSize: 10, fontFamily: mono, marginBottom: 8 },
   turnPromptText: { fontSize: 13, color: "#e4e4e7", whiteSpace: "pre-wrap", lineHeight: 1.5 },
   turnPromptTextCompact: { maxHeight: 72, overflow: "hidden" },
-  turnPromptTextExpanded: { maxHeight: 292, overflow: "hidden" },
+  turnPromptTextExpanded: { flex: 1, maxHeight: "100%", overflow: "hidden" },
   promptChipReadonly: { background: "rgba(59,130,246,0.18)", color: THEME_PRIMARY_TEXT, border: "1px solid rgba(59,130,246,0.62)", borderRadius: 6, padding: "1px 6px", display: "inline-block", margin: "0 1px" },
   styleHistorySummary: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: 10, display: "grid", gridTemplateColumns: "repeat(6, minmax(0, 1fr))", gap: 8 },
   styleSummaryItem: { borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(0,0,0,0.24)", padding: "8px 10px", display: "grid", gap: 4 },
@@ -6111,7 +6619,7 @@ const S = {
   turnResultGroupHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 10, flexWrap: "wrap" },
   turnResultMeta: { fontSize: 11, color: "#71717a", fontFamily: mono },
   turnRefViewerCol: { display: "grid", gap: 10, alignItems: "start", justifyItems: "start", flex: "0 0 auto", minWidth: 0 },
-  turnRefViewerColExpanded: { width: 320, minWidth: 320, alignSelf: "stretch" },
+  turnRefViewerColExpanded: { width: 320, minWidth: 320, height: 320, alignSelf: "stretch" },
   turnRefImageStack: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", overflowX: "auto", paddingBottom: 2, maxWidth: "100%" },
   turnRefImageWrap: { position: "relative", flexShrink: 0 },
   turnRefImageBtn: { width: 96, height: 96, borderRadius: 8, padding: 0, border: "1px solid rgba(255,255,255,0.1)", overflow: "hidden", background: "transparent", cursor: "zoom-in", flexShrink: 0 },
