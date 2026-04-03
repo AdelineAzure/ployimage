@@ -4093,6 +4093,7 @@ function SpriteSplitModal({
 }) {
   const { uiLanguage, t } = useI18n();
   const uploadInputRef = useRef(null);
+  const [inlineZoomItemId, setInlineZoomItemId] = useState(null);
 
   useEffect(() => {
     if (!show) return undefined;
@@ -4106,6 +4107,24 @@ function SpriteSplitModal({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [show, onUndoDelete]);
+
+  useEffect(() => {
+    if (!show) {
+      setInlineZoomItemId(null);
+      return;
+    }
+    const items = Array.isArray(splitItems) ? splitItems : [];
+    if (!items.length) {
+      setInlineZoomItemId(null);
+      return;
+    }
+    if (!inlineZoomItemId) return;
+    const exists = items.some((item, index) => {
+      const key = item?.id || `split-item-${index}`;
+      return key === inlineZoomItemId;
+    });
+    if (!exists) setInlineZoomItemId(null);
+  }, [show, splitItems, inlineZoomItemId]);
 
   if (!show) return null;
   const items = Array.isArray(splitItems) ? splitItems : [];
@@ -4250,21 +4269,45 @@ function SpriteSplitModal({
                 <div style={S.splitGrid}>
                   {items.map((item, index) => (
                     <div key={item.id || `split-item-${index}`} style={S.splitItemCell}>
+                      {inlineZoomItemId === (item.id || `split-item-${index}`) ? (
+                        <InlineZoomViewer
+                          src={item.image}
+                          onCollapse={() => setInlineZoomItemId(null)}
+                          containerStyle={S.splitItemInlineZoomViewer}
+                          collapseButtonStyle={S.splitItemInlineZoomCollapseBtn}
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          style={{
+                            ...S.splitItemBtn,
+                            ...(whiteBackground ? S.splitItemBtnWhiteBg : null),
+                          }}
+                          onClick={() => onPreview?.(item.image)}
+                          title={t("split.previewSplit", { index: index + 1 })}
+                        >
+                          <div style={S.splitItemOrder}>{index + 1}</div>
+                          <img
+                            src={item.image}
+                            alt={`Split ${index + 1}`}
+                            style={{ ...S.splitItemImg, ...(whiteBackground ? { background: "#ffffff" } : null) }}
+                          />
+                        </button>
+                      )}
                       <button
                         type="button"
                         style={{
-                          ...S.splitItemBtn,
-                          ...(whiteBackground ? S.splitItemBtnWhiteBg : null),
+                          ...S.splitItemZoomBtn,
+                          ...(inlineZoomItemId === (item.id || `split-item-${index}`) ? S.splitItemZoomBtnActive : null),
                         }}
-                        onClick={() => onPreview?.(item.image)}
-                        title={t("split.previewSplit", { index: index + 1 })}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          const nextId = item.id || `split-item-${index}`;
+                          setInlineZoomItemId((prev) => (prev === nextId ? null : nextId));
+                        }}
+                        title={t("viewer.inlineViewer")}
                       >
-                        <div style={S.splitItemOrder}>{index + 1}</div>
-                        <img
-                          src={item.image}
-                          alt={`Split ${index + 1}`}
-                          style={{ ...S.splitItemImg, ...(whiteBackground ? { background: "#ffffff" } : null) }}
-                        />
+                        🔍
                       </button>
                       <button
                         type="button"
@@ -4694,7 +4737,7 @@ function ImagePreviewModal({ src, onClose }) {
   );
 }
 
-function InlineZoomViewer({ src, onCollapse }) {
+function InlineZoomViewer({ src, onCollapse, containerStyle = null, collapseButtonStyle = null, viewportStyle = null, imageStyle = null }) {
   const { t } = useI18n();
   const viewportRef = useRef(null);
   const dragRef = useRef(null);
@@ -4775,13 +4818,18 @@ function InlineZoomViewer({ src, onCollapse }) {
   if (!src) return null;
 
   return (
-    <div style={S.inlineZoomViewer}>
-      <button type="button" style={S.inlineZoomViewerCollapseBtn} onClick={onCollapse} title={t("viewer.collapse")}>
+    <div style={{ ...S.inlineZoomViewer, ...(containerStyle || null) }}>
+      <button
+        type="button"
+        style={{ ...S.inlineZoomViewerCollapseBtn, ...(collapseButtonStyle || null) }}
+        onClick={onCollapse}
+        title={t("viewer.collapse")}
+      >
         ↙
       </button>
       <div
         ref={viewportRef}
-        style={S.inlineZoomViewerViewport}
+        style={{ ...S.inlineZoomViewerViewport, ...(viewportStyle || null) }}
         onMouseDown={handleMouseDown}
         onClick={() => setWheelActive(true)}
         onDoubleClick={() => {
@@ -4795,6 +4843,7 @@ function InlineZoomViewer({ src, onCollapse }) {
           draggable={false}
           style={{
             ...S.inlineZoomViewerImage,
+            ...(imageStyle || null),
             transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
             transition: dragging ? "none" : "transform 0.08s ease-out",
             cursor: scale > 1 ? (dragging ? "grabbing" : "grab") : "zoom-in",
@@ -8337,7 +8386,11 @@ const S = {
   splitItemBtnWhiteBg: { background: "#ffffff" },
   splitItemOrder: { position: "absolute", top: 6, left: 6, minWidth: 20, height: 20, borderRadius: 10, padding: "0 6px", background: "rgba(2,6,23,0.78)", color: "#f8fafc", fontFamily: mono, fontSize: 10, display: "inline-flex", alignItems: "center", justifyContent: "center", zIndex: 2 },
   splitItemImg: { width: "100%", aspectRatio: "1 / 1", objectFit: "contain", display: "block", background: "#020617" },
+  splitItemZoomBtn: { position: "absolute", top: 6, right: 30, zIndex: 3, width: 20, height: 20, borderRadius: 10, border: "1px solid rgba(255,255,255,0.16)", background: "rgba(2,6,23,0.82)", color: "#e2e8f0", fontSize: 11, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },
+  splitItemZoomBtnActive: { borderColor: THEME_PRIMARY_BORDER, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT },
   splitItemDeleteBtn: { position: "absolute", top: 6, right: 6, zIndex: 3, width: 20, height: 20, borderRadius: 10, border: "1px solid rgba(248,113,113,0.65)", background: "rgba(127,29,29,0.88)", color: "#fee2e2", fontSize: 11, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },
+  splitItemInlineZoomViewer: { width: "100%", maxWidth: "100%", height: 160, borderRadius: 10, border: "1px solid rgba(59,130,246,0.45)", background: "rgba(8,47,73,0.24)", boxShadow: "0 0 0 1px rgba(59,130,246,0.16), 0 10px 24px rgba(2,6,23,0.24)" },
+  splitItemInlineZoomCollapseBtn: { width: 22, height: 22, borderRadius: 11, top: 6, right: 6, fontSize: 11 },
   splitStatusText: { minHeight: 18, fontSize: 12, color: "#94a3b8", fontFamily: mono, wordBreak: "break-word" },
   splitStatusTextError: { color: "#fca5a5" },
   turnActionBtn: { height: 28, padding: "0 10px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.04)", color: "#d4d4d8", fontSize: 11, fontFamily: mono, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1 },
