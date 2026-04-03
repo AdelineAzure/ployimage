@@ -61,6 +61,7 @@ const STYLE_THEME_SLOTS = 12;
 const MAX_STYLE_REFERENCE_IMAGES = 4;
 const MAX_ATLAS_SELECTED_IMAGES = 20;
 const MAX_INPUT_IMAGES_PER_BATCH = 10;
+const MAX_SPLIT_EXPORT_ITEMS = 120;
 const TEMPLATE_FILE_NAME = "templates.json";
 const STYLE_TEMPLATE_FILE_NAME = "style-templates.json";
 const GPT_ASSIST_FILE_NAME = "gpt-assist.json";
@@ -132,6 +133,39 @@ const UI_TEXT = {
     "action.save": "Save",
     "action.retry": "Retry",
     "action.addOne": "Add one more",
+    "split.open": "Auto split",
+    "split.title": "Split Console",
+    "split.original": "Original Image",
+    "split.removed": "Background Removed",
+    "split.results": "Split Subjects",
+    "split.detecting": "Detecting subjects...",
+    "split.noSubjects": "No subjects detected.",
+    "split.count": "{{count}} subjects",
+    "split.reSplit": "Re-split",
+    "split.run": "Run Background Removal + Split",
+    "split.sourceRemoved": "Split Source: Removed BG",
+    "split.sourceOriginal": "Split Source: Original",
+    "split.qualityEnhanced": "Quality: Enhanced",
+    "split.qualityOriginal": "Quality: Original",
+    "split.upload": "Upload Image",
+    "split.export": "Export",
+    "split.exporting": "Exporting...",
+    "split.delete": "Delete",
+    "split.undo": "Undo",
+    "split.undoHint": "Undo: Ctrl/Cmd + Z",
+    "split.whiteBgOn": "White BG: On",
+    "split.whiteBgOff": "White BG: Off",
+    "split.enhance": "Enhance to 1024",
+    "split.enhancing": "Enhancing...",
+    "split.enhanced": "Enhanced {{count}} split image(s), minimum long side 1024.",
+    "split.deletedOne": "Deleted one split image.",
+    "split.undoDone": "Undo completed.",
+    "split.unsupported": "Folder picker is unsupported in this browser.",
+    "split.pickFolderFailed": "Export failed: {{error}}",
+    "split.exported": "Split export completed: {{folder}} ({{count}} subjects + original)",
+    "split.exportNoItems": "No split subjects to export.",
+    "split.loadFailed": "Split failed: {{error}}",
+    "split.previewSplit": "Preview split image {{index}}",
     "atlas.title": "Thumbnail",
     "atlas.hint": "Drag to reorder. Atlas export and thumbnail follow this order.",
     "atlas.empty": "No selected images yet.",
@@ -305,6 +339,39 @@ const UI_TEXT = {
     "action.save": "下载",
     "action.retry": "重试",
     "action.addOne": "再来一张",
+    "split.open": "自动切分",
+    "split.title": "切分操作台",
+    "split.original": "原图",
+    "split.removed": "去背景结果",
+    "split.results": "拆分主体",
+    "split.detecting": "正在识别主体...",
+    "split.noSubjects": "未识别到可切分主体。",
+    "split.count": "共 {{count}} 个主体",
+    "split.reSplit": "重新切分",
+    "split.run": "执行去背景 + 切分",
+    "split.sourceRemoved": "切分源：去背景",
+    "split.sourceOriginal": "切分源：带背景",
+    "split.qualityEnhanced": "清晰度：增强",
+    "split.qualityOriginal": "清晰度：原始",
+    "split.upload": "上传图片",
+    "split.export": "导出",
+    "split.exporting": "导出中...",
+    "split.delete": "删除",
+    "split.undo": "撤回",
+    "split.undoHint": "撤回快捷键：Ctrl/Cmd + Z",
+    "split.whiteBgOn": "白底：开",
+    "split.whiteBgOff": "白底：关",
+    "split.enhance": "增强到 1024",
+    "split.enhancing": "增强中...",
+    "split.enhanced": "已增强 {{count}} 张切分图，最长边不低于 1024。",
+    "split.deletedOne": "已删除 1 张切分图。",
+    "split.undoDone": "已撤回。",
+    "split.unsupported": "当前浏览器不支持选择文件夹。",
+    "split.pickFolderFailed": "导出失败：{{error}}",
+    "split.exported": "切分导出完成：{{folder}}（主体 {{count}} 个 + 原图）",
+    "split.exportNoItems": "没有可导出的切分主体。",
+    "split.loadFailed": "切分失败：{{error}}",
+    "split.previewSplit": "预览切分图 {{index}}",
     "atlas.title": "缩略图",
     "atlas.hint": "拖拽即可调整顺序。图集导出和缩略图都会按这个顺序生成。",
     "atlas.empty": "还没有选中的图片。",
@@ -1185,6 +1252,782 @@ function buildWorkerImageProxyUrl(proxyUrl, rawUrl) {
   } catch {
     return normalized;
   }
+}
+
+function getMedianNumber(values = []) {
+  const list = (Array.isArray(values) ? values : [])
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+  if (!list.length) return 0;
+  const mid = Math.floor(list.length / 2);
+  return list.length % 2 ? list[mid] : (list[mid - 1] + list[mid]) / 2;
+}
+
+function colorDistanceSq(r, g, b, bg) {
+  const dr = r - bg.r;
+  const dg = g - bg.g;
+  const db = b - bg.b;
+  return dr * dr + dg * dg + db * db;
+}
+
+function getPercentileNumber(values = [], ratio = 0.5) {
+  const list = (Array.isArray(values) ? values : [])
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+  if (!list.length) return 0;
+  const safeRatio = Math.max(0, Math.min(1, Number(ratio) || 0));
+  const idx = Math.min(list.length - 1, Math.max(0, Math.floor((list.length - 1) * safeRatio)));
+  return list[idx];
+}
+
+function collectBorderPalette(imageData, width, height) {
+  const data = imageData?.data;
+  if (!data || width <= 0 || height <= 0) return [{ r: 0, g: 0, b: 0 }];
+  const bucketMap = new Map();
+  const stepX = Math.max(1, Math.floor(width / 90));
+  const stepY = Math.max(1, Math.floor(height / 90));
+  const collect = (x, y) => {
+    const idx = (y * width + x) * 4;
+    const alpha = data[idx + 3];
+    if (alpha <= 18) return;
+    const r = data[idx];
+    const g = data[idx + 1];
+    const b = data[idx + 2];
+    const key = `${r >> 3}-${g >> 3}-${b >> 3}`;
+    const found = bucketMap.get(key) || { r: 0, g: 0, b: 0, count: 0 };
+    found.r += r;
+    found.g += g;
+    found.b += b;
+    found.count += 1;
+    bucketMap.set(key, found);
+  };
+  for (let x = 0; x < width; x += stepX) {
+    collect(x, 0);
+    collect(x, height - 1);
+  }
+  for (let y = 1; y < height - 1; y += stepY) {
+    collect(0, y);
+    collect(width - 1, y);
+  }
+  const buckets = Array.from(bucketMap.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 8)
+    .map((item) => ({
+      r: Math.round(item.r / Math.max(1, item.count)),
+      g: Math.round(item.g / Math.max(1, item.count)),
+      b: Math.round(item.b / Math.max(1, item.count)),
+    }));
+  return buckets.length ? buckets : [{ r: 0, g: 0, b: 0 }];
+}
+
+function getMinPaletteDistanceSq(r, g, b, palette = []) {
+  const colors = Array.isArray(palette) && palette.length ? palette : [{ r: 0, g: 0, b: 0 }];
+  let min = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < colors.length; i += 1) {
+    const dist = colorDistanceSq(r, g, b, colors[i]);
+    if (dist < min) min = dist;
+  }
+  return Number.isFinite(min) ? min : 0;
+}
+
+function refineForegroundMask(mask, width, height) {
+  if (!mask || width <= 2 || height <= 2) return mask;
+  const total = width * height;
+  const neighbors = [
+    [-1, -1], [0, -1], [1, -1],
+    [-1, 0], [1, 0],
+    [-1, 1], [0, 1], [1, 1],
+  ];
+  const erode = (input) => {
+    const out = new Uint8Array(total);
+    for (let y = 1; y < height - 1; y += 1) {
+      for (let x = 1; x < width - 1; x += 1) {
+        const idx = y * width + x;
+        if (!input[idx]) continue;
+        let ok = true;
+        for (let n = 0; n < neighbors.length; n += 1) {
+          const nx = x + neighbors[n][0];
+          const ny = y + neighbors[n][1];
+          if (!input[ny * width + nx]) {
+            ok = false;
+            break;
+          }
+        }
+        if (ok) out[idx] = 1;
+      }
+    }
+    return out;
+  };
+  const dilate = (input) => {
+    const out = new Uint8Array(total);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const idx = y * width + x;
+        if (input[idx]) {
+          out[idx] = 1;
+          continue;
+        }
+        let on = false;
+        for (let n = 0; n < neighbors.length; n += 1) {
+          const nx = x + neighbors[n][0];
+          const ny = y + neighbors[n][1];
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          if (input[ny * width + nx]) {
+            on = true;
+            break;
+          }
+        }
+        if (on) out[idx] = 1;
+      }
+    }
+    return out;
+  };
+
+  const opened = dilate(erode(mask));
+  const closed = erode(dilate(opened));
+
+  const queue = new Int32Array(Math.max(1, total));
+  const visited = new Uint8Array(total);
+  const cleaned = new Uint8Array(total);
+  const minIslandArea = Math.max(16, Math.floor(total * 0.00022));
+
+  for (let start = 0; start < total; start += 1) {
+    if (!closed[start] || visited[start]) continue;
+    let head = 0;
+    let tail = 0;
+    const pixels = [];
+    queue[tail] = start;
+    tail += 1;
+    visited[start] = 1;
+    while (head < tail) {
+      const idx = queue[head];
+      head += 1;
+      pixels.push(idx);
+      const x = idx % width;
+      const y = Math.floor(idx / width);
+      for (let n = 0; n < neighbors.length; n += 1) {
+        const nx = x + neighbors[n][0];
+        const ny = y + neighbors[n][1];
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        const next = ny * width + nx;
+        if (!closed[next] || visited[next]) continue;
+        visited[next] = 1;
+        queue[tail] = next;
+        tail += 1;
+      }
+    }
+    if (pixels.length >= minIslandArea) {
+      for (let i = 0; i < pixels.length; i += 1) cleaned[pixels[i]] = 1;
+    }
+  }
+
+  const invVisited = new Uint8Array(total);
+  const holesQueue = new Int32Array(Math.max(1, total));
+  let holesHead = 0;
+  let holesTail = 0;
+  const pushHole = (x, y) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const idx = y * width + x;
+    if (cleaned[idx] || invVisited[idx]) return;
+    invVisited[idx] = 1;
+    holesQueue[holesTail] = idx;
+    holesTail += 1;
+  };
+  for (let x = 0; x < width; x += 1) {
+    pushHole(x, 0);
+    pushHole(x, height - 1);
+  }
+  for (let y = 1; y < height - 1; y += 1) {
+    pushHole(0, y);
+    pushHole(width - 1, y);
+  }
+  while (holesHead < holesTail) {
+    const idx = holesQueue[holesHead];
+    holesHead += 1;
+    const x = idx % width;
+    const y = Math.floor(idx / width);
+    for (let n = 0; n < neighbors.length; n += 1) {
+      pushHole(x + neighbors[n][0], y + neighbors[n][1]);
+    }
+  }
+  for (let i = 0; i < total; i += 1) {
+    if (!cleaned[i] && !invVisited[i]) cleaned[i] = 1;
+  }
+  return cleaned;
+}
+
+function mergeNearbyBounds(bounds = [], maxGap = 2) {
+  const items = (Array.isArray(bounds) ? bounds : []).map((item) => ({ ...item }));
+  if (items.length < 2) return items;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    outer:
+    for (let i = 0; i < items.length; i += 1) {
+      for (let j = i + 1; j < items.length; j += 1) {
+        const a = items[i];
+        const b = items[j];
+        const ax2 = a.x + a.width - 1;
+        const ay2 = a.y + a.height - 1;
+        const bx2 = b.x + b.width - 1;
+        const by2 = b.y + b.height - 1;
+        const horizontalGap = b.x > ax2 ? b.x - ax2 - 1 : a.x > bx2 ? a.x - bx2 - 1 : 0;
+        const verticalGap = b.y > ay2 ? b.y - ay2 - 1 : a.y > by2 ? a.y - by2 - 1 : 0;
+        const overlapX = !(ax2 < b.x || bx2 < a.x);
+        const overlapY = !(ay2 < b.y || by2 < a.y);
+        if ((horizontalGap <= maxGap && overlapY) || (verticalGap <= maxGap && overlapX) || (overlapX && overlapY)) {
+          const nextX = Math.min(a.x, b.x);
+          const nextY = Math.min(a.y, b.y);
+          const nextRight = Math.max(ax2, bx2);
+          const nextBottom = Math.max(ay2, by2);
+          items[i] = {
+            x: nextX,
+            y: nextY,
+            width: nextRight - nextX + 1,
+            height: nextBottom - nextY + 1,
+            area: (a.area || 0) + (b.area || 0),
+          };
+          items.splice(j, 1);
+          changed = true;
+          break outer;
+        }
+      }
+    }
+  }
+  return items;
+}
+
+function clampByte(value) {
+  return Math.max(0, Math.min(255, Math.round(Number(value) || 0)));
+}
+
+function blurImageData3x3(imageData, width, height) {
+  const src = imageData?.data;
+  if (!src || width <= 2 || height <= 2) return imageData;
+  const out = new Uint8ClampedArray(src.length);
+  const kernel = [1, 2, 1, 2, 4, 2, 1, 2, 1];
+  const kernelSum = 16;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const base = (y * width + x) * 4;
+      let rr = 0;
+      let gg = 0;
+      let bb = 0;
+      let aa = 0;
+      let weightSum = 0;
+      let ki = 0;
+      for (let ky = -1; ky <= 1; ky += 1) {
+        for (let kx = -1; kx <= 1; kx += 1) {
+          const nx = Math.max(0, Math.min(width - 1, x + kx));
+          const ny = Math.max(0, Math.min(height - 1, y + ky));
+          const nIdx = (ny * width + nx) * 4;
+          const w = kernel[ki];
+          ki += 1;
+          rr += src[nIdx] * w;
+          gg += src[nIdx + 1] * w;
+          bb += src[nIdx + 2] * w;
+          aa += src[nIdx + 3] * w;
+          weightSum += w;
+        }
+      }
+      const safeW = weightSum || kernelSum;
+      out[base] = clampByte(rr / safeW);
+      out[base + 1] = clampByte(gg / safeW);
+      out[base + 2] = clampByte(bb / safeW);
+      out[base + 3] = clampByte(aa / safeW);
+    }
+  }
+  return new ImageData(out, width, height);
+}
+
+function applySharpenToImageData(imageData, width, height, amount = 0.58, threshold = 3) {
+  const src = imageData?.data;
+  if (!src || width <= 2 || height <= 2) return imageData;
+  const blurred = blurImageData3x3(imageData, width, height);
+  const blur = blurred?.data;
+  if (!blur) return imageData;
+  const out = new Uint8ClampedArray(src.length);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const idx = (y * width + x) * 4;
+      const alpha = src[idx + 3];
+      if (alpha <= 10) {
+        out[idx] = src[idx];
+        out[idx + 1] = src[idx + 1];
+        out[idx + 2] = src[idx + 2];
+        out[idx + 3] = alpha;
+        continue;
+      }
+      const baseR = src[idx];
+      const baseG = src[idx + 1];
+      const baseB = src[idx + 2];
+      const diffR = baseR - blur[idx];
+      const diffG = baseG - blur[idx + 1];
+      const diffB = baseB - blur[idx + 2];
+      out[idx] = Math.abs(diffR) < threshold ? baseR : clampByte(baseR + diffR * amount);
+      out[idx + 1] = Math.abs(diffG) < threshold ? baseG : clampByte(baseG + diffG * amount);
+      out[idx + 2] = Math.abs(diffB) < threshold ? baseB : clampByte(baseB + diffB * amount);
+      out[idx + 3] = alpha;
+    }
+  }
+  return new ImageData(out, width, height);
+}
+
+async function renderDataUrlOnBackground(sourceDataUrl, fillColor = "#ffffff") {
+  const image = await loadImageElement(sourceDataUrl);
+  const width = Math.max(1, image.naturalWidth || image.width || 1);
+  const height = Math.max(1, image.naturalHeight || image.height || 1);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return sourceDataUrl;
+  ctx.fillStyle = fillColor;
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL("image/png");
+}
+
+async function enhanceSplitImageDataUrl(sourceDataUrl, options = {}) {
+  const minLongSide = Math.max(256, Number(options.minLongSide) || 1024);
+  const image = await loadImageElement(sourceDataUrl);
+  const srcWidth = Math.max(1, image.naturalWidth || image.width || 1);
+  const srcHeight = Math.max(1, image.naturalHeight || image.height || 1);
+  const longSide = Math.max(srcWidth, srcHeight);
+  const scale = longSide >= minLongSide ? 1 : minLongSide / longSide;
+  const targetWidth = Math.max(1, Math.round(srcWidth * scale));
+  const targetHeight = Math.max(1, Math.round(srcHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) {
+    return {
+      dataUrl: sourceDataUrl,
+      width: srcWidth,
+      height: srcHeight,
+    };
+  }
+  ctx.clearRect(0, 0, targetWidth, targetHeight);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  // Progressive upscale gives cleaner edges than one-shot scaling.
+  if (scale > 1.8) {
+    let tempWidth = srcWidth;
+    let tempHeight = srcHeight;
+    let tempCanvas = document.createElement("canvas");
+    tempCanvas.width = tempWidth;
+    tempCanvas.height = tempHeight;
+    const tempCtx = tempCanvas.getContext("2d", { willReadFrequently: true });
+    if (tempCtx) {
+      tempCtx.imageSmoothingEnabled = true;
+      tempCtx.imageSmoothingQuality = "high";
+      tempCtx.drawImage(image, 0, 0, tempWidth, tempHeight);
+      while (tempWidth * 1.45 < targetWidth || tempHeight * 1.45 < targetHeight) {
+        const nextWidth = Math.min(targetWidth, Math.round(tempWidth * 1.45));
+        const nextHeight = Math.min(targetHeight, Math.round(tempHeight * 1.45));
+        const stepCanvas = document.createElement("canvas");
+        stepCanvas.width = nextWidth;
+        stepCanvas.height = nextHeight;
+        const stepCtx = stepCanvas.getContext("2d");
+        if (!stepCtx) break;
+        stepCtx.imageSmoothingEnabled = true;
+        stepCtx.imageSmoothingQuality = "high";
+        stepCtx.drawImage(tempCanvas, 0, 0, nextWidth, nextHeight);
+        tempCanvas = stepCanvas;
+        tempWidth = nextWidth;
+        tempHeight = nextHeight;
+      }
+      ctx.drawImage(tempCanvas, 0, 0, targetWidth, targetHeight);
+    } else {
+      ctx.drawImage(image, 0, 0, targetWidth, targetHeight);
+    }
+  } else {
+    ctx.drawImage(image, 0, 0, targetWidth, targetHeight);
+  }
+  const imageData = ctx.getImageData(0, 0, targetWidth, targetHeight);
+  const denoised = blurImageData3x3(imageData, targetWidth, targetHeight);
+  const sharpened = applySharpenToImageData(denoised, targetWidth, targetHeight, 0.55, 2.5);
+  ctx.putImageData(sharpened, 0, 0);
+  return {
+    dataUrl: canvas.toDataURL("image/png"),
+    width: targetWidth,
+    height: targetHeight,
+  };
+}
+
+function buildForegroundMask(imageData, width, height) {
+  const total = width * height;
+  const data = imageData?.data;
+  const mask = new Uint8Array(total);
+  if (!data || total <= 0) return mask;
+
+  let opaqueCount = 0;
+  let visibleCount = 0;
+  for (let i = 0; i < total; i += 1) {
+    const alpha = data[i * 4 + 3];
+    if (alpha > 245) opaqueCount += 1;
+    if (alpha > 20) visibleCount += 1;
+  }
+  const transparencyRatio = 1 - opaqueCount / Math.max(1, total);
+  const hasUsefulAlpha = transparencyRatio > 0.015 && visibleCount > 0;
+
+  if (hasUsefulAlpha) {
+    for (let i = 0; i < total; i += 1) {
+      if (data[i * 4 + 3] > 20) mask[i] = 1;
+    }
+    return refineForegroundMask(mask, width, height);
+  }
+
+  const bgPalette = collectBorderPalette(imageData, width, height);
+  const borderDistances = [];
+  const stepX = Math.max(1, Math.floor(width / 64));
+  const stepY = Math.max(1, Math.floor(height / 64));
+  const collectBorderDistance = (x, y) => {
+    const idx = (y * width + x) * 4;
+    const alpha = data[idx + 3];
+    if (alpha <= 20) return;
+    const distSq = getMinPaletteDistanceSq(data[idx], data[idx + 1], data[idx + 2], bgPalette);
+    borderDistances.push(Math.sqrt(distSq));
+  };
+  for (let x = 0; x < width; x += stepX) {
+    collectBorderDistance(x, 0);
+    collectBorderDistance(x, height - 1);
+  }
+  for (let y = 1; y < height - 1; y += stepY) {
+    collectBorderDistance(0, y);
+    collectBorderDistance(width - 1, y);
+  }
+  const borderP70 = getPercentileNumber(borderDistances, 0.7);
+  const borderP85 = getPercentileNumber(borderDistances, 0.85);
+  const borderMedian = getMedianNumber(borderDistances);
+  const bgThreshold = Math.max(14, Math.min(86, Math.max(borderP70 + 8, borderP85 + 2, borderMedian + 12)));
+  const bgThresholdSq = bgThreshold * bgThreshold;
+  const bgLike = new Uint8Array(total);
+  for (let i = 0; i < total; i += 1) {
+    const idx = i * 4;
+    const alpha = data[idx + 3];
+    if (alpha <= 20) {
+      bgLike[i] = 1;
+      continue;
+    }
+    const distSq = getMinPaletteDistanceSq(data[idx], data[idx + 1], data[idx + 2], bgPalette);
+    bgLike[i] = distSq <= bgThresholdSq ? 1 : 0;
+  }
+
+  const bgConnected = new Uint8Array(total);
+  const queue = new Int32Array(Math.max(1, total));
+  let head = 0;
+  let tail = 0;
+  const push = (x, y) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const idx = y * width + x;
+    if (!bgLike[idx] || bgConnected[idx]) return;
+    bgConnected[idx] = 1;
+    queue[tail] = idx;
+    tail += 1;
+  };
+  for (let x = 0; x < width; x += 1) {
+    push(x, 0);
+    push(x, height - 1);
+  }
+  for (let y = 1; y < height - 1; y += 1) {
+    push(0, y);
+    push(width - 1, y);
+  }
+  while (head < tail) {
+    const idx = queue[head];
+    head += 1;
+    const x = idx % width;
+    const y = Math.floor(idx / width);
+    push(x - 1, y);
+    push(x + 1, y);
+    push(x, y - 1);
+    push(x, y + 1);
+  }
+  for (let i = 0; i < total; i += 1) {
+    const alpha = data[i * 4 + 3];
+    if (!bgConnected[i] && alpha > 20) mask[i] = 1;
+  }
+  return refineForegroundMask(mask, width, height);
+}
+
+function collectSubjectBounds(mask, width, height) {
+  const total = width * height;
+  if (!mask || total <= 0) return [];
+  const visited = new Uint8Array(total);
+  const queue = new Int32Array(Math.max(1, total));
+  const neighbors = [
+    [-1, -1], [0, -1], [1, -1],
+    [-1, 0], [1, 0],
+    [-1, 1], [0, 1], [1, 1],
+  ];
+  const minArea = Math.max(20, Math.floor(total * 0.00035));
+  const minSide = Math.max(2, Math.floor(Math.min(width, height) * 0.01));
+  const bounds = [];
+
+  for (let start = 0; start < total; start += 1) {
+    if (!mask[start] || visited[start]) continue;
+    let head = 0;
+    let tail = 0;
+    queue[tail] = start;
+    tail += 1;
+    visited[start] = 1;
+    let minX = width;
+    let minY = height;
+    let maxX = 0;
+    let maxY = 0;
+    let area = 0;
+
+    while (head < tail) {
+      const idx = queue[head];
+      head += 1;
+      const x = idx % width;
+      const y = Math.floor(idx / width);
+      area += 1;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+
+      for (let n = 0; n < neighbors.length; n += 1) {
+        const nextX = x + neighbors[n][0];
+        const nextY = y + neighbors[n][1];
+        if (nextX < 0 || nextY < 0 || nextX >= width || nextY >= height) continue;
+        const next = nextY * width + nextX;
+        if (!mask[next] || visited[next]) continue;
+        visited[next] = 1;
+        queue[tail] = next;
+        tail += 1;
+      }
+    }
+
+    const boxWidth = maxX - minX + 1;
+    const boxHeight = maxY - minY + 1;
+    if (area < minArea || (boxWidth < minSide && boxHeight < minSide)) continue;
+    bounds.push({
+      x: minX,
+      y: minY,
+      width: boxWidth,
+      height: boxHeight,
+      area,
+    });
+  }
+
+  if (!bounds.length) {
+    let minX = width;
+    let minY = height;
+    let maxX = -1;
+    let maxY = -1;
+    let area = 0;
+    for (let i = 0; i < total; i += 1) {
+      if (!mask[i]) continue;
+      area += 1;
+      const x = i % width;
+      const y = Math.floor(i / width);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    if (area > 0 && maxX >= minX && maxY >= minY) {
+      bounds.push({
+        x: minX,
+        y: minY,
+        width: maxX - minX + 1,
+        height: maxY - minY + 1,
+        area,
+      });
+    }
+  }
+
+  return bounds
+    .sort((a, b) => (a.y === b.y ? a.x - b.x : a.y - b.y))
+    .slice(0, MAX_SPLIT_EXPORT_ITEMS);
+}
+
+async function splitImageBySubjects(source) {
+  const normalized = normalizeImageValue(source);
+  if (!normalized) throw new Error("Invalid image source");
+  const image = await loadImageElement(normalized);
+  const width = Math.max(1, image.naturalWidth || image.width || 1);
+  const height = Math.max(1, image.naturalHeight || image.height || 1);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw new Error("Canvas context unavailable");
+  ctx.drawImage(image, 0, 0, width, height);
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const mask = buildForegroundMask(imageData, width, height);
+  const boxes = collectSubjectBounds(mask, width, height);
+
+  const removedCanvas = document.createElement("canvas");
+  removedCanvas.width = width;
+  removedCanvas.height = height;
+  const removedCtx = removedCanvas.getContext("2d");
+  if (removedCtx) {
+    const removedData = removedCtx.createImageData(width, height);
+    const srcData = imageData.data;
+    const dstData = removedData.data;
+    for (let i = 0; i < width * height; i += 1) {
+      const dst = i * 4;
+      if (!mask[i]) {
+        dstData[dst] = 0;
+        dstData[dst + 1] = 0;
+        dstData[dst + 2] = 0;
+        dstData[dst + 3] = 0;
+        continue;
+      }
+      dstData[dst] = srcData[dst];
+      dstData[dst + 1] = srcData[dst + 1];
+      dstData[dst + 2] = srcData[dst + 2];
+      dstData[dst + 3] = srcData[dst + 3];
+    }
+    removedCtx.putImageData(removedData, 0, 0);
+  }
+
+  const padding = Math.max(1, Math.min(16, Math.floor(Math.min(width, height) * 0.012)));
+  const items = boxes.map((box, index) => {
+    const x = Math.max(0, box.x - padding);
+    const y = Math.max(0, box.y - padding);
+    const right = Math.min(width - 1, box.x + box.width - 1 + padding);
+    const bottom = Math.min(height - 1, box.y + box.height - 1 + padding);
+    const cropWidth = Math.max(1, right - x + 1);
+    const cropHeight = Math.max(1, bottom - y + 1);
+    const out = document.createElement("canvas");
+    out.width = cropWidth;
+    out.height = cropHeight;
+    const outCtx = out.getContext("2d");
+    if (outCtx) {
+      const outImageData = outCtx.createImageData(cropWidth, cropHeight);
+      const srcData = imageData.data;
+      const outData = outImageData.data;
+      for (let py = 0; py < cropHeight; py += 1) {
+        for (let px = 0; px < cropWidth; px += 1) {
+          const gx = x + px;
+          const gy = y + py;
+          const srcMaskIndex = gy * width + gx;
+          const outIndex = (py * cropWidth + px) * 4;
+          if (!mask[srcMaskIndex]) {
+            outData[outIndex] = 0;
+            outData[outIndex + 1] = 0;
+            outData[outIndex + 2] = 0;
+            outData[outIndex + 3] = 0;
+            continue;
+          }
+          const srcIndex = srcMaskIndex * 4;
+          outData[outIndex] = srcData[srcIndex];
+          outData[outIndex + 1] = srcData[srcIndex + 1];
+          outData[outIndex + 2] = srcData[srcIndex + 2];
+          outData[outIndex + 3] = srcData[srcIndex + 3];
+        }
+      }
+      outCtx.putImageData(outImageData, 0, 0);
+    }
+    return {
+      id: `subject-${index + 1}`,
+      index: index + 1,
+      x,
+      y,
+      width: cropWidth,
+      height: cropHeight,
+      area: box.area,
+      transparentImage: out.toDataURL("image/png"),
+      enhancedImage: "",
+      whiteEnhancedImage: "",
+      image: out.toDataURL("image/png"),
+    };
+  });
+  return {
+    sourceImage: canvas.toDataURL("image/png"),
+    removedImage: removedCanvas.toDataURL("image/png"),
+    width,
+    height,
+    items,
+  };
+}
+
+async function resolveSplitSourceDataUrl(rawImage, options = {}) {
+  const apiBaseUrl = options.apiBaseUrl || (typeof window !== "undefined" ? window.__apiBaseUrl : "");
+  const proxyUrl = options.proxyUrl || (typeof window !== "undefined" ? window.__proxyUrl : "");
+  let normalized = normalizeImageValue(rawImage, apiBaseUrl);
+  if (!normalized) return null;
+  if (/^https?:\/\//i.test(normalized)) {
+    const proxied = await proxyFetchImageAsDataUrl(proxyUrl, normalized);
+    normalized = normalizeImageValue(proxied, apiBaseUrl) || normalized;
+  }
+  if (/^https?:\/\//i.test(normalized)) {
+    const resp = await fetch(normalized);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const blob = await resp.blob();
+    normalized = await blobToDataUrl(blob);
+  }
+  return normalizeImageValue(normalized, apiBaseUrl);
+}
+
+async function buildSplitItemDisplayList(items = [], options = {}) {
+  const source = Array.isArray(items) ? items : [];
+  const whiteBackground = options.whiteBackground !== false;
+  const enhance = options.enhance !== false;
+  const result = [];
+  for (let index = 0; index < source.length; index += 1) {
+    const item = source[index];
+    const transparentImage = item.transparentImage || item.image || "";
+    if (!transparentImage) continue;
+    let enhancedImage = item.enhancedImage || transparentImage;
+    let width = item.width || 0;
+    let height = item.height || 0;
+    if (enhance && (!item.enhancedImage || !item.width || !item.height)) {
+      const enhanced = await enhanceSplitImageDataUrl(transparentImage, { minLongSide: 1024 });
+      enhancedImage = enhanced.dataUrl;
+      width = enhanced.width;
+      height = enhanced.height;
+    }
+    let whiteEnhancedImage = item.whiteEnhancedImage || "";
+    if (whiteBackground) {
+      if (!whiteEnhancedImage) {
+        whiteEnhancedImage = await renderDataUrlOnBackground(enhancedImage, "#ffffff");
+      }
+    }
+    result.push({
+      ...item,
+      index: index + 1,
+      width: width || item.width || 0,
+      height: height || item.height || 0,
+      transparentImage,
+      enhancedImage,
+      whiteEnhancedImage,
+      image: whiteBackground ? (whiteEnhancedImage || enhancedImage) : enhancedImage,
+    });
+  }
+  return result;
+}
+
+async function buildRemovedDisplayImage(baseImage, options = {}) {
+  const source = typeof baseImage === "string" ? baseImage : "";
+  if (!source) return { image: "", enhancedImage: "" };
+  const enhance = options.enhance !== false;
+  const cachedEnhanced = typeof options.cachedEnhanced === "string" ? options.cachedEnhanced : "";
+  if (!enhance) {
+    return {
+      image: source,
+      enhancedImage: cachedEnhanced,
+    };
+  }
+  if (cachedEnhanced) {
+    return {
+      image: cachedEnhanced,
+      enhancedImage: cachedEnhanced,
+    };
+  }
+  const enhanced = await enhanceSplitImageDataUrl(source, { minLongSide: 1024 });
+  return {
+    image: enhanced.dataUrl,
+    enhancedImage: enhanced.dataUrl,
+  };
 }
 
 function normalizePromptVariant(variant, index = 0) {
@@ -3223,6 +4066,249 @@ function AtlasThumbnailModal({ show, onClose, items, onReorder, onGenerate, thum
   );
 }
 
+function SpriteSplitModal({
+  show,
+  onClose,
+  sourceImage,
+  removedImage,
+  splitItems,
+  splitOnRemoved = true,
+  enhanceEnabled = true,
+  whiteBackground = false,
+  canUndo = false,
+  busy,
+  enhancing,
+  exporting,
+  statusText,
+  statusTone = "info",
+  onToggleSplitSource,
+  onResplit,
+  onToggleWhiteBackground,
+  onEnhance,
+  onDeleteItem,
+  onUndoDelete,
+  onExport,
+  onPreview,
+  onUploadImageDataUrl,
+}) {
+  const { uiLanguage, t } = useI18n();
+  const uploadInputRef = useRef(null);
+
+  useEffect(() => {
+    if (!show) return undefined;
+    const onKeyDown = (event) => {
+      const key = String(event.key || "").toLowerCase();
+      if ((event.metaKey || event.ctrlKey) && key === "z") {
+        event.preventDefault();
+        onUndoDelete?.();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [show, onUndoDelete]);
+
+  if (!show) return null;
+  const items = Array.isArray(splitItems) ? splitItems : [];
+  const hasItems = items.length > 0;
+  return (
+    <div style={S.modalOverlay} onClick={onClose}>
+      <div style={S.splitModal} onClick={(event) => event.stopPropagation()}>
+        <div style={S.splitModalHeader}>
+          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>{t("split.title")}</h2>
+          <button onClick={onClose} style={S.closeBtn}>✕</button>
+        </div>
+        <div style={S.splitMainGrid}>
+          <section style={S.splitLeftCol}>
+            <div style={S.splitPane}>
+              <div style={S.splitPaneTitle}>{t("split.original")}</div>
+              <div style={S.splitOriginalWrap}>
+                {sourceImage ? (
+                  <div style={S.splitImageWrap}>
+                    <img
+                      src={sourceImage}
+                      alt={t("split.original")}
+                      style={S.splitOriginalImg}
+                      onClick={() => onPreview?.(sourceImage)}
+                    />
+                    <button
+                      type="button"
+                      style={S.splitImageZoomBtn}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onPreview?.(sourceImage);
+                      }}
+                      title={t("viewer.inlineViewer")}
+                    >
+                      🔍
+                    </button>
+                  </div>
+                ) : (
+                  <div style={S.turnStyleImageEmpty}>{busy ? t("split.detecting") : "-"}</div>
+                )}
+              </div>
+            </div>
+            <div style={S.splitMidActions}>
+              <button
+                type="button"
+                style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: sourceImage ? 1 : 0.5, cursor: sourceImage ? "pointer" : "not-allowed" }}
+                onClick={onToggleSplitSource}
+                disabled={!sourceImage || busy || exporting || enhancing}
+              >
+                {splitOnRemoved ? t("split.sourceRemoved") : t("split.sourceOriginal")}
+              </button>
+              <button
+                type="button"
+                style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12 }}
+                onClick={onToggleWhiteBackground}
+                disabled={busy || exporting || enhancing}
+              >
+                {whiteBackground ? t("split.whiteBgOn") : t("split.whiteBgOff")}
+              </button>
+              <button
+                type="button"
+                style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: hasItems ? 1 : 0.5, cursor: hasItems ? "pointer" : "not-allowed" }}
+                onClick={onEnhance}
+                disabled={!hasItems || busy || exporting || enhancing}
+              >
+                {enhancing ? t("split.enhancing") : enhanceEnabled ? t("split.qualityEnhanced") : t("split.qualityOriginal")}
+              </button>
+              <button
+                type="button"
+                style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: canUndo ? 1 : 0.5, cursor: canUndo ? "pointer" : "not-allowed" }}
+                onClick={onUndoDelete}
+                disabled={!canUndo || busy || exporting || enhancing}
+              >
+                {t("split.undo")}
+              </button>
+              <button
+                type="button"
+                style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: busy || exporting || enhancing ? 0.5 : 1, cursor: busy || exporting || enhancing ? "not-allowed" : "pointer" }}
+                onClick={() => uploadInputRef.current?.click()}
+                disabled={busy || exporting || enhancing}
+              >
+                {t("split.upload")}
+              </button>
+              <button
+                type="button"
+                style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: sourceImage ? 1 : 0.5, cursor: sourceImage ? "pointer" : "not-allowed" }}
+                onClick={onResplit}
+                disabled={!sourceImage || busy || exporting || enhancing}
+              >
+                {busy ? t("common.processing") : t("split.run")}
+              </button>
+            </div>
+            {splitOnRemoved && (
+              <div style={S.splitPane}>
+                <div style={S.splitPaneTitle}>{t("split.removed")}</div>
+                <div style={S.splitOriginalWrap}>
+                  {removedImage ? (
+                    <div style={S.splitImageWrap}>
+                      <img
+                        src={removedImage}
+                        alt={t("split.removed")}
+                        style={S.splitOriginalImg}
+                        onClick={() => onPreview?.(removedImage)}
+                      />
+                      <button
+                        type="button"
+                        style={S.splitImageZoomBtn}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onPreview?.(removedImage);
+                        }}
+                        title={t("viewer.inlineViewer")}
+                      >
+                        🔍
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={S.turnStyleImageEmpty}>{busy ? t("split.detecting") : "-"}</div>
+                  )}
+                </div>
+              </div>
+            )}
+          </section>
+          <section style={S.splitRightCol}>
+            <div style={S.splitRightTop}>
+              <div style={S.splitPaneTitle}>
+                {t("split.results")}
+                <span style={S.splitPaneCount}>{busy ? t("split.detecting") : t("split.count", { count: items.length })}</span>
+              </div>
+              <button
+                type="button"
+                style={{ ...S.apiSaveBtn, opacity: hasItems && !busy ? 1 : 0.5, cursor: hasItems && !busy ? "pointer" : "not-allowed" }}
+                onClick={onExport}
+                disabled={!hasItems || busy || exporting || enhancing}
+              >
+                {exporting ? t("split.exporting") : t("split.export")}
+              </button>
+            </div>
+            <div style={S.splitRightBody}>
+              {busy ? (
+                <div style={S.turnStyleImageEmpty}>{t("split.detecting")}</div>
+              ) : hasItems ? (
+                <div style={S.splitGrid}>
+                  {items.map((item, index) => (
+                    <div key={item.id || `split-item-${index}`} style={S.splitItemCell}>
+                      <button
+                        type="button"
+                        style={{
+                          ...S.splitItemBtn,
+                          ...(whiteBackground ? S.splitItemBtnWhiteBg : null),
+                        }}
+                        onClick={() => onPreview?.(item.image)}
+                        title={t("split.previewSplit", { index: index + 1 })}
+                      >
+                        <div style={S.splitItemOrder}>{index + 1}</div>
+                        <img
+                          src={item.image}
+                          alt={`Split ${index + 1}`}
+                          style={{ ...S.splitItemImg, ...(whiteBackground ? { background: "#ffffff" } : null) }}
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        style={S.splitItemDeleteBtn}
+                        onClick={() => onDeleteItem?.(item.id)}
+                        title={t("split.delete")}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={S.turnStyleImageEmpty}>{t("split.noSubjects")}</div>
+              )}
+            </div>
+          </section>
+        </div>
+        <div style={{ ...S.splitStatusText, ...(statusTone === "error" ? S.splitStatusTextError : null) }}>
+          {statusText || t("split.undoHint")}
+        </div>
+        <input
+          ref={uploadInputRef}
+          type="file"
+          accept="image/*"
+          style={{ display: "none" }}
+          onChange={async (event) => {
+            const file = (event.target.files || [])[0];
+            if (!file) {
+              event.target.value = "";
+              return;
+            }
+            const encoded = await fileToBase64(file);
+            if (typeof encoded === "string" && encoded.startsWith("data:image/")) {
+              await onUploadImageDataUrl?.(encoded, file);
+            }
+            event.target.value = "";
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function HelpRichText({ text, style }) {
   const source = typeof text === "string" ? text : "";
   const parts = source.split(/(`[^`]+`)/g).filter(Boolean);
@@ -3283,6 +4369,16 @@ function HelpPage() {
             "每张图片下面都有三个操作：`下载` 下载当前图。",
             "`重试` 会替换当前这张图。",
             "`+1` 会保留原图并在同一任务里再追加一张新图。",
+          ],
+        },
+        {
+          title: "自动切分弹窗",
+          lines: [
+            "历史记录里每张图右下角的圆形切分按钮会打开自动切分弹窗。",
+            "弹窗左侧依次是原图、按键行、去背景图；右侧上方是导出按钮，下方是切分结果。",
+            "按键行支持 `去背景/带背景切换`（默认去背景）、`白底图/透明图切换`（默认白底）、`原清晰度/清晰度增强`（默认增强）、`撤回`、`上传图片`（上传后立刻自动切分）和 `重新切分`。",
+            "当切到 `带背景` 直接切分时，左侧去背景图会隐藏不显示。",
+            "原图和去背景图右上角都有放大镜图标，点击后会按历史输入图同样的缩放与拖拽逻辑打开预览。",
           ],
         },
         {
@@ -3356,6 +4452,16 @@ function HelpPage() {
             "Each image has three actions: `Save` downloads it.",
             "`Retry` replaces that image with a new render.",
             "`+1` keeps the current images and adds one more render to the same task.",
+          ],
+        },
+        {
+          title: "Auto Split Modal",
+          lines: [
+            "In history, the round split button at the bottom-right of each image opens the auto split modal.",
+            "The left column shows original image, action row, and removed-background image; the right column shows export on top and split results below.",
+            "The action row supports `Removed/Original source` (default removed), `White/Transparent preview` (default white), `Original/Enhanced quality` (default enhanced), `Undo`, `Upload Image` (uploads and runs split immediately), and `Re-split`.",
+            "When source is switched to `Original`, the removed-background preview panel is hidden.",
+            "Both original and removed images have a top-right magnifier button that opens the same zoom-and-pan preview behavior used by history input images.",
           ],
         },
         {
@@ -3468,12 +4574,121 @@ function ModelChip({ model, selected, onToggle, disabled, count, onCountChange, 
 
 function ImagePreviewModal({ src, onClose }) {
   const { t } = useI18n();
+  const viewportRef = useRef(null);
+  const dragRef = useRef(null);
+  const [scale, setScale] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const [wheelActive, setWheelActive] = useState(false);
+
+  const clampScale = useCallback((value) => Math.max(1, Math.min(8, Number(value) || 1)), []);
+
+  useEffect(() => {
+    setScale(1);
+    setOffset({ x: 0, y: 0 });
+    setDragging(false);
+    setWheelActive(false);
+    dragRef.current = null;
+  }, [src]);
+
+  const handleWheel = useCallback((event) => {
+    if (!wheelActive) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const delta = event.deltaY < 0 ? 0.18 : -0.18;
+    setScale((prev) => {
+      const next = clampScale(prev + delta);
+      if (next <= 1.02) setOffset({ x: 0, y: 0 });
+      return next;
+    });
+  }, [clampScale, wheelActive]);
+
+  useEffect(() => {
+    const node = viewportRef.current;
+    if (!node) return undefined;
+    const onWheel = (event) => handleWheel(event);
+    node.addEventListener("wheel", onWheel, { passive: false });
+    return () => node.removeEventListener("wheel", onWheel);
+  }, [handleWheel]);
+
+  useEffect(() => {
+    if (!dragging) return undefined;
+    const handleMove = (event) => {
+      if (!dragRef.current) return;
+      const dx = event.clientX - dragRef.current.startX;
+      const dy = event.clientY - dragRef.current.startY;
+      setOffset({
+        x: dragRef.current.originX + dx,
+        y: dragRef.current.originY + dy,
+      });
+    };
+    const handleUp = () => {
+      setDragging(false);
+      dragRef.current = null;
+    };
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+  }, [dragging]);
+
+  const handleMouseDown = useCallback((event) => {
+    if (event.button !== 0) return;
+    setWheelActive(true);
+    if (scale <= 1.02) return;
+    event.preventDefault();
+    dragRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: offset.x,
+      originY: offset.y,
+    };
+    setDragging(true);
+  }, [offset.x, offset.y, scale]);
+
   if (!src) return null;
   return (
     <div style={S.modalOverlay} onClick={onClose}>
-      <div style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
+      <div style={{ position: "relative", width: "94vw", height: "90vh", maxWidth: 1360 }} onClick={(e) => e.stopPropagation()}>
         <button onClick={onClose} style={{ ...S.closeBtn, position: "absolute", top: 12, right: 12, zIndex: 10 }}>✕</button>
-        <img src={src} alt={t("viewer.fullImage")} style={{ maxWidth: "90vw", maxHeight: "85vh", borderRadius: 8 }} />
+        <div
+          ref={viewportRef}
+          style={{
+            width: "100%",
+            height: "100%",
+            borderRadius: 10,
+            border: "1px solid rgba(255,255,255,0.12)",
+            background: "#0b0b0d",
+            overflow: "hidden",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            userSelect: "none",
+          }}
+          onMouseDown={handleMouseDown}
+          onClick={() => setWheelActive(true)}
+          onDoubleClick={() => {
+            setScale(1);
+            setOffset({ x: 0, y: 0 });
+          }}
+        >
+          <img
+            src={src}
+            alt={t("viewer.fullImage")}
+            draggable={false}
+            style={{
+              maxWidth: "100%",
+              maxHeight: "100%",
+              objectFit: "contain",
+              transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+              transformOrigin: "center center",
+              transition: dragging ? "none" : "transform 0.08s ease-out",
+              cursor: scale > 1 ? (dragging ? "grabbing" : "grab") : "zoom-in",
+            }}
+          />
+        </div>
       </div>
     </div>
   );
@@ -3600,7 +4815,9 @@ function ResultColumn({
   onToggleImageSelect,
   onRetryImage,
   onAppendImage,
+  onSplitImage,
   retryingImageKeys,
+  splittingImageKeys,
   enableSelect = false,
   showImageLabel = false,
   selectPosition = "top-right",
@@ -3667,6 +4884,7 @@ function ResultColumn({
                 selected={isSelected}
                 replacing={retryingImageKeys?.has?.(imageKey)}
                 busy={retryingImageKeys?.has?.(imageKey) || retryingImageKeys?.has?.(resultTaskKey)}
+                splitBusy={splittingImageKeys?.has?.(imageKey)}
                 onRetry={() =>
                   onRetryImage?.({
                     key: imageKey,
@@ -3688,6 +4906,20 @@ function ResultColumn({
                   enableSelect && onToggleImageSelect?.({
                     key: imageKey,
                     image: img,
+                    turnId,
+                    turnSeq,
+                    modelId: result.modelId,
+                    modelName: result.modelName || model?.name || result.modelId,
+                    promptKey,
+                    theme: result.promptLabel || "",
+                    fileStem: buildResultFileStem(result),
+                    index: imageIndex,
+                  })
+                }
+                onSplit={(resolvedImage) =>
+                  onSplitImage?.({
+                    key: imageKey,
+                    image: resolvedImage || img,
                     turnId,
                     turnSeq,
                     modelId: result.modelId,
@@ -3753,6 +4985,8 @@ function ImageCard({
   onAppend,
   replacing = false,
   busy = false,
+  onSplit,
+  splitBusy = false,
   showSelect = true,
   selectPosition = "top-right",
   compact = false,
@@ -3795,6 +5029,25 @@ function ImageCard({
         </button>
       )}
       {!!label && <div style={{ ...S.imageThemeTag, ...(compact ? S.imageThemeTagCompact : null) }}>{label}</div>}
+      {typeof onSplit === "function" && (
+        <button
+          type="button"
+          style={{
+            ...S.imageSplitBtn,
+            ...(compact ? S.imageSplitBtnCompact : null),
+            ...(splitBusy ? S.imageSplitBtnBusy : null),
+          }}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSplit(src);
+          }}
+          disabled={splitBusy}
+          title={t("split.open")}
+        >
+          {splitBusy ? "…" : "✂"}
+        </button>
+      )}
       {!replacing ? (
         <img src={src} alt={`Gen ${index}`} style={compact ? S.thumbCompact : S.thumb} onClick={() => onPreview(src)} onError={onImgError} />
       ) : (
@@ -3828,7 +5081,9 @@ function TurnPanel({
   onToggleImageSelect,
   onRetryImage,
   onAppendImage,
+  onSplitImage,
   retryingImageKeys,
+  splittingImageKeys,
   compactStyleHistory = false,
   truncatePromptText = false,
   showModelSummary = true,
@@ -4147,6 +5402,7 @@ function TurnPanel({
                           selected={selectedImageKeys?.has?.(imageKey)}
                           replacing={retryingImageKeys?.has?.(imageKey)}
                           busy={retryingImageKeys?.has?.(imageKey) || retryingImageKeys?.has?.(buildTurnTaskKey(turn.id, item.modelId, item.promptKey))}
+                          splitBusy={splittingImageKeys?.has?.(imageKey)}
                           onRetry={() =>
                             onRetryImage?.({
                               key: imageKey,
@@ -4168,6 +5424,20 @@ function TurnPanel({
                             onToggleImageSelect?.({
                               key: imageKey,
                               image: item.image,
+                              turnId: turn.id,
+                              turnSeq: turn.seq,
+                              modelId: item.modelId,
+                              modelName: item.modelName,
+                              promptKey: item.promptKey,
+                              theme: item.promptLabel || "",
+                              fileStem: item.fileStem,
+                              index: item.index,
+                            })
+                          }
+                          onSplit={(resolvedImage) =>
+                            onSplitImage?.({
+                              key: imageKey,
+                              image: resolvedImage || item.image,
                               turnId: turn.id,
                               turnSeq: turn.seq,
                               modelId: item.modelId,
@@ -4233,7 +5503,9 @@ function TurnPanel({
                         onToggleImageSelect={onToggleImageSelect}
                         onRetryImage={onRetryImage}
                         onAppendImage={onAppendImage}
+                        onSplitImage={onSplitImage}
                         retryingImageKeys={retryingImageKeys}
+                        splittingImageKeys={splittingImageKeys}
                         enableSelect
                         showImageLabel={false}
                       />
@@ -4315,6 +5587,37 @@ export default function App() {
   const [showSelectionLimitModal, setShowSelectionLimitModal] = useState(false);
   const [showAtlasThumbnailModal, setShowAtlasThumbnailModal] = useState(false);
   const [retryingImageKeys, setRetryingImageKeys] = useState(new Set());
+  const [splittingImageKeys, setSplittingImageKeys] = useState(new Set());
+  const [showSplitModal, setShowSplitModal] = useState(false);
+  const [splitBusy, setSplitBusy] = useState(false);
+  const [splitExporting, setSplitExporting] = useState(false);
+  const [splitEnhancing, setSplitEnhancing] = useState(false);
+  const [splitEnhanceEnabled, setSplitEnhanceEnabled] = useState(true);
+  const [splitWhiteBackground, setSplitWhiteBackground] = useState(true);
+  const [splitUseRemovedSource, setSplitUseRemovedSource] = useState(true);
+  const [splitUndoStack, setSplitUndoStack] = useState([]);
+  const [splitStatusText, setSplitStatusText] = useState("");
+  const [splitStatusTone, setSplitStatusTone] = useState("info");
+  const [splitContext, setSplitContext] = useState({
+    key: "",
+    image: "",
+    originalImage: "",
+    sourceImage: "",
+    removedBaseImage: "",
+    removedEnhancedImage: "",
+    removedImage: "",
+    items: [],
+    fileStem: "image",
+    turnId: "",
+    turnSeq: 0,
+    modelId: "",
+    modelName: "",
+    promptKey: "single",
+    theme: "",
+    index: 1,
+    width: 0,
+    height: 0,
+  });
   const fileRef = useRef(null);
   const activePromptFieldRef = useRef("single");
   const promptInputRef = useRef(null);
@@ -5027,6 +6330,393 @@ export default function App() {
 
   const retryImage = useCallback((payload) => runResultImageAction(payload, "replace"), [runResultImageAction]);
   const appendResultImage = useCallback((payload) => runResultImageAction(payload, "append"), [runResultImageAction]);
+
+  const runSplitForImage = useCallback(async (payload, options = {}) => {
+    const openModal = options.openModal !== false;
+    const defaultWhite = options.whiteBackground !== false;
+    const defaultEnhance = options.enhance !== false;
+    const defaultUseRemoved = options.useRemovedSource !== false;
+    const resetUndo = options.resetUndo !== false;
+    const imageKey = payload?.key || `split-${Date.now()}`;
+    const rawImage = payload?.image;
+    if (!rawImage) return;
+    if (openModal) setShowSplitModal(true);
+    setSplitUseRemovedSource(defaultUseRemoved);
+    setSplitWhiteBackground(defaultWhite);
+    setSplitEnhanceEnabled(defaultEnhance);
+    setSplitBusy(true);
+    setSplitExporting(false);
+    setSplitEnhancing(defaultEnhance);
+    if (resetUndo) setSplitUndoStack([]);
+    setSplitStatusTone("info");
+    setSplitStatusText(t("split.detecting"));
+    setSplitContext((prev) => ({
+      ...prev,
+      ...payload,
+      key: imageKey,
+      image: rawImage,
+      originalImage: "",
+      removedImage: "",
+      removedBaseImage: "",
+      removedEnhancedImage: "",
+      items: [],
+      sourceImage: "",
+      width: 0,
+      height: 0,
+    }));
+    setSplittingImageKeys((prev) => {
+      const next = new Set(prev);
+      next.add(imageKey);
+      return next;
+    });
+    try {
+      const normalized = await resolveSplitSourceDataUrl(rawImage, { apiBaseUrl, proxyUrl });
+      if (!normalized || /^https?:\/\//i.test(normalized)) {
+        throw new Error(t("errors.failedToFetch"));
+      }
+      const stage1 = await splitImageBySubjects(normalized);
+      const splitTarget = defaultUseRemoved ? (stage1.removedImage || normalized) : normalized;
+      const splitResult = defaultUseRemoved ? await splitImageBySubjects(splitTarget) : stage1;
+      const preparedItems = await buildSplitItemDisplayList(
+        splitResult.items.map((item, index) => ({ ...item, index: index + 1 })),
+        {
+        whiteBackground: defaultWhite,
+        enhance: defaultEnhance,
+      });
+      const removedDisplay = await buildRemovedDisplayImage(stage1.removedImage, {
+        enhance: defaultEnhance,
+        cachedEnhanced: "",
+      });
+      setSplitContext((prev) => ({
+        ...prev,
+        ...payload,
+        key: imageKey,
+        image: splitTarget,
+        originalImage: normalized,
+        sourceImage: splitResult.sourceImage,
+        removedBaseImage: stage1.removedImage,
+        removedEnhancedImage: removedDisplay.enhancedImage,
+        removedImage: removedDisplay.image,
+        items: preparedItems,
+        width: splitResult.width,
+        height: splitResult.height,
+      }));
+      if (preparedItems.length) {
+        setSplitStatusTone("info");
+        setSplitStatusText(
+          defaultEnhance
+            ? t("split.enhanced", { count: preparedItems.length })
+            : t("split.count", { count: preparedItems.length })
+        );
+      } else {
+        setSplitStatusTone("info");
+        setSplitStatusText(t("split.noSubjects"));
+      }
+    } catch (err) {
+      setSplitStatusTone("error");
+      setSplitStatusText(
+        t("split.loadFailed", {
+          error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t),
+        })
+      );
+      setSplitContext((prev) => ({
+        ...prev,
+        ...payload,
+        key: imageKey,
+        image: rawImage,
+        originalImage: "",
+        sourceImage: "",
+        removedImage: "",
+        removedBaseImage: "",
+        removedEnhancedImage: "",
+        items: [],
+      }));
+    } finally {
+      setSplitBusy(false);
+      setSplitEnhancing(false);
+      setSplittingImageKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(imageKey);
+        return next;
+      });
+    }
+  }, [apiBaseUrl, proxyUrl, t]);
+
+  const openSplitModalForImage = useCallback((payload) => {
+    runSplitForImage(payload, {
+      openModal: true,
+      whiteBackground: true,
+      enhance: true,
+      useRemovedSource: true,
+      resetUndo: true,
+    });
+  }, [runSplitForImage]);
+
+  const reSplitCurrentImage = useCallback(() => {
+    const source = splitContext.originalImage || splitContext.sourceImage || splitContext.image;
+    if (!source) return;
+    runSplitForImage(
+      {
+        ...splitContext,
+        image: source,
+        key: splitContext.key || `split-${Date.now()}`,
+      },
+      {
+        openModal: false,
+        whiteBackground: splitWhiteBackground,
+        enhance: splitEnhanceEnabled,
+        useRemovedSource: splitUseRemovedSource,
+        resetUndo: true,
+      }
+    );
+  }, [splitContext, runSplitForImage, splitWhiteBackground, splitEnhanceEnabled, splitUseRemovedSource]);
+
+  const toggleSplitSourceMode = useCallback(() => {
+    const source = splitContext.originalImage || splitContext.image;
+    if (!source) return;
+    const nextUseRemoved = !splitUseRemovedSource;
+    runSplitForImage(
+      {
+        ...splitContext,
+        image: source,
+        key: splitContext.key || `split-${Date.now()}`,
+      },
+      {
+        openModal: false,
+        whiteBackground: splitWhiteBackground,
+        enhance: splitEnhanceEnabled,
+        useRemovedSource: nextUseRemoved,
+        resetUndo: true,
+      }
+    );
+  }, [splitContext, splitUseRemovedSource, runSplitForImage, splitWhiteBackground, splitEnhanceEnabled]);
+
+  const uploadSplitImageFromModal = useCallback(async (imageDataUrl, file) => {
+    if (typeof imageDataUrl !== "string" || !imageDataUrl.startsWith("data:image/")) return;
+    const fallbackStem = typeof file?.name === "string" && file.name.trim()
+      ? safeName(file.name.replace(/\.[^.]+$/, ""))
+      : `upload_${Date.now()}`;
+    await runSplitForImage(
+      {
+        key: `split-upload-${Date.now()}`,
+        image: imageDataUrl,
+        fileStem: fallbackStem,
+        turnId: "",
+        turnSeq: 0,
+        modelId: "",
+        modelName: "",
+        promptKey: "single",
+        theme: "",
+        index: 1,
+      },
+      {
+        openModal: true,
+        whiteBackground: splitWhiteBackground,
+        enhance: splitEnhanceEnabled,
+        useRemovedSource: splitUseRemovedSource,
+        resetUndo: true,
+      }
+    );
+  }, [runSplitForImage, splitWhiteBackground, splitEnhanceEnabled, splitUseRemovedSource]);
+
+  const toggleSplitWhiteBackground = useCallback(async () => {
+    const nextWhite = !splitWhiteBackground;
+    setSplitWhiteBackground(nextWhite);
+    const items = Array.isArray(splitContext.items) ? splitContext.items : [];
+    if (!items.length) return;
+    setSplitBusy(true);
+    try {
+      const nextItems = await buildSplitItemDisplayList(items, {
+        whiteBackground: nextWhite,
+        enhance: splitEnhanceEnabled,
+      });
+      setSplitContext((prev) => ({
+        ...prev,
+        items: nextItems,
+      }));
+    } catch (err) {
+      setSplitStatusTone("error");
+      setSplitStatusText(
+        t("split.loadFailed", {
+          error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t),
+        })
+      );
+    } finally {
+      setSplitBusy(false);
+    }
+  }, [splitWhiteBackground, splitContext.items, splitEnhanceEnabled, t]);
+
+  const deleteSplitItem = useCallback((itemId) => {
+    if (!itemId) return;
+    setSplitContext((prev) => {
+      const items = Array.isArray(prev.items) ? prev.items : [];
+      const index = items.findIndex((item) => item.id === itemId);
+      if (index < 0) return prev;
+      const removed = items[index];
+      setSplitUndoStack((stack) => {
+        const next = [...stack, { item: removed, index }];
+        return next.slice(-120);
+      });
+      const nextItems = items.filter((item) => item.id !== itemId);
+      return {
+        ...prev,
+        items: nextItems.map((item, itemIndex) => ({ ...item, index: itemIndex + 1 })),
+      };
+    });
+    setSplitStatusTone("info");
+    setSplitStatusText(t("split.deletedOne"));
+  }, [t]);
+
+  const undoDeleteSplitItem = useCallback(() => {
+    setSplitUndoStack((prev) => {
+      if (!prev.length) return prev;
+      const next = [...prev];
+      const last = next.pop();
+      if (!last?.item) return next;
+      setSplitContext((ctx) => {
+        const current = Array.isArray(ctx.items) ? [...ctx.items] : [];
+        const insertAt = Math.max(0, Math.min(Number(last.index) || current.length, current.length));
+        current.splice(insertAt, 0, last.item);
+        return {
+          ...ctx,
+          items: current.map((item, index) => ({ ...item, index: index + 1 })),
+        };
+      });
+      setSplitStatusTone("info");
+      setSplitStatusText(t("split.undoDone"));
+      return next;
+    });
+  }, [t]);
+
+  const enhanceSplitItems = useCallback(async () => {
+    const items = Array.isArray(splitContext.items) ? splitContext.items : [];
+    const hasRemoved = !!splitContext.removedBaseImage;
+    if (!items.length && !hasRemoved) return;
+    const nextEnhance = !splitEnhanceEnabled;
+    setSplitEnhanceEnabled(nextEnhance);
+    setSplitEnhancing(nextEnhance);
+    setSplitStatusTone("info");
+    setSplitStatusText(nextEnhance ? t("split.enhancing") : t("split.qualityOriginal"));
+    try {
+      const sourceItems = nextEnhance
+        ? items.map((item) => ({ ...item, enhancedImage: "", whiteEnhancedImage: "" }))
+        : items;
+      const nextItems = await buildSplitItemDisplayList(sourceItems, {
+        whiteBackground: splitWhiteBackground,
+        enhance: nextEnhance,
+      });
+      const removedDisplay = await buildRemovedDisplayImage(splitContext.removedBaseImage, {
+        enhance: nextEnhance,
+        cachedEnhanced: nextEnhance ? "" : splitContext.removedEnhancedImage,
+      });
+      setSplitContext((prev) => ({
+        ...prev,
+        items: nextItems,
+        removedImage: removedDisplay.image,
+        removedEnhancedImage: removedDisplay.enhancedImage,
+      }));
+      setSplitStatusTone("info");
+      if (nextEnhance) {
+        setSplitStatusText(t("split.enhanced", { count: nextItems.length }));
+      } else {
+        setSplitStatusText(t("split.qualityOriginal"));
+      }
+    } catch (err) {
+      setSplitStatusTone("error");
+      setSplitStatusText(
+        t("split.loadFailed", {
+          error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t),
+        })
+      );
+      setSplitEnhanceEnabled((prev) => !prev);
+    } finally {
+      setSplitEnhancing(false);
+    }
+  }, [splitContext.items, splitContext.removedBaseImage, splitContext.removedEnhancedImage, splitWhiteBackground, splitEnhanceEnabled, t]);
+
+  const exportSplitItems = useCallback(async () => {
+    const items = Array.isArray(splitContext.items) ? splitContext.items : [];
+    if (!items.length) {
+      setSplitStatusTone("error");
+      setSplitStatusText(t("split.exportNoItems"));
+      return;
+    }
+    if (!supportsFileSystemAccess()) {
+      setSplitStatusTone("error");
+      setSplitStatusText(t("split.unsupported"));
+      return;
+    }
+    setSplitExporting(true);
+    setSplitStatusTone("info");
+    setSplitStatusText("");
+    try {
+      const dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+      const stem = safeName(splitContext.fileStem || "image");
+      const folderName = `split-${stem}-${Date.now()}`;
+      const splitDir = await dirHandle.getDirectoryHandle(folderName, { create: true });
+      const sourceData = dataUrlToBytes(splitContext.originalImage || splitContext.sourceImage);
+      if (sourceData) {
+        await writeBinaryFile(splitDir, `original.${sourceData.ext}`, sourceData.bytes);
+      }
+      const removedData = dataUrlToBytes(splitContext.removedImage);
+      if (removedData) {
+        await writeBinaryFile(splitDir, `removed_background.${removedData.ext}`, removedData.bytes);
+      }
+      const manifestItems = [];
+      for (let index = 0; index < Math.min(items.length, MAX_SPLIT_EXPORT_ITEMS); index += 1) {
+        const item = items[index];
+        const exportDataUrl = item.image;
+        const data = dataUrlToBytes(exportDataUrl);
+        if (!data) continue;
+        const fileName = `${String(index + 1).padStart(3, "0")}_subject.${data.ext}`;
+        await writeBinaryFile(splitDir, fileName, data.bytes);
+        manifestItems.push({
+          index: index + 1,
+          file: fileName,
+          x: item.x,
+          y: item.y,
+          width: item.width,
+          height: item.height,
+          area: item.area || 0,
+        });
+      }
+      await writeTextFile(
+        splitDir,
+        "manifest.json",
+        JSON.stringify(
+          {
+            createdAt: Date.now(),
+            source: {
+              width: splitContext.width || 0,
+              height: splitContext.height || 0,
+              file: sourceData ? `original.${sourceData.ext}` : "",
+            },
+            splitSource: splitUseRemovedSource ? "removed-background" : "original",
+            whiteBackground: splitWhiteBackground,
+            enhanced: splitEnhanceEnabled,
+            itemCount: manifestItems.length,
+            items: manifestItems,
+          },
+          null,
+          2
+        )
+      );
+      const successText = t("split.exported", { folder: folderName, count: manifestItems.length });
+      setSplitStatusTone("info");
+      setSplitStatusText(successText);
+      setHistoryFolderMsg(successText);
+    } catch (err) {
+      if (String(err?.name || "") === "AbortError") return;
+      setSplitStatusTone("error");
+      setSplitStatusText(
+        t("split.pickFolderFailed", {
+          error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t),
+        })
+      );
+    } finally {
+      setSplitExporting(false);
+    }
+  }, [splitContext, splitUseRemovedSource, splitWhiteBackground, splitEnhanceEnabled, t]);
 
   const clearAllSelections = useCallback(() => {
     if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
@@ -6253,7 +7943,9 @@ export default function App() {
               onToggleImageSelect={toggleImageSelection}
               onRetryImage={retryImage}
               onAppendImage={appendResultImage}
+              onSplitImage={openSplitModalForImage}
               retryingImageKeys={retryingImageKeys}
+              splittingImageKeys={splittingImageKeys}
               compactStyleHistory={false}
               truncatePromptText={false}
               showModelSummary={true}
@@ -6283,7 +7975,9 @@ export default function App() {
                     onToggleImageSelect={toggleImageSelection}
                     onRetryImage={retryImage}
                     onAppendImage={appendResultImage}
+                    onSplitImage={openSplitModalForImage}
                     retryingImageKeys={retryingImageKeys}
+                    splittingImageKeys={splittingImageKeys}
                     compactStyleHistory={false}
                     truncatePromptText={true}
                     showModelSummary={false}
@@ -6374,6 +8068,35 @@ export default function App() {
         thumbnail={atlasThumbnail}
         busy={atlasBusy}
         onPreview={setPreviewImage}
+      />
+      <SpriteSplitModal
+        show={showSplitModal}
+        onClose={() => {
+          setShowSplitModal(false);
+          setSplitStatusText("");
+          setSplitStatusTone("info");
+        }}
+        sourceImage={splitContext.originalImage || splitContext.sourceImage}
+        removedImage={splitContext.removedImage}
+        splitItems={splitContext.items}
+        splitOnRemoved={splitUseRemovedSource}
+        enhanceEnabled={splitEnhanceEnabled}
+        whiteBackground={splitWhiteBackground}
+        canUndo={splitUndoStack.length > 0}
+        busy={splitBusy}
+        enhancing={splitEnhancing}
+        exporting={splitExporting}
+        statusText={splitStatusText}
+        statusTone={splitStatusTone}
+        onToggleSplitSource={toggleSplitSourceMode}
+        onResplit={reSplitCurrentImage}
+        onToggleWhiteBackground={toggleSplitWhiteBackground}
+        onEnhance={enhanceSplitItems}
+        onDeleteItem={deleteSplitItem}
+        onUndoDelete={undoDeleteSplitItem}
+        onExport={exportSplitItems}
+        onPreview={setPreviewImage}
+        onUploadImageDataUrl={uploadSplitImageFromModal}
       />
       <ImagePreviewModal src={previewImage} onClose={() => setPreviewImage(null)} />
 
@@ -6537,6 +8260,9 @@ const S = {
   imageSelectBtnCompact: { top: 4, right: 4, width: 16, height: 16, borderRadius: 8, fontSize: 10 },
   imageSelectBtnBottom: { top: "auto", bottom: 4, right: 4 },
   imageSelectBtnActive: { borderColor: "rgba(16,163,127,0.9)", background: "rgba(5,150,105,0.92)", color: "#dcfce7" },
+  imageSplitBtn: { position: "absolute", bottom: 38, right: 8, zIndex: 3, width: 26, height: 26, borderRadius: 13, border: `1px solid ${THEME_PRIMARY_BORDER}`, background: "rgba(8,47,73,0.82)", color: THEME_PRIMARY_TEXT, fontFamily: mono, fontSize: 12, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1, outline: "none", boxShadow: "none", WebkitAppearance: "none", appearance: "none", WebkitTapHighlightColor: "transparent" },
+  imageSplitBtnCompact: { width: 18, height: 18, borderRadius: 9, right: 4, bottom: 32, fontSize: 10 },
+  imageSplitBtnBusy: { opacity: 0.65, cursor: "wait" },
   imageThemeTag: { position: "absolute", left: 8, top: 8, zIndex: 2, maxWidth: "70%", padding: "2px 7px", borderRadius: 999, fontSize: 10, fontFamily: mono, color: THEME_PRIMARY_TEXT, background: "rgba(6,78,59,0.82)", border: `1px solid ${THEME_PRIMARY_BORDER}`, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   imageThemeTagCompact: { left: 4, top: 4, maxWidth: "75%", padding: "1px 5px", fontSize: 9, borderRadius: 999 },
   thumb: { width: "100%", aspectRatio: "4 / 3", objectFit: "contain", cursor: "pointer", display: "block", background: "#0b0b0d" },
@@ -6590,6 +8316,30 @@ const S = {
   atlasModalCardSub: { fontSize: 11, color: "#a1a1aa", fontFamily: mono, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   atlasModalPreview: { marginTop: 16, borderRadius: 12, overflow: "hidden", border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)" },
   atlasModalPreviewImg: { width: "100%", display: "block", objectFit: "contain", background: "#0b0b0d" },
+  splitModal: { width: "min(1220px, 96vw)", maxHeight: "90vh", overflow: "auto", background: "#161618", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 16, padding: 18, display: "grid", gap: 12 },
+  splitModalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 },
+  splitMainGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12, alignItems: "start" },
+  splitLeftCol: { display: "grid", gap: 10, alignContent: "start" },
+  splitRightCol: { borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: 10, display: "grid", gap: 10, minHeight: 520, alignContent: "start" },
+  splitRightTop: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" },
+  splitRightBody: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(0,0,0,0.2)", padding: 8, minHeight: 430, maxHeight: "62vh", overflow: "auto", alignContent: "start" },
+  splitPane: { borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: 10, display: "grid", gap: 8, alignContent: "start", minHeight: 300 },
+  splitMidActions: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(2,6,23,0.38)", padding: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" },
+  splitPaneTitle: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, fontSize: 12, color: "#e4e4e7", fontFamily: mono, textTransform: "uppercase", letterSpacing: 0.4 },
+  splitPaneCount: { fontSize: 11, color: "#94a3b8", textTransform: "none", letterSpacing: 0, marginLeft: "auto" },
+  splitOriginalWrap: { borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.08)", background: "#0b0b0d", minHeight: 260, display: "flex", alignItems: "center", justifyContent: "center" },
+  splitImageWrap: { position: "relative", width: "100%", height: "100%" },
+  splitOriginalImg: { width: "100%", maxHeight: 520, objectFit: "contain", display: "block", cursor: "zoom-in" },
+  splitImageZoomBtn: { position: "absolute", top: 8, right: 8, zIndex: 3, width: 24, height: 24, borderRadius: 12, border: "1px solid rgba(255,255,255,0.16)", background: "rgba(2,6,23,0.82)", color: "#e2e8f0", fontSize: 12, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },
+  splitGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 8, alignContent: "start" },
+  splitItemCell: { position: "relative" },
+  splitItemBtn: { position: "relative", border: "1px solid rgba(255,255,255,0.1)", background: "rgba(2,6,23,0.5)", borderRadius: 10, overflow: "hidden", padding: 0, cursor: "zoom-in", textAlign: "left" },
+  splitItemBtnWhiteBg: { background: "#ffffff" },
+  splitItemOrder: { position: "absolute", top: 6, left: 6, minWidth: 20, height: 20, borderRadius: 10, padding: "0 6px", background: "rgba(2,6,23,0.78)", color: "#f8fafc", fontFamily: mono, fontSize: 10, display: "inline-flex", alignItems: "center", justifyContent: "center", zIndex: 2 },
+  splitItemImg: { width: "100%", aspectRatio: "1 / 1", objectFit: "contain", display: "block", background: "#020617" },
+  splitItemDeleteBtn: { position: "absolute", top: 6, right: 6, zIndex: 3, width: 20, height: 20, borderRadius: 10, border: "1px solid rgba(248,113,113,0.65)", background: "rgba(127,29,29,0.88)", color: "#fee2e2", fontSize: 11, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },
+  splitStatusText: { minHeight: 18, fontSize: 12, color: "#94a3b8", fontFamily: mono, wordBreak: "break-word" },
+  splitStatusTextError: { color: "#fca5a5" },
   turnActionBtn: { height: 28, padding: "0 10px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(255,255,255,0.04)", color: "#d4d4d8", fontSize: 11, fontFamily: mono, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1 },
   turnPromptRow: { marginBottom: 10, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" },
   turnPromptRowExpanded: { display: "grid", gridTemplateColumns: "minmax(0, 1fr) 320px", alignItems: "stretch", justifyContent: "stretch" },
