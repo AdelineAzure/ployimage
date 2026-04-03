@@ -4094,6 +4094,8 @@ function SpriteSplitModal({
   const { uiLanguage, t } = useI18n();
   const uploadInputRef = useRef(null);
   const [inlineZoomItemId, setInlineZoomItemId] = useState(null);
+  const [inlineZoomSource, setInlineZoomSource] = useState(false);
+  const [inlineZoomRemoved, setInlineZoomRemoved] = useState(false);
 
   useEffect(() => {
     if (!show) return undefined;
@@ -4111,6 +4113,8 @@ function SpriteSplitModal({
   useEffect(() => {
     if (!show) {
       setInlineZoomItemId(null);
+      setInlineZoomSource(false);
+      setInlineZoomRemoved(false);
       return;
     }
     const items = Array.isArray(splitItems) ? splitItems : [];
@@ -4125,6 +4129,12 @@ function SpriteSplitModal({
     });
     if (!exists) setInlineZoomItemId(null);
   }, [show, splitItems, inlineZoomItemId]);
+
+  useEffect(() => {
+    if (!show) return;
+    if (!sourceImage) setInlineZoomSource(false);
+    if (!splitOnRemoved || !removedImage) setInlineZoomRemoved(false);
+  }, [show, sourceImage, splitOnRemoved, removedImage]);
 
   if (!show) return null;
   const items = Array.isArray(splitItems) ? splitItems : [];
@@ -4142,28 +4152,55 @@ function SpriteSplitModal({
               <div style={S.splitPaneTitle}>{t("split.original")}</div>
               <div style={S.splitOriginalWrap}>
                 {sourceImage ? (
-                  <div style={S.splitImageWrap}>
-                    <img
+                  inlineZoomSource ? (
+                    <InlineZoomViewer
                       src={sourceImage}
-                      alt={t("split.original")}
-                      style={S.splitOriginalImg}
-                      onClick={() => onPreview?.(sourceImage)}
+                      onCollapse={() => setInlineZoomSource(false)}
+                      containerStyle={S.splitPaneInlineZoomViewer}
+                      collapseButtonStyle={S.splitPaneInlineZoomCollapseBtn}
                     />
-                    <button
-                      type="button"
-                      style={S.splitImageZoomBtn}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onPreview?.(sourceImage);
-                      }}
-                      title={t("viewer.inlineViewer")}
-                    >
-                      🔍
-                    </button>
-                  </div>
+                  ) : (
+                    <div style={S.splitImageWrap}>
+                      <img
+                        src={sourceImage}
+                        alt={t("split.original")}
+                        style={S.splitOriginalImg}
+                        onClick={() => setInlineZoomSource(true)}
+                      />
+                      <button
+                        type="button"
+                        style={{
+                          ...S.splitImageZoomBtn,
+                          ...(inlineZoomSource ? S.splitImageZoomBtnActive : null),
+                        }}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setInlineZoomSource((prev) => !prev);
+                        }}
+                        title={t("viewer.inlineViewer")}
+                      >
+                        🔍
+                      </button>
+                    </div>
+                  )
                 ) : (
                   <div style={S.turnStyleImageEmpty}>{busy ? t("split.detecting") : "-"}</div>
                 )}
+                <button
+                  type="button"
+                  style={{
+                    ...S.splitImageUploadBtn,
+                    opacity: busy || exporting || enhancing ? 0.55 : 1,
+                    cursor: busy || exporting || enhancing ? "not-allowed" : "pointer",
+                  }}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    uploadInputRef.current?.click();
+                  }}
+                  disabled={busy || exporting || enhancing}
+                >
+                  {t("split.upload")}
+                </button>
               </div>
             </div>
             <div style={S.splitMidActions}>
@@ -4193,22 +4230,6 @@ function SpriteSplitModal({
               </button>
               <button
                 type="button"
-                style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: canUndo ? 1 : 0.5, cursor: canUndo ? "pointer" : "not-allowed" }}
-                onClick={onUndoDelete}
-                disabled={!canUndo || busy || exporting || enhancing}
-              >
-                {t("split.undo")}
-              </button>
-              <button
-                type="button"
-                style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: busy || exporting || enhancing ? 0.5 : 1, cursor: busy || exporting || enhancing ? "not-allowed" : "pointer" }}
-                onClick={() => uploadInputRef.current?.click()}
-                disabled={busy || exporting || enhancing}
-              >
-                {t("split.upload")}
-              </button>
-              <button
-                type="button"
                 style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: sourceImage ? 1 : 0.5, cursor: sourceImage ? "pointer" : "not-allowed" }}
                 onClick={onResplit}
                 disabled={!sourceImage || busy || exporting || enhancing}
@@ -4221,25 +4242,37 @@ function SpriteSplitModal({
                 <div style={S.splitPaneTitle}>{t("split.removed")}</div>
                 <div style={S.splitOriginalWrap}>
                   {removedImage ? (
-                    <div style={S.splitImageWrap}>
-                      <img
+                    inlineZoomRemoved ? (
+                      <InlineZoomViewer
                         src={removedImage}
-                        alt={t("split.removed")}
-                        style={S.splitOriginalImg}
-                        onClick={() => onPreview?.(removedImage)}
+                        onCollapse={() => setInlineZoomRemoved(false)}
+                        containerStyle={S.splitPaneInlineZoomViewer}
+                        collapseButtonStyle={S.splitPaneInlineZoomCollapseBtn}
                       />
-                      <button
-                        type="button"
-                        style={S.splitImageZoomBtn}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onPreview?.(removedImage);
-                        }}
-                        title={t("viewer.inlineViewer")}
-                      >
-                        🔍
-                      </button>
-                    </div>
+                    ) : (
+                      <div style={S.splitImageWrap}>
+                        <img
+                          src={removedImage}
+                          alt={t("split.removed")}
+                          style={S.splitOriginalImg}
+                          onClick={() => setInlineZoomRemoved(true)}
+                        />
+                        <button
+                          type="button"
+                          style={{
+                            ...S.splitImageZoomBtn,
+                            ...(inlineZoomRemoved ? S.splitImageZoomBtnActive : null),
+                          }}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setInlineZoomRemoved((prev) => !prev);
+                          }}
+                          title={t("viewer.inlineViewer")}
+                        >
+                          🔍
+                        </button>
+                      </div>
+                    )
                   ) : (
                     <div style={S.turnStyleImageEmpty}>{busy ? t("split.detecting") : "-"}</div>
                   )}
@@ -4253,14 +4286,24 @@ function SpriteSplitModal({
                 {t("split.results")}
                 <span style={S.splitPaneCount}>{busy ? t("split.detecting") : t("split.count", { count: items.length })}</span>
               </div>
-              <button
-                type="button"
-                style={{ ...S.apiSaveBtn, opacity: hasItems && !busy ? 1 : 0.5, cursor: hasItems && !busy ? "pointer" : "not-allowed" }}
-                onClick={onExport}
-                disabled={!hasItems || busy || exporting || enhancing}
-              >
-                {exporting ? t("split.exporting") : t("split.export")}
-              </button>
+              <div style={S.splitTopActions}>
+                <button
+                  type="button"
+                  style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: canUndo ? 1 : 0.5, cursor: canUndo ? "pointer" : "not-allowed" }}
+                  onClick={onUndoDelete}
+                  disabled={!canUndo || busy || exporting || enhancing}
+                >
+                  {t("split.undo")}
+                </button>
+                <button
+                  type="button"
+                  style={{ ...S.apiSaveBtn, opacity: hasItems && !busy ? 1 : 0.5, cursor: hasItems && !busy ? "pointer" : "not-allowed" }}
+                  onClick={onExport}
+                  disabled={!hasItems || busy || exporting || enhancing}
+                >
+                  {exporting ? t("split.exporting") : t("split.export")}
+                </button>
+              </div>
             </div>
             <div style={S.splitRightBody}>
               {busy ? (
@@ -4419,9 +4462,10 @@ function HelpPage() {
           lines: [
             "历史记录里每张图右下角的圆形切分按钮会打开自动切分弹窗。",
             "弹窗左侧依次是原图、按键行、去背景图；右侧上方是导出按钮，下方是切分结果。",
-            "按键行支持 `去背景/带背景切换`（默认去背景）、`白底图/透明图切换`（默认白底）、`原清晰度/清晰度增强`（默认增强）、`撤回`、`上传图片`（上传后立刻自动切分）和 `重新切分`。",
-            "当切到 `带背景` 直接切分时，左侧去背景图会隐藏不显示。",
-            "原图和去背景图右上角都有放大镜图标，点击后会按历史输入图同样的缩放与拖拽逻辑打开预览。",
+            "按键行支持 `去背景/带背景切换`（默认去背景）、`白底图/透明图切换`（默认白底）、`原清晰度/清晰度增强`（默认增强）和 `重新切分`。",
+            "`上传图片` 按钮在左侧原图框右下角，上传后会立刻自动切分；`撤回` 按钮在右侧顶部，和 `导出` 并排。",
+            "当切到 `带背景` 直接切分时，切分会按原图执行，左侧去背景图会隐藏不显示。",
+            "原图、去背景图和右侧切分图都支持放大镜进入框内缩放：滚轮缩放、按住拖拽平移、右上角按钮收起。",
           ],
         },
         {
@@ -4502,9 +4546,10 @@ function HelpPage() {
           lines: [
             "In history, the round split button at the bottom-right of each image opens the auto split modal.",
             "The left column shows original image, action row, and removed-background image; the right column shows export on top and split results below.",
-            "The action row supports `Removed/Original source` (default removed), `White/Transparent preview` (default white), `Original/Enhanced quality` (default enhanced), `Undo`, `Upload Image` (uploads and runs split immediately), and `Re-split`.",
-            "When source is switched to `Original`, the removed-background preview panel is hidden.",
-            "Both original and removed images have a top-right magnifier button that opens the same zoom-and-pan preview behavior used by history input images.",
+            "The action row supports `Removed/Original source` (default removed), `White/Transparent preview` (default white), `Original/Enhanced quality` (default enhanced), and `Re-split`.",
+            "The `Upload Image` button is at the bottom-right corner of the original image panel and runs split immediately after upload; the `Undo` button is in the top-right header next to `Export`.",
+            "When source is switched to `Original`, splitting runs on the original image and the removed-background preview panel is hidden.",
+            "Original image, removed image, and split result tiles all support inline zoom mode: wheel to zoom, hold-drag to pan, and the corner button to collapse.",
           ],
         },
         {
@@ -6423,16 +6468,18 @@ export default function App() {
       if (!normalized || /^https?:\/\//i.test(normalized)) {
         throw new Error(t("errors.failedToFetch"));
       }
-      const stage1 = await splitImageBySubjects(normalized);
-      const splitTarget = defaultUseRemoved ? (stage1.removedImage || normalized) : normalized;
-      const splitResult = defaultUseRemoved ? await splitImageBySubjects(splitTarget) : stage1;
+      const originalSplit = await splitImageBySubjects(normalized);
+      const removedSplitSource = originalSplit.removedImage || normalized;
+      // Keep source semantics explicit: "Original" mode always splits from original image.
+      const splitTarget = defaultUseRemoved ? removedSplitSource : normalized;
+      const splitResult = defaultUseRemoved ? await splitImageBySubjects(removedSplitSource) : originalSplit;
       const preparedItems = await buildSplitItemDisplayList(
         splitResult.items.map((item, index) => ({ ...item, index: index + 1 })),
         {
         whiteBackground: defaultWhite,
         enhance: defaultEnhance,
       });
-      const removedDisplay = await buildRemovedDisplayImage(stage1.removedImage, {
+      const removedDisplay = await buildRemovedDisplayImage(originalSplit.removedImage, {
         enhance: defaultEnhance,
         cachedEnhanced: "",
       });
@@ -6443,7 +6490,7 @@ export default function App() {
         image: splitTarget,
         originalImage: normalized,
         sourceImage: splitResult.sourceImage,
-        removedBaseImage: stage1.removedImage,
+        removedBaseImage: originalSplit.removedImage,
         removedEnhancedImage: removedDisplay.enhancedImage,
         removedImage: removedDisplay.image,
         items: preparedItems,
@@ -8371,15 +8418,20 @@ const S = {
   splitLeftCol: { display: "grid", gap: 10, alignContent: "start" },
   splitRightCol: { borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: 10, display: "grid", gap: 10, minHeight: 520, alignContent: "start" },
   splitRightTop: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" },
+  splitTopActions: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
   splitRightBody: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(0,0,0,0.2)", padding: 8, minHeight: 430, maxHeight: "62vh", overflow: "auto", alignContent: "start" },
   splitPane: { borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: 10, display: "grid", gap: 8, alignContent: "start", minHeight: 300 },
   splitMidActions: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(2,6,23,0.38)", padding: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" },
   splitPaneTitle: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, fontSize: 12, color: "#e4e4e7", fontFamily: mono, textTransform: "uppercase", letterSpacing: 0.4 },
   splitPaneCount: { fontSize: 11, color: "#94a3b8", textTransform: "none", letterSpacing: 0, marginLeft: "auto" },
-  splitOriginalWrap: { borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.08)", background: "#0b0b0d", minHeight: 260, display: "flex", alignItems: "center", justifyContent: "center" },
+  splitOriginalWrap: { position: "relative", borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.08)", background: "#0b0b0d", minHeight: 260, display: "flex", alignItems: "center", justifyContent: "center" },
   splitImageWrap: { position: "relative", width: "100%", height: "100%" },
   splitOriginalImg: { width: "100%", maxHeight: 520, objectFit: "contain", display: "block", cursor: "zoom-in" },
   splitImageZoomBtn: { position: "absolute", top: 8, right: 8, zIndex: 3, width: 24, height: 24, borderRadius: 12, border: "1px solid rgba(255,255,255,0.16)", background: "rgba(2,6,23,0.82)", color: "#e2e8f0", fontSize: 12, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },
+  splitImageZoomBtnActive: { borderColor: THEME_PRIMARY_BORDER, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT },
+  splitImageUploadBtn: { position: "absolute", right: 8, bottom: 8, zIndex: 4, height: 24, minWidth: 68, padding: "0 8px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(2,6,23,0.88)", color: "#e2e8f0", fontSize: 11, fontFamily: mono, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" },
+  splitPaneInlineZoomViewer: { width: "100%", maxWidth: "100%", height: "min(520px, 62vh)", borderRadius: 10, border: "1px solid rgba(59,130,246,0.45)", background: "rgba(8,47,73,0.24)", boxShadow: "0 0 0 1px rgba(59,130,246,0.16), 0 10px 24px rgba(2,6,23,0.24)" },
+  splitPaneInlineZoomCollapseBtn: { top: 8, right: 8, width: 24, height: 24, borderRadius: 12, fontSize: 12 },
   splitGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 8, alignContent: "start" },
   splitItemCell: { position: "relative" },
   splitItemBtn: { position: "relative", border: "1px solid rgba(255,255,255,0.1)", background: "rgba(2,6,23,0.5)", borderRadius: 10, overflow: "hidden", padding: 0, cursor: "zoom-in", textAlign: "left" },
