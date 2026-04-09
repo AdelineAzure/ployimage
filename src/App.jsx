@@ -4761,126 +4761,130 @@ function SpriteSplitModal({
               </div>
             </div>
             <div style={S.splitMidActions}>
-              <div style={S.splitToggleGroup}>
-                <button
-                  type="button"
-                  style={{
-                    ...S.splitToggleBtn,
-                    ...(splitOnRemoved ? S.splitToggleBtnActive : null),
-                  }}
-                  disabled={busy || exporting || enhancing}
-                  onClick={() => onToggleSplitSource?.(true)}
-                >
-                  {t("split.sourceRemoved")}
-                </button>
-                <button
-                  type="button"
-                  style={{
-                    ...S.splitToggleBtn,
-                    ...(!splitOnRemoved ? S.splitToggleBtnActive : null),
-                  }}
-                  disabled={busy || exporting || enhancing}
-                  onClick={() => onToggleSplitSource?.(false)}
-                >
-                  {t("split.sourceOriginal")}
-                </button>
+              <div style={S.splitMidActionRow}>
+                <div style={S.splitToggleGroup}>
+                  <button
+                    type="button"
+                    style={{
+                      ...S.splitToggleBtn,
+                      ...(splitOnRemoved ? S.splitToggleBtnActive : null),
+                    }}
+                    disabled={busy || exporting || enhancing}
+                    onClick={() => onToggleSplitSource?.(true)}
+                  >
+                    {t("split.sourceRemoved")}
+                  </button>
+                  <button
+                    type="button"
+                    style={{
+                      ...S.splitToggleBtn,
+                      ...(!splitOnRemoved ? S.splitToggleBtnActive : null),
+                    }}
+                    disabled={busy || exporting || enhancing}
+                    onClick={() => onToggleSplitSource?.(false)}
+                  >
+                    {t("split.sourceOriginal")}
+                  </button>
+                </div>
+                <div style={S.splitToggleGroup}>
+                  <button
+                    type="button"
+                    style={{
+                      ...S.splitToggleBtn,
+                      ...(renderMode === "painted" ? S.splitToggleBtnActive : null),
+                    }}
+                    disabled={busy || exporting || enhancing}
+                    onClick={() => {
+                      onSetRenderMode?.("painted");
+                    }}
+                  >
+                    {t("split.renderPainted")}
+                  </button>
+                  <button
+                    type="button"
+                    style={{
+                      ...S.splitToggleBtn,
+                      ...(renderMode === "direct" ? S.splitToggleBtnActive : null),
+                    }}
+                    disabled={busy || exporting || enhancing}
+                    onClick={() => {
+                      onSetRenderMode?.("direct");
+                    }}
+                  >
+                    {t("split.renderDirect")}
+                  </button>
+                </div>
               </div>
-              <div style={S.splitToggleGroup}>
-                <button
-                  type="button"
-                  style={{
-                    ...S.splitToggleBtn,
-                    ...(renderMode === "painted" ? S.splitToggleBtnActive : null),
-                  }}
-                  disabled={busy || exporting || enhancing}
-                  onClick={() => {
-                    onSetRenderMode?.("painted");
-                  }}
-                >
-                  {t("split.renderPainted")}
-                </button>
-                <button
-                  type="button"
-                  style={{
-                    ...S.splitToggleBtn,
-                    ...(renderMode === "direct" ? S.splitToggleBtnActive : null),
-                  }}
-                  disabled={busy || exporting || enhancing}
-                  onClick={() => {
-                    onSetRenderMode?.("direct");
-                  }}
-                >
-                  {t("split.renderDirect")}
-                </button>
-              </div>
-              <div style={S.splitToggleGroup}>
-                <button
-                  type="button"
-                  style={{
-                    ...S.splitToggleBtn,
-                    ...(shapeMode === "edge" ? S.splitToggleBtnActive : null),
-                  }}
-                  disabled={busy || exporting || enhancing}
-                  onClick={() => {
-                    onSetShapeMode?.("edge");
-                  }}
-                >
-                  {t("split.shapeEdge")}
-                </button>
-                <button
-                  type="button"
-                  style={{
-                    ...S.splitToggleBtn,
-                    ...(shapeMode === "polygon" ? S.splitToggleBtnActive : null),
-                  }}
-                  disabled={busy || exporting || enhancing}
-                  onClick={() => {
-                    onSetShapeMode?.("polygon");
-                  }}
-                >
-                  {t("split.shapePolygon")}
-                </button>
-                <button
-                  type="button"
-                  style={{
-                    ...S.splitToggleBtn,
-                    ...(shapeMode === "rect" ? S.splitToggleBtnActive : null),
-                  }}
-                  disabled={busy || exporting || enhancing}
-                  onClick={() => {
-                    onSetShapeMode?.("rect");
-                  }}
-                >
-                  {t("split.shapeRect")}
-                </button>
-              </div>
-              <div style={S.splitToggleGroup}>
-                <button
-                  type="button"
-                  style={{
-                    ...S.splitToggleBtn,
-                    ...(enhanceEnabled ? S.splitToggleBtnActive : null),
-                  }}
-                  disabled={busy || exporting || enhancing || !hasItems}
-                  onClick={() => {
-                    onSetEnhanceEnabled?.(true);
-                  }}
-                >
-                  {t("split.qualityEnhanced")}
-                </button>
-                <button
-                  type="button"
-                  style={{
-                    ...S.splitToggleBtn,
-                    ...(!enhanceEnabled ? S.splitToggleBtnActive : null),
-                  }}
-                  disabled={busy || exporting || enhancing || !hasItems}
-                  onClick={() => {
-                    onSetEnhanceEnabled?.(false);
-                  }}
-                >
-                  {t("split.qualityOriginal")}
-                </button>
+              <div style={S.splitMidActionRow}>
+                <div style={S.splitToggleGroup}>
+                  <button
+                    type="button"
+                    style={{
+                      ...S.splitToggleBtn,
+                      ...(shapeMode === "edge" ? S.splitToggleBtnActive : null),
+                    }}
+                    disabled={busy || exporting || enhancing}
+                    onClick={() => {
+                      onSetShapeMode?.("edge");
+                    }}
+                  >
+                    {t("split.shapeEdge")}
+                  </button>
+                  <button
+                    type="button"
+                    style={{
+                      ...S.splitToggleBtn,
+                      ...(shapeMode === "polygon" ? S.splitToggleBtnActive : null),
+                    }}
+                    disabled={busy || exporting || enhancing}
+                    onClick={() => {
+                      onSetShapeMode?.("polygon");
+                    }}
+                  >
+                    {t("split.shapePolygon")}
+                  </button>
+                  <button
+                    type="button"
+                    style={{
+                      ...S.splitToggleBtn,
+                      ...(shapeMode === "rect" ? S.splitToggleBtnActive : null),
+                    }}
+                    disabled={busy || exporting || enhancing}
+                    onClick={() => {
+                      onSetShapeMode?.("rect");
+                    }}
+                  >
+                    {t("split.shapeRect")}
+                  </button>
+                </div>
+                <div style={S.splitToggleGroup}>
+                  <button
+                    type="button"
+                    style={{
+                      ...S.splitToggleBtn,
+                      ...(enhanceEnabled ? S.splitToggleBtnActive : null),
+                    }}
+                    disabled={busy || exporting || enhancing || !hasItems}
+                    onClick={() => {
+                      onSetEnhanceEnabled?.(true);
+                    }}
+                  >
+                    {t("split.qualityEnhanced")}
+                  </button>
+                  <button
+                    type="button"
+                    style={{
+                      ...S.splitToggleBtn,
+                      ...(!enhanceEnabled ? S.splitToggleBtnActive : null),
+                    }}
+                    disabled={busy || exporting || enhancing || !hasItems}
+                    onClick={() => {
+                      onSetEnhanceEnabled?.(false);
+                    }}
+                  >
+                    {t("split.qualityOriginal")}
+                  </button>
+                </div>
               </div>
             </div>
             <div style={S.splitPane}>
@@ -9270,8 +9274,9 @@ const S = {
   splitTopActions: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
   splitRightBody: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(0,0,0,0.2)", padding: 10, minHeight: 430, overflow: "visible", alignContent: "start" },
   splitPane: { borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: 10, display: "grid", gap: 8, alignContent: "start", minHeight: 300 },
-  splitMidActions: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(2,6,23,0.38)", padding: 8, display: "flex", gap: 8, flexWrap: "nowrap", overflowX: "auto", alignItems: "center" },
-  splitToggleGroup: { display: "inline-flex", alignItems: "center", gap: 6, padding: 2, borderRadius: 999, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(2,6,23,0.48)" },
+  splitMidActions: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(2,6,23,0.38)", padding: 8, display: "grid", gap: 8, alignContent: "start" },
+  splitMidActionRow: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" },
+  splitToggleGroup: { display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap", padding: 2, borderRadius: 999, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(2,6,23,0.48)", minWidth: 0, maxWidth: "100%" },
   splitToggleBtn: { height: 26, padding: "0 10px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.14)", background: "rgba(255,255,255,0.03)", color: "#cbd5e1", fontFamily: mono, fontSize: 11, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", whiteSpace: "nowrap" },
   splitToggleBtnActive: { borderColor: THEME_PRIMARY_BORDER, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT },
   splitPaneTitle: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, fontSize: 12, color: "#e4e4e7", fontFamily: mono, textTransform: "uppercase", letterSpacing: 0.4 },
