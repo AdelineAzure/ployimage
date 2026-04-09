@@ -62,6 +62,11 @@ const MAX_STYLE_REFERENCE_IMAGES = 4;
 const MAX_ATLAS_SELECTED_IMAGES = 20;
 const MAX_INPUT_IMAGES_PER_BATCH = 10;
 const MAX_SPLIT_EXPORT_ITEMS = 120;
+const SPLIT_SHAPE_MODE_ORDER = ["edge", "polygon", "rect"];
+const SPLIT_RENDER_MODE_ORDER = ["painted", "direct"];
+const DEFAULT_SPLIT_SHAPE_MODE = "edge";
+const DEFAULT_SPLIT_RENDER_MODE = "painted";
+const DEFAULT_SPLIT_BG_COLOR = "#ffffff";
 const TEMPLATE_FILE_NAME = "templates.json";
 const STYLE_TEMPLATE_FILE_NAME = "style-templates.json";
 const GPT_ASSIST_FILE_NAME = "gpt-assist.json";
@@ -137,24 +142,33 @@ const UI_TEXT = {
     "split.title": "Split Console",
     "split.original": "Original Image",
     "split.removed": "Background Removed",
+    "split.process": "Process View",
     "split.results": "Split Subjects",
     "split.detecting": "Detecting subjects...",
     "split.noSubjects": "No subjects detected.",
     "split.count": "{{count}} subjects",
     "split.reSplit": "Re-split",
-    "split.run": "Run Background Removal + Split",
-    "split.sourceRemoved": "Split Source: Removed BG",
-    "split.sourceOriginal": "Split Source: Original",
+    "split.run": "Run Split",
+    "split.sourceRemoved": "Remove BG First",
+    "split.sourceOriginal": "Keep Background",
     "split.qualityEnhanced": "Quality: Enhanced",
     "split.qualityOriginal": "Quality: Original",
     "split.upload": "Upload Image",
     "split.export": "Export",
     "split.exporting": "Exporting...",
+    "split.merge": "Merge Selected",
+    "split.mergeNeedTwo": "Select at least 2 subjects to merge.",
+    "split.merged": "Merged {{count}} subjects.",
     "split.delete": "Delete",
     "split.undo": "Undo",
     "split.undoHint": "Undo: Ctrl/Cmd + Z",
     "split.whiteBgOn": "White BG: On",
     "split.whiteBgOff": "White BG: Off",
+    "split.renderPainted": "Output: Fill BG",
+    "split.renderDirect": "Output: Direct Crop",
+    "split.shapeEdge": "Shape: Edge",
+    "split.shapePolygon": "Shape: Polygon",
+    "split.shapeRect": "Shape: Rectangle",
     "split.enhance": "Enhance to 1024",
     "split.enhancing": "Enhancing...",
     "split.enhanced": "Enhanced {{count}} split image(s), minimum long side 1024.",
@@ -343,24 +357,33 @@ const UI_TEXT = {
     "split.title": "切分操作台",
     "split.original": "原图",
     "split.removed": "去背景结果",
+    "split.process": "过程图",
     "split.results": "拆分主体",
     "split.detecting": "正在识别主体...",
     "split.noSubjects": "未识别到可切分主体。",
     "split.count": "共 {{count}} 个主体",
     "split.reSplit": "重新切分",
-    "split.run": "执行去背景 + 切分",
-    "split.sourceRemoved": "切分源：去背景",
-    "split.sourceOriginal": "切分源：带背景",
+    "split.run": "执行切分",
+    "split.sourceRemoved": "先去背景",
+    "split.sourceOriginal": "不去背景",
     "split.qualityEnhanced": "清晰度：增强",
     "split.qualityOriginal": "清晰度：原始",
     "split.upload": "上传图片",
     "split.export": "导出",
     "split.exporting": "导出中...",
+    "split.merge": "合并选中",
+    "split.mergeNeedTwo": "至少选择 2 个主体才能合并。",
+    "split.merged": "已合并 {{count}} 个主体。",
     "split.delete": "删除",
     "split.undo": "撤回",
     "split.undoHint": "撤回快捷键：Ctrl/Cmd + Z",
     "split.whiteBgOn": "白底：开",
     "split.whiteBgOff": "白底：关",
+    "split.renderPainted": "输出：背景色填充",
+    "split.renderDirect": "输出：直接裁切",
+    "split.shapeEdge": "形状：边缘",
+    "split.shapePolygon": "形状：多边形",
+    "split.shapeRect": "形状：矩形",
     "split.enhance": "增强到 1024",
     "split.enhancing": "增强中...",
     "split.enhanced": "已增强 {{count}} 张切分图，最长边不低于 1024。",
@@ -1271,6 +1294,14 @@ function colorDistanceSq(r, g, b, bg) {
   return dr * dr + dg * dg + db * db;
 }
 
+function rgbToHexColor(r = 255, g = 255, b = 255) {
+  const toHex = (value) => {
+    const n = Math.max(0, Math.min(255, Math.round(Number(value) || 0)));
+    return n.toString(16).padStart(2, "0");
+  };
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
 function getPercentileNumber(values = [], ratio = 0.5) {
   const list = (Array.isArray(values) ? values : [])
     .map((value) => Number(value))
@@ -1780,12 +1811,14 @@ function collectSubjectBounds(mask, width, height) {
     let maxX = 0;
     let maxY = 0;
     let area = 0;
+    const pixels = [];
 
     while (head < tail) {
       const idx = queue[head];
       head += 1;
       const x = idx % width;
       const y = Math.floor(idx / width);
+      pixels.push(idx);
       area += 1;
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
@@ -1813,6 +1846,7 @@ function collectSubjectBounds(mask, width, height) {
       width: boxWidth,
       height: boxHeight,
       area,
+      pixels,
     });
   }
 
@@ -1839,6 +1873,7 @@ function collectSubjectBounds(mask, width, height) {
         width: maxX - minX + 1,
         height: maxY - minY + 1,
         area,
+        pixels: [],
       });
     }
   }
@@ -1846,6 +1881,166 @@ function collectSubjectBounds(mask, width, height) {
   return bounds
     .sort((a, b) => (a.y === b.y ? a.x - b.x : a.y - b.y))
     .slice(0, MAX_SPLIT_EXPORT_ITEMS);
+}
+
+function normalizeSplitShapeMode(mode) {
+  return SPLIT_SHAPE_MODE_ORDER.includes(mode) ? mode : DEFAULT_SPLIT_SHAPE_MODE;
+}
+
+function normalizeSplitRenderMode(mode) {
+  return SPLIT_RENDER_MODE_ORDER.includes(mode) ? mode : DEFAULT_SPLIT_RENDER_MODE;
+}
+
+function buildSteppedPolygonMask(localMask, width, height) {
+  if (!localMask || width <= 0 || height <= 0) return new Uint8Array(Math.max(0, width * height));
+  const output = new Uint8Array(width * height);
+  const bandHeight = Math.max(1, Math.min(4, Math.floor(Math.min(width, height) / 80) || 1));
+  for (let bandTop = 0; bandTop < height; bandTop += bandHeight) {
+    const bandBottom = Math.min(height - 1, bandTop + bandHeight - 1);
+    let inRun = false;
+    let runStart = 0;
+    for (let x = 0; x <= width; x += 1) {
+      let active = false;
+      if (x < width) {
+        for (let y = bandTop; y <= bandBottom; y += 1) {
+          if (localMask[y * width + x]) {
+            active = true;
+            break;
+          }
+        }
+      }
+      if (active && !inRun) {
+        inRun = true;
+        runStart = x;
+      } else if (!active && inRun) {
+        for (let y = bandTop; y <= bandBottom; y += 1) {
+          const rowOffset = y * width;
+          for (let fillX = runStart; fillX < x; fillX += 1) {
+            output[rowOffset + fillX] = 1;
+          }
+        }
+        inRun = false;
+      }
+    }
+  }
+  return output;
+}
+
+function buildPolygonMaskedImage(rectImageData, localMask, width, height, fallbackImage = "") {
+  if (!rectImageData || !localMask || width <= 0 || height <= 0) return fallbackImage;
+  const polygonMask = buildSteppedPolygonMask(localMask, width, height);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return fallbackImage;
+  const out = ctx.createImageData(width, height);
+  const src = rectImageData.data;
+  const dst = out.data;
+  let visibleCount = 0;
+  for (let i = 0; i < width * height; i += 1) {
+    const offset = i * 4;
+    if (!polygonMask[i]) {
+      dst[offset] = 0;
+      dst[offset + 1] = 0;
+      dst[offset + 2] = 0;
+      dst[offset + 3] = 0;
+      continue;
+    }
+    dst[offset] = src[offset];
+    dst[offset + 1] = src[offset + 1];
+    dst[offset + 2] = src[offset + 2];
+    dst[offset + 3] = src[offset + 3];
+    visibleCount += 1;
+  }
+  if (!visibleCount) return fallbackImage;
+  ctx.putImageData(out, 0, 0);
+  return canvas.toDataURL("image/png");
+}
+
+function getSplitShapeDataUrl(item, shapeMode) {
+  const mode = normalizeSplitShapeMode(shapeMode);
+  const rectImage = item?.rectImage || item?.image || "";
+  const edgeImage = item?.edgeImage || item?.transparentImage || rectImage;
+  const polygonImage = item?.polygonImage || edgeImage;
+  if (mode === "rect") return rectImage || edgeImage || polygonImage;
+  if (mode === "polygon") return polygonImage || edgeImage || rectImage;
+  return edgeImage || polygonImage || rectImage;
+}
+
+function buildSplitProcessPreview(imageData, mask, width, height) {
+  const src = imageData?.data;
+  if (!src || !mask || width <= 0 || height <= 0) return "";
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+  const out = new ImageData(new Uint8ClampedArray(src), width, height);
+  const data = out.data;
+  const mark = (x, y) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const idx = (y * width + x) * 4;
+    data[idx] = 255;
+    data[idx + 1] = 45;
+    data[idx + 2] = 45;
+    data[idx + 3] = 255;
+  };
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const idx = y * width + x;
+      if (!mask[idx]) continue;
+      const left = x <= 0 ? 0 : mask[idx - 1];
+      const right = x >= width - 1 ? 0 : mask[idx + 1];
+      const up = y <= 0 ? 0 : mask[idx - width];
+      const down = y >= height - 1 ? 0 : mask[idx + width];
+      if (left && right && up && down) continue;
+      mark(x, y);
+      mark(x - 1, y);
+      mark(x + 1, y);
+      mark(x, y - 1);
+      mark(x, y + 1);
+    }
+  }
+  ctx.putImageData(out, 0, 0);
+  return canvas.toDataURL("image/png");
+}
+
+function getSplitItemBaseSize(item) {
+  const baseWidth = Math.max(1, Number(item?.baseWidth) || Number(item?.width) || 1);
+  const baseHeight = Math.max(1, Number(item?.baseHeight) || Number(item?.height) || 1);
+  return { baseWidth, baseHeight };
+}
+
+function getSplitItemSourceByShape(item, shape = "rect") {
+  if (shape === "polygon") return item?.polygonImage || item?.edgeImage || item?.transparentImage || item?.rectImage || item?.image || "";
+  if (shape === "edge") return item?.edgeImage || item?.transparentImage || item?.rectImage || item?.image || "";
+  return item?.rectImage || item?.image || item?.edgeImage || item?.transparentImage || "";
+}
+
+async function composeMergedSplitField(items, shapeMode, bounds) {
+  const width = Math.max(1, Number(bounds?.width) || 1);
+  const height = Math.max(1, Number(bounds?.height) || 1);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+  for (let i = 0; i < items.length; i += 1) {
+    const item = items[i];
+    const dataUrl = getSplitItemSourceByShape(item, shapeMode);
+    if (!dataUrl) continue;
+    try {
+      const image = await loadImageElement(dataUrl);
+      const { baseWidth, baseHeight } = getSplitItemBaseSize(item);
+      const drawX = Math.round((Number(item?.x) || 0) - (Number(bounds?.x) || 0));
+      const drawY = Math.round((Number(item?.y) || 0) - (Number(bounds?.y) || 0));
+      ctx.drawImage(image, drawX, drawY, baseWidth, baseHeight);
+    } catch {
+      // Ignore one failed tile and keep merging others.
+    }
+  }
+  return canvas.toDataURL("image/png");
 }
 
 async function splitImageBySubjects(source) {
@@ -1862,7 +2057,11 @@ async function splitImageBySubjects(source) {
   ctx.drawImage(image, 0, 0, width, height);
   const imageData = ctx.getImageData(0, 0, width, height);
   const mask = buildForegroundMask(imageData, width, height);
+  const processImage = buildSplitProcessPreview(imageData, mask, width, height);
   const boxes = collectSubjectBounds(mask, width, height);
+  const bgPalette = collectBorderPalette(imageData, width, height);
+  const dominantBg = bgPalette[0] || { r: 255, g: 255, b: 255 };
+  const backgroundColor = rgbToHexColor(dominantBg.r, dominantBg.g, dominantBg.b);
 
   const removedCanvas = document.createElement("canvas");
   removedCanvas.width = width;
@@ -1901,31 +2100,92 @@ async function splitImageBySubjects(source) {
     out.width = cropWidth;
     out.height = cropHeight;
     const outCtx = out.getContext("2d");
-    if (outCtx) {
+    const rectOut = document.createElement("canvas");
+    rectOut.width = cropWidth;
+    rectOut.height = cropHeight;
+    const rectCtx = rectOut.getContext("2d");
+    if (outCtx && rectCtx) {
       const outImageData = outCtx.createImageData(cropWidth, cropHeight);
+      const rectImageData = rectCtx.createImageData(cropWidth, cropHeight);
       const srcData = imageData.data;
       const outData = outImageData.data;
+      const rectData = rectImageData.data;
+      const localMask = new Uint8Array(cropWidth * cropHeight);
+      const componentPixels = Array.isArray(box.pixels) ? box.pixels : [];
+      if (componentPixels.length) {
+        for (let p = 0; p < componentPixels.length; p += 1) {
+          const sourceIndex = componentPixels[p];
+          const gx = sourceIndex % width;
+          const gy = Math.floor(sourceIndex / width);
+          if (gx < x || gx > right || gy < y || gy > bottom) continue;
+          localMask[(gy - y) * cropWidth + (gx - x)] = 1;
+        }
+      }
       for (let py = 0; py < cropHeight; py += 1) {
         for (let px = 0; px < cropWidth; px += 1) {
           const gx = x + px;
           const gy = y + py;
           const srcMaskIndex = gy * width + gx;
+          const localMaskIndex = py * cropWidth + px;
           const outIndex = (py * cropWidth + px) * 4;
-          if (!mask[srcMaskIndex]) {
+          const srcIndex = srcMaskIndex * 4;
+          rectData[outIndex] = srcData[srcIndex];
+          rectData[outIndex + 1] = srcData[srcIndex + 1];
+          rectData[outIndex + 2] = srcData[srcIndex + 2];
+          rectData[outIndex + 3] = srcData[srcIndex + 3];
+          if (!componentPixels.length) {
+            localMask[localMaskIndex] = mask[srcMaskIndex] ? 1 : 0;
+          }
+          const isForeground = localMask[localMaskIndex] === 1;
+          if (!isForeground) {
             outData[outIndex] = 0;
             outData[outIndex + 1] = 0;
             outData[outIndex + 2] = 0;
             outData[outIndex + 3] = 0;
             continue;
           }
-          const srcIndex = srcMaskIndex * 4;
           outData[outIndex] = srcData[srcIndex];
           outData[outIndex + 1] = srcData[srcIndex + 1];
           outData[outIndex + 2] = srcData[srcIndex + 2];
           outData[outIndex + 3] = srcData[srcIndex + 3];
         }
       }
+      rectCtx.putImageData(rectImageData, 0, 0);
       outCtx.putImageData(outImageData, 0, 0);
+      const edgeImage = out.toDataURL("image/png");
+      const rectImage = rectOut.toDataURL("image/png");
+      const polygonImage = buildPolygonMaskedImage(rectImageData, localMask, cropWidth, cropHeight, edgeImage);
+      return {
+        id: `subject-${index + 1}`,
+        index: index + 1,
+        x,
+        y,
+        width: cropWidth,
+        height: cropHeight,
+        baseWidth: cropWidth,
+        baseHeight: cropHeight,
+        area: box.area,
+        rectImage,
+        edgeImage,
+        polygonImage,
+        transparentImage: edgeImage,
+        enhancedRectImage: "",
+        enhancedRectWidth: 0,
+        enhancedRectHeight: 0,
+        enhancedEdgeImage: "",
+        enhancedEdgeWidth: 0,
+        enhancedEdgeHeight: 0,
+        enhancedPolygonImage: "",
+        enhancedPolygonWidth: 0,
+        enhancedPolygonHeight: 0,
+        paintedRectImage: "",
+        paintedEdgeImage: "",
+        paintedPolygonImage: "",
+        paintedEnhancedRectImage: "",
+        paintedEnhancedEdgeImage: "",
+        paintedEnhancedPolygonImage: "",
+        image: edgeImage,
+      };
     }
     return {
       id: `subject-${index + 1}`,
@@ -1934,16 +2194,36 @@ async function splitImageBySubjects(source) {
       y,
       width: cropWidth,
       height: cropHeight,
+      baseWidth: cropWidth,
+      baseHeight: cropHeight,
       area: box.area,
-      transparentImage: out.toDataURL("image/png"),
-      enhancedImage: "",
-      whiteEnhancedImage: "",
-      image: out.toDataURL("image/png"),
+      rectImage: "",
+      edgeImage: "",
+      polygonImage: "",
+      transparentImage: "",
+      enhancedRectImage: "",
+      enhancedRectWidth: 0,
+      enhancedRectHeight: 0,
+      enhancedEdgeImage: "",
+      enhancedEdgeWidth: 0,
+      enhancedEdgeHeight: 0,
+      enhancedPolygonImage: "",
+      enhancedPolygonWidth: 0,
+      enhancedPolygonHeight: 0,
+      paintedRectImage: "",
+      paintedEdgeImage: "",
+      paintedPolygonImage: "",
+      paintedEnhancedRectImage: "",
+      paintedEnhancedEdgeImage: "",
+      paintedEnhancedPolygonImage: "",
+      image: "",
     };
   });
   return {
     sourceImage: canvas.toDataURL("image/png"),
     removedImage: removedCanvas.toDataURL("image/png"),
+    processImage,
+    backgroundColor,
     width,
     height,
     items,
@@ -1970,37 +2250,140 @@ async function resolveSplitSourceDataUrl(rawImage, options = {}) {
 
 async function buildSplitItemDisplayList(items = [], options = {}) {
   const source = Array.isArray(items) ? items : [];
-  const whiteBackground = options.whiteBackground !== false;
+  const shapeMode = normalizeSplitShapeMode(options.shapeMode);
+  const renderMode = normalizeSplitRenderMode(options.renderMode);
+  const backgroundColor = typeof options.backgroundColor === "string" && options.backgroundColor.trim()
+    ? options.backgroundColor
+    : DEFAULT_SPLIT_BG_COLOR;
   const enhance = options.enhance !== false;
   const result = [];
   for (let index = 0; index < source.length; index += 1) {
     const item = source[index];
-    const transparentImage = item.transparentImage || item.image || "";
-    if (!transparentImage) continue;
-    let enhancedImage = item.enhancedImage || transparentImage;
+    const { baseWidth, baseHeight } = getSplitItemBaseSize(item);
+    const rectImage = item.rectImage || item.image || "";
+    const edgeImage = item.edgeImage || item.transparentImage || rectImage;
+    const polygonImage = item.polygonImage || edgeImage;
+    let displayBaseImage = getSplitShapeDataUrl({ rectImage, edgeImage, polygonImage, image: item.image }, shapeMode);
+    if (!displayBaseImage) continue;
     let width = item.width || 0;
     let height = item.height || 0;
-    if (enhance && (!item.enhancedImage || !item.width || !item.height)) {
-      const enhanced = await enhanceSplitImageDataUrl(transparentImage, { minLongSide: 1024 });
-      enhancedImage = enhanced.dataUrl;
-      width = enhanced.width;
-      height = enhanced.height;
-    }
-    let whiteEnhancedImage = item.whiteEnhancedImage || "";
-    if (whiteBackground) {
-      if (!whiteEnhancedImage) {
-        whiteEnhancedImage = await renderDataUrlOnBackground(enhancedImage, "#ffffff");
+
+    let enhancedRectImage = item.enhancedRectImage || "";
+    let enhancedRectWidth = Number(item.enhancedRectWidth) || 0;
+    let enhancedRectHeight = Number(item.enhancedRectHeight) || 0;
+    let enhancedEdgeImage = item.enhancedEdgeImage || "";
+    let enhancedEdgeWidth = Number(item.enhancedEdgeWidth) || 0;
+    let enhancedEdgeHeight = Number(item.enhancedEdgeHeight) || 0;
+    let enhancedPolygonImage = item.enhancedPolygonImage || "";
+    let enhancedPolygonWidth = Number(item.enhancedPolygonWidth) || 0;
+    let enhancedPolygonHeight = Number(item.enhancedPolygonHeight) || 0;
+
+    if (enhance) {
+      if (shapeMode === "rect" && (!enhancedRectImage || !enhancedRectWidth || !enhancedRectHeight)) {
+        const enhanced = await enhanceSplitImageDataUrl(rectImage || displayBaseImage, { minLongSide: 1024 });
+        enhancedRectImage = enhanced.dataUrl;
+        enhancedRectWidth = enhanced.width;
+        enhancedRectHeight = enhanced.height;
+      } else if (shapeMode === "polygon" && (!enhancedPolygonImage || !enhancedPolygonWidth || !enhancedPolygonHeight)) {
+        const enhanced = await enhanceSplitImageDataUrl(polygonImage || edgeImage || displayBaseImage, { minLongSide: 1024 });
+        enhancedPolygonImage = enhanced.dataUrl;
+        enhancedPolygonWidth = enhanced.width;
+        enhancedPolygonHeight = enhanced.height;
+      } else if (shapeMode === "edge" && (!enhancedEdgeImage || !enhancedEdgeWidth || !enhancedEdgeHeight)) {
+        const enhanced = await enhanceSplitImageDataUrl(edgeImage || displayBaseImage, { minLongSide: 1024 });
+        enhancedEdgeImage = enhanced.dataUrl;
+        enhancedEdgeWidth = enhanced.width;
+        enhancedEdgeHeight = enhanced.height;
       }
     }
+
+    let displayImage = displayBaseImage;
+    if (enhance) {
+      if (shapeMode === "rect") {
+        displayImage = enhancedRectImage || displayBaseImage;
+        width = enhancedRectWidth || width;
+        height = enhancedRectHeight || height;
+      } else if (shapeMode === "polygon") {
+        displayImage = enhancedPolygonImage || displayBaseImage;
+        width = enhancedPolygonWidth || width;
+        height = enhancedPolygonHeight || height;
+      } else {
+        displayImage = enhancedEdgeImage || displayBaseImage;
+        width = enhancedEdgeWidth || width;
+        height = enhancedEdgeHeight || height;
+      }
+    }
+
+    let paintedRectImage = item.paintedRectImage || "";
+    let paintedEdgeImage = item.paintedEdgeImage || "";
+    let paintedPolygonImage = item.paintedPolygonImage || "";
+    let paintedEnhancedRectImage = item.paintedEnhancedRectImage || "";
+    let paintedEnhancedEdgeImage = item.paintedEnhancedEdgeImage || "";
+    let paintedEnhancedPolygonImage = item.paintedEnhancedPolygonImage || "";
+    const paintedBackgroundColor = item.paintedBackgroundColor || "";
+    if (paintedBackgroundColor !== backgroundColor) {
+      paintedRectImage = "";
+      paintedEdgeImage = "";
+      paintedPolygonImage = "";
+      paintedEnhancedRectImage = "";
+      paintedEnhancedEdgeImage = "";
+      paintedEnhancedPolygonImage = "";
+    }
+
+    if (renderMode === "painted") {
+      if (enhance) {
+        if (shapeMode === "rect") {
+          if (!paintedEnhancedRectImage) paintedEnhancedRectImage = await renderDataUrlOnBackground(displayImage, backgroundColor);
+          displayImage = paintedEnhancedRectImage;
+        } else if (shapeMode === "polygon") {
+          if (!paintedEnhancedPolygonImage) paintedEnhancedPolygonImage = await renderDataUrlOnBackground(displayImage, backgroundColor);
+          displayImage = paintedEnhancedPolygonImage;
+        } else {
+          if (!paintedEnhancedEdgeImage) paintedEnhancedEdgeImage = await renderDataUrlOnBackground(displayImage, backgroundColor);
+          displayImage = paintedEnhancedEdgeImage;
+        }
+      } else {
+        if (shapeMode === "rect") {
+          if (!paintedRectImage) paintedRectImage = await renderDataUrlOnBackground(displayImage, backgroundColor);
+          displayImage = paintedRectImage;
+        } else if (shapeMode === "polygon") {
+          if (!paintedPolygonImage) paintedPolygonImage = await renderDataUrlOnBackground(displayImage, backgroundColor);
+          displayImage = paintedPolygonImage;
+        } else {
+          if (!paintedEdgeImage) paintedEdgeImage = await renderDataUrlOnBackground(displayImage, backgroundColor);
+          displayImage = paintedEdgeImage;
+        }
+      }
+    }
+
     result.push({
       ...item,
       index: index + 1,
+      baseWidth,
+      baseHeight,
       width: width || item.width || 0,
       height: height || item.height || 0,
-      transparentImage,
-      enhancedImage,
-      whiteEnhancedImage,
-      image: whiteBackground ? (whiteEnhancedImage || enhancedImage) : enhancedImage,
+      rectImage,
+      edgeImage,
+      polygonImage,
+      transparentImage: edgeImage,
+      enhancedRectImage,
+      enhancedRectWidth,
+      enhancedRectHeight,
+      enhancedEdgeImage,
+      enhancedEdgeWidth,
+      enhancedEdgeHeight,
+      enhancedPolygonImage,
+      enhancedPolygonWidth,
+      enhancedPolygonHeight,
+      paintedRectImage,
+      paintedEdgeImage,
+      paintedPolygonImage,
+      paintedEnhancedRectImage,
+      paintedEnhancedEdgeImage,
+      paintedEnhancedPolygonImage,
+      paintedBackgroundColor: backgroundColor,
+      image: displayImage,
     });
   }
   return result;
@@ -3326,6 +3709,7 @@ function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placeholder, ro
   const selfUpdateRef = useRef(false);
   const internalValueRef = useRef(typeof value === "string" ? value : "");
   const activeChipRef = useRef(null);
+  const selectionSnapshotRef = useRef(null);
   const zeroWidth = "\u200b";
 
   const setChipEditingState = useCallback((chip, editing) => {
@@ -3399,6 +3783,142 @@ function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placeholder, ro
     Array.from(root.childNodes).forEach((child) => walk(child));
     return out.join("").replace(/\n{3,}/g, "\n\n");
   }, []);
+
+  const getNodeTextLength = useCallback((node) => {
+    if (!node) return 0;
+    if (node.nodeType === Node.TEXT_NODE) {
+      return node.textContent?.length || 0;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return 0;
+    const element = node;
+    if (element.hasAttribute?.("data-placeholder-chip")) {
+      const raw = (element.textContent || "").replaceAll(zeroWidth, "");
+      return raw.length + 4;
+    }
+    if (element.tagName === "BR") return 1;
+    let total = 0;
+    Array.from(element.childNodes).forEach((child) => {
+      total += getNodeTextLength(child);
+    });
+    if (element.tagName === "DIV" || element.tagName === "P") total += 1;
+    return total;
+  }, []);
+
+  const getSelectionOffset = useCallback((boundaryNode, boundaryOffset) => {
+    const root = rootRef.current;
+    if (!root || !boundaryNode) return 0;
+    let total = 0;
+    const walk = (node) => {
+      if (node === boundaryNode) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          total += Math.min(boundaryOffset, node.textContent?.length || 0);
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+          const children = Array.from(node.childNodes);
+          for (let i = 0; i < Math.min(boundaryOffset, children.length); i += 1) {
+            total += getNodeTextLength(children[i]);
+          }
+        }
+        return true;
+      }
+      if (node.nodeType === Node.TEXT_NODE) {
+        total += node.textContent?.length || 0;
+        return false;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return false;
+      const element = node;
+      if (element.hasAttribute?.("data-placeholder-chip")) {
+        total += getNodeTextLength(element);
+        return false;
+      }
+      if (element.tagName === "BR") {
+        total += 1;
+        return false;
+      }
+      const children = Array.from(element.childNodes);
+      for (const child of children) {
+        if (walk(child)) return true;
+      }
+      if (element.tagName === "DIV" || element.tagName === "P") {
+        total += 1;
+      }
+      return false;
+    };
+    walk(root);
+    return total;
+  }, [getNodeTextLength]);
+
+  const captureSelectionSnapshot = useCallback(() => {
+    const root = rootRef.current;
+    const selection = window.getSelection();
+    if (!root || !selection || !selection.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return null;
+    return {
+      start: getSelectionOffset(range.startContainer, range.startOffset),
+      end: getSelectionOffset(range.endContainer, range.endOffset),
+    };
+  }, [getSelectionOffset]);
+
+  const restoreSelectionSnapshot = useCallback((snapshot) => {
+    const root = rootRef.current;
+    const selection = window.getSelection();
+    if (!root || !selection || !snapshot) return;
+    const resolveBoundary = (targetOffset) => {
+      let remaining = Math.max(0, targetOffset);
+      const walk = (node) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const textLength = node.textContent?.length || 0;
+          if (remaining <= textLength) return { node, offset: remaining };
+          remaining -= textLength;
+          return null;
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) return null;
+        const element = node;
+        if (element.hasAttribute?.("data-placeholder-chip")) {
+          const firstChild = element.firstChild;
+          const logicalLength = getNodeTextLength(element);
+          if (remaining <= logicalLength) {
+            const rawLength = firstChild?.textContent?.replaceAll?.(zeroWidth, "").length ?? 0;
+            const innerOffset = Math.max(0, Math.min(rawLength, remaining >= 2 ? remaining - 2 : 0));
+            return firstChild
+              ? { node: firstChild, offset: innerOffset }
+              : { node: element, offset: 0 };
+          }
+          remaining -= logicalLength;
+          return null;
+        }
+        if (element.tagName === "BR") {
+          if (remaining <= 1) {
+            const parent = element.parentNode;
+            if (!parent) return { node: root, offset: root.childNodes.length };
+            const index = Array.from(parent.childNodes).indexOf(element);
+            return { node: parent, offset: Math.max(0, index) };
+          }
+          remaining -= 1;
+          return null;
+        }
+        const children = Array.from(element.childNodes);
+        for (const child of children) {
+          const found = walk(child);
+          if (found) return found;
+        }
+        if (element.tagName === "DIV" || element.tagName === "P") {
+          if (remaining <= 1) return { node: element, offset: element.childNodes.length };
+          remaining -= 1;
+        }
+        return null;
+      };
+      return walk(root) || { node: root, offset: root.childNodes.length };
+    };
+
+    const start = resolveBoundary(snapshot.start);
+    const end = resolveBoundary(snapshot.end);
+    const range = document.createRange();
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }, [getNodeTextLength]);
 
   const moveCaretInside = useCallback((element) => {
     if (!element) return;
@@ -3565,9 +4085,15 @@ function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placeholder, ro
     }
     const normalized = typeof value === "string" ? value : "";
     if (normalized === internalValueRef.current) return;
+    const snapshot = captureSelectionSnapshot();
     internalValueRef.current = normalized;
     renderValueToDom(normalized);
-  }, [renderValueToDom, value]);
+    if (snapshot) {
+      requestAnimationFrame(() => {
+        restoreSelectionSnapshot(snapshot);
+      });
+    }
+  }, [captureSelectionSnapshot, renderValueToDom, restoreSelectionSnapshot, value]);
 
   useEffect(() => {
     renderValueToDom(internalValueRef.current);
@@ -3604,6 +4130,40 @@ function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placeholder, ro
     syncValueFromDom();
   }, [syncValueFromDom]);
 
+  const handlePaste = useCallback((event) => {
+    event.preventDefault();
+    const text = event.clipboardData?.getData("text/plain") || "";
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount) return;
+    const range = selection.getRangeAt(0);
+    if (!rootRef.current?.contains(range.startContainer)) return;
+    range.deleteContents();
+    const lines = text.replace(/\r\n?/g, "\n").split("\n");
+    const fragment = document.createDocumentFragment();
+    lines.forEach((line, index) => {
+      if (index > 0) fragment.appendChild(document.createElement("br"));
+      if (line) {
+        fragment.appendChild(document.createTextNode(line));
+      }
+    });
+    const lastNode = fragment.lastChild;
+    range.insertNode(fragment);
+    const nextRange = document.createRange();
+    if (lastNode) {
+      if (lastNode.nodeType === Node.TEXT_NODE) {
+        nextRange.setStart(lastNode, lastNode.textContent?.length || 0);
+      } else {
+        nextRange.setStartAfter(lastNode);
+      }
+    } else {
+      nextRange.setStart(range.endContainer, range.endOffset);
+    }
+    nextRange.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(nextRange);
+    syncValueFromDom();
+  }, [syncValueFromDom]);
+
   const fixedHeight = Math.max(PROMPT_EDITOR_MIN_HEIGHT, rows * 24);
 
   return (
@@ -3612,6 +4172,7 @@ function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placeholder, ro
       contentEditable
       suppressContentEditableWarning
       onInput={handleInput}
+      onPaste={handlePaste}
       onKeyDown={handleEditorKeyDown}
       onClick={handleClick}
       onBlur={(event) => {
@@ -4070,11 +4631,13 @@ function SpriteSplitModal({
   show,
   onClose,
   sourceImage,
-  removedImage,
+  processImage,
   splitItems,
-  splitOnRemoved = true,
+  splitOnRemoved = false,
+  selectedItemIds,
   enhanceEnabled = true,
-  whiteBackground = false,
+  renderMode = DEFAULT_SPLIT_RENDER_MODE,
+  shapeMode = DEFAULT_SPLIT_SHAPE_MODE,
   canUndo = false,
   busy,
   enhancing,
@@ -4083,8 +4646,11 @@ function SpriteSplitModal({
   statusTone = "info",
   onToggleSplitSource,
   onResplit,
-  onToggleWhiteBackground,
-  onEnhance,
+  onSetRenderMode,
+  onSetShapeMode,
+  onSetEnhanceEnabled,
+  onToggleSelectItem,
+  onMergeSelectedItems,
   onDeleteItem,
   onUndoDelete,
   onExport,
@@ -4093,7 +4659,6 @@ function SpriteSplitModal({
 }) {
   const { uiLanguage, t } = useI18n();
   const uploadInputRef = useRef(null);
-  const [inlineZoomItemId, setInlineZoomItemId] = useState(null);
   const [inlineZoomSource, setInlineZoomSource] = useState(false);
   const [inlineZoomRemoved, setInlineZoomRemoved] = useState(false);
 
@@ -4112,32 +4677,24 @@ function SpriteSplitModal({
 
   useEffect(() => {
     if (!show) {
-      setInlineZoomItemId(null);
       setInlineZoomSource(false);
       setInlineZoomRemoved(false);
       return;
     }
-    const items = Array.isArray(splitItems) ? splitItems : [];
-    if (!items.length) {
-      setInlineZoomItemId(null);
-      return;
-    }
-    if (!inlineZoomItemId) return;
-    const exists = items.some((item, index) => {
-      const key = item?.id || `split-item-${index}`;
-      return key === inlineZoomItemId;
-    });
-    if (!exists) setInlineZoomItemId(null);
-  }, [show, splitItems, inlineZoomItemId]);
+  }, [show]);
 
   useEffect(() => {
     if (!show) return;
     if (!sourceImage) setInlineZoomSource(false);
-    if (!splitOnRemoved || !removedImage) setInlineZoomRemoved(false);
-  }, [show, sourceImage, splitOnRemoved, removedImage]);
+    if (!processImage) setInlineZoomRemoved(false);
+  }, [show, sourceImage, processImage]);
 
   if (!show) return null;
   const items = Array.isArray(splitItems) ? splitItems : [];
+  const selectedSet = selectedItemIds instanceof Set
+    ? selectedItemIds
+    : new Set(Array.isArray(selectedItemIds) ? selectedItemIds : []);
+  const selectedCount = items.reduce((count, item) => (selectedSet.has(item.id) ? count + 1 : count), 0);
   const hasItems = items.length > 0;
   return (
     <div style={S.modalOverlay} onClick={onClose}>
@@ -4204,81 +4761,168 @@ function SpriteSplitModal({
               </div>
             </div>
             <div style={S.splitMidActions}>
-              <button
-                type="button"
-                style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: sourceImage ? 1 : 0.5, cursor: sourceImage ? "pointer" : "not-allowed" }}
-                onClick={onToggleSplitSource}
-                disabled={!sourceImage || busy || exporting || enhancing}
-              >
-                {splitOnRemoved ? t("split.sourceRemoved") : t("split.sourceOriginal")}
-              </button>
-              <button
-                type="button"
-                style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12 }}
-                onClick={onToggleWhiteBackground}
-                disabled={busy || exporting || enhancing}
-              >
-                {whiteBackground ? t("split.whiteBgOn") : t("split.whiteBgOff")}
-              </button>
-              <button
-                type="button"
-                style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: hasItems ? 1 : 0.5, cursor: hasItems ? "pointer" : "not-allowed" }}
-                onClick={onEnhance}
-                disabled={!hasItems || busy || exporting || enhancing}
-              >
-                {enhancing ? t("split.enhancing") : enhanceEnabled ? t("split.qualityEnhanced") : t("split.qualityOriginal")}
-              </button>
-              <button
-                type="button"
-                style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: sourceImage ? 1 : 0.5, cursor: sourceImage ? "pointer" : "not-allowed" }}
-                onClick={onResplit}
-                disabled={!sourceImage || busy || exporting || enhancing}
-              >
-                {busy ? t("common.processing") : t("split.run")}
-              </button>
-            </div>
-            {splitOnRemoved && (
-              <div style={S.splitPane}>
-                <div style={S.splitPaneTitle}>{t("split.removed")}</div>
-                <div style={S.splitOriginalWrap}>
-                  {removedImage ? (
-                    inlineZoomRemoved ? (
-                      <InlineZoomViewer
-                        src={removedImage}
-                        onCollapse={() => setInlineZoomRemoved(false)}
-                        containerStyle={S.splitPaneInlineZoomViewer}
-                        collapseButtonStyle={S.splitPaneInlineZoomCollapseBtn}
-                      />
-                    ) : (
-                      <div style={S.splitImageWrap}>
-                        <img
-                          src={removedImage}
-                          alt={t("split.removed")}
-                          style={S.splitOriginalImg}
-                          onClick={() => setInlineZoomRemoved(true)}
-                        />
-                        <button
-                          type="button"
-                          style={{
-                            ...S.splitImageZoomBtn,
-                            ...(inlineZoomRemoved ? S.splitImageZoomBtnActive : null),
-                          }}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setInlineZoomRemoved((prev) => !prev);
-                          }}
-                          title={t("viewer.inlineViewer")}
-                        >
-                          🔍
-                        </button>
-                      </div>
-                    )
-                  ) : (
-                    <div style={S.turnStyleImageEmpty}>{busy ? t("split.detecting") : "-"}</div>
-                  )}
-                </div>
+              <div style={S.splitToggleGroup}>
+                <button
+                  type="button"
+                  style={{
+                    ...S.splitToggleBtn,
+                    ...(splitOnRemoved ? S.splitToggleBtnActive : null),
+                  }}
+                  disabled={busy || exporting || enhancing}
+                  onClick={() => onToggleSplitSource?.(true)}
+                >
+                  {t("split.sourceRemoved")}
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    ...S.splitToggleBtn,
+                    ...(!splitOnRemoved ? S.splitToggleBtnActive : null),
+                  }}
+                  disabled={busy || exporting || enhancing}
+                  onClick={() => onToggleSplitSource?.(false)}
+                >
+                  {t("split.sourceOriginal")}
+                </button>
               </div>
-            )}
+              <div style={S.splitToggleGroup}>
+                <button
+                  type="button"
+                  style={{
+                    ...S.splitToggleBtn,
+                    ...(renderMode === "painted" ? S.splitToggleBtnActive : null),
+                  }}
+                  disabled={busy || exporting || enhancing}
+                  onClick={() => {
+                    onSetRenderMode?.("painted");
+                  }}
+                >
+                  {t("split.renderPainted")}
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    ...S.splitToggleBtn,
+                    ...(renderMode === "direct" ? S.splitToggleBtnActive : null),
+                  }}
+                  disabled={busy || exporting || enhancing}
+                  onClick={() => {
+                    onSetRenderMode?.("direct");
+                  }}
+                >
+                  {t("split.renderDirect")}
+                </button>
+              </div>
+              <div style={S.splitToggleGroup}>
+                <button
+                  type="button"
+                  style={{
+                    ...S.splitToggleBtn,
+                    ...(shapeMode === "edge" ? S.splitToggleBtnActive : null),
+                  }}
+                  disabled={busy || exporting || enhancing}
+                  onClick={() => {
+                    onSetShapeMode?.("edge");
+                  }}
+                >
+                  {t("split.shapeEdge")}
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    ...S.splitToggleBtn,
+                    ...(shapeMode === "polygon" ? S.splitToggleBtnActive : null),
+                  }}
+                  disabled={busy || exporting || enhancing}
+                  onClick={() => {
+                    onSetShapeMode?.("polygon");
+                  }}
+                >
+                  {t("split.shapePolygon")}
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    ...S.splitToggleBtn,
+                    ...(shapeMode === "rect" ? S.splitToggleBtnActive : null),
+                  }}
+                  disabled={busy || exporting || enhancing}
+                  onClick={() => {
+                    onSetShapeMode?.("rect");
+                  }}
+                >
+                  {t("split.shapeRect")}
+                </button>
+              </div>
+              <div style={S.splitToggleGroup}>
+                <button
+                  type="button"
+                  style={{
+                    ...S.splitToggleBtn,
+                    ...(enhanceEnabled ? S.splitToggleBtnActive : null),
+                  }}
+                  disabled={busy || exporting || enhancing || !hasItems}
+                  onClick={() => {
+                    onSetEnhanceEnabled?.(true);
+                  }}
+                >
+                  {t("split.qualityEnhanced")}
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    ...S.splitToggleBtn,
+                    ...(!enhanceEnabled ? S.splitToggleBtnActive : null),
+                  }}
+                  disabled={busy || exporting || enhancing || !hasItems}
+                  onClick={() => {
+                    onSetEnhanceEnabled?.(false);
+                  }}
+                >
+                  {t("split.qualityOriginal")}
+                </button>
+              </div>
+            </div>
+            <div style={S.splitPane}>
+              <div style={S.splitPaneTitle}>{t("split.process")}</div>
+              <div style={S.splitOriginalWrap}>
+                {processImage ? (
+                  inlineZoomRemoved ? (
+                    <InlineZoomViewer
+                      src={processImage}
+                      onCollapse={() => setInlineZoomRemoved(false)}
+                      containerStyle={S.splitPaneInlineZoomViewer}
+                      collapseButtonStyle={S.splitPaneInlineZoomCollapseBtn}
+                    />
+                  ) : (
+                    <div style={S.splitImageWrap}>
+                      <img
+                        src={processImage}
+                        alt={t("split.process")}
+                        style={S.splitOriginalImg}
+                        onClick={() => setInlineZoomRemoved(true)}
+                      />
+                      <button
+                        type="button"
+                        style={{
+                          ...S.splitImageZoomBtn,
+                          ...(inlineZoomRemoved ? S.splitImageZoomBtnActive : null),
+                        }}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setInlineZoomRemoved((prev) => !prev);
+                        }}
+                        title={t("viewer.inlineViewer")}
+                      >
+                        🔍
+                      </button>
+                    </div>
+                  )
+                ) : (
+                  <div style={S.turnStyleImageEmpty}>{busy ? t("split.detecting") : "-"}</div>
+                )}
+              </div>
+            </div>
           </section>
           <section style={S.splitRightCol}>
             <div style={S.splitRightTop}>
@@ -4287,6 +4931,22 @@ function SpriteSplitModal({
                 <span style={S.splitPaneCount}>{busy ? t("split.detecting") : t("split.count", { count: items.length })}</span>
               </div>
               <div style={S.splitTopActions}>
+                <button
+                  type="button"
+                  style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: sourceImage ? 1 : 0.5, cursor: sourceImage ? "pointer" : "not-allowed" }}
+                  onClick={onResplit}
+                  disabled={!sourceImage || busy || exporting || enhancing}
+                >
+                  {busy ? t("common.processing") : t("split.run")}
+                </button>
+                <button
+                  type="button"
+                  style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: selectedCount >= 2 ? 1 : 0.5, cursor: selectedCount >= 2 ? "pointer" : "not-allowed" }}
+                  onClick={onMergeSelectedItems}
+                  disabled={selectedCount < 2 || busy || exporting || enhancing}
+                >
+                  {t("split.merge")}
+                </button>
                 <button
                   type="button"
                   style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: canUndo ? 1 : 0.5, cursor: canUndo ? "pointer" : "not-allowed" }}
@@ -4312,45 +4972,29 @@ function SpriteSplitModal({
                 <div style={S.splitGrid}>
                   {items.map((item, index) => (
                     <div key={item.id || `split-item-${index}`} style={S.splitItemCell}>
-                      {inlineZoomItemId === (item.id || `split-item-${index}`) ? (
-                        <InlineZoomViewer
-                          src={item.image}
-                          onCollapse={() => setInlineZoomItemId(null)}
-                          containerStyle={S.splitItemInlineZoomViewer}
-                          collapseButtonStyle={S.splitItemInlineZoomCollapseBtn}
-                        />
-                      ) : (
-                        <button
-                          type="button"
-                          style={{
-                            ...S.splitItemBtn,
-                            ...(whiteBackground ? S.splitItemBtnWhiteBg : null),
-                          }}
-                          onClick={() => onPreview?.(item.image)}
-                          title={t("split.previewSplit", { index: index + 1 })}
-                        >
-                          <div style={S.splitItemOrder}>{index + 1}</div>
-                          <img
-                            src={item.image}
-                            alt={`Split ${index + 1}`}
-                            style={{ ...S.splitItemImg, ...(whiteBackground ? { background: "#ffffff" } : null) }}
-                          />
-                        </button>
-                      )}
                       <button
                         type="button"
                         style={{
-                          ...S.splitItemZoomBtn,
-                          ...(inlineZoomItemId === (item.id || `split-item-${index}`) ? S.splitItemZoomBtnActive : null),
+                          ...S.splitItemSelectBtn,
+                          ...(selectedSet.has(item.id) ? S.splitItemSelectBtnActive : null),
                         }}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          const nextId = item.id || `split-item-${index}`;
-                          setInlineZoomItemId((prev) => (prev === nextId ? null : nextId));
-                        }}
-                        title={t("viewer.inlineViewer")}
+                        onClick={() => onToggleSelectItem?.(item.id)}
+                        title={t("split.merge")}
                       >
-                        🔍
+                        {selectedSet.has(item.id) ? "✓" : "○"}
+                      </button>
+                      <button
+                        type="button"
+                        style={S.splitItemBtn}
+                        onClick={() => onPreview?.(item.image)}
+                        title={t("split.previewSplit", { index: index + 1 })}
+                      >
+                        <div style={S.splitItemOrder}>{index + 1}</div>
+                        <img
+                          src={item.image}
+                          alt={`Split ${index + 1}`}
+                          style={S.splitItemImg}
+                        />
                       </button>
                       <button
                         type="button"
@@ -4458,17 +5102,6 @@ function HelpPage() {
           ],
         },
         {
-          title: "自动切分弹窗",
-          lines: [
-            "历史记录里每张图右下角的圆形切分按钮会打开自动切分弹窗。",
-            "弹窗左侧依次是原图、按键行、去背景图；右侧上方是导出按钮，下方是切分结果。",
-            "按键行支持 `去背景/带背景切换`（默认去背景）、`白底图/透明图切换`（默认白底）、`原清晰度/清晰度增强`（默认增强）和 `重新切分`。",
-            "`上传图片` 按钮在左侧原图框右下角，上传后会立刻自动切分；`撤回` 按钮在右侧顶部，和 `导出` 并排。",
-            "当切到 `带背景` 直接切分时，切分会按原图执行，左侧去背景图会隐藏不显示。",
-            "原图、去背景图和右侧切分图都支持放大镜进入框内缩放：滚轮缩放、按住拖拽平移、右上角按钮收起。",
-          ],
-        },
-        {
           title: "GPT 助手",
           lines: [
             "GPT 助手目前有两种用法。",
@@ -4514,6 +5147,13 @@ function HelpPage() {
             "这个顺序会同时用于缩略图生成和 atlas 文件夹导出。",
           ],
         },
+        {
+          title: "自动切分弹窗",
+          lines: [
+            "历史记录里每张图右下角的圆形切分按钮会打开自动切分弹窗。",
+            "会按照配置将资产表切分为独立资产。",
+          ],
+        },
       ]
     : [
         {
@@ -4539,17 +5179,6 @@ function HelpPage() {
             "Each image has three actions: `Save` downloads it.",
             "`Retry` replaces that image with a new render.",
             "`+1` keeps the current images and adds one more render to the same task.",
-          ],
-        },
-        {
-          title: "Auto Split Modal",
-          lines: [
-            "In history, the round split button at the bottom-right of each image opens the auto split modal.",
-            "The left column shows original image, action row, and removed-background image; the right column shows export on top and split results below.",
-            "The action row supports `Removed/Original source` (default removed), `White/Transparent preview` (default white), `Original/Enhanced quality` (default enhanced), and `Re-split`.",
-            "The `Upload Image` button is at the bottom-right corner of the original image panel and runs split immediately after upload; the `Undo` button is in the top-right header next to `Export`.",
-            "When source is switched to `Original`, splitting runs on the original image and the removed-background preview panel is hidden.",
-            "Original image, removed image, and split result tiles all support inline zoom mode: wheel to zoom, hold-drag to pan, and the corner button to collapse.",
           ],
         },
         {
@@ -4596,6 +5225,13 @@ function HelpPage() {
           lines: [
             "In `Style`, open `Thumbnail` to drag selected images into the order you want.",
             "That order is used for both the generated thumbnail and atlas export.",
+          ],
+        },
+        {
+          title: "Auto Split Modal",
+          lines: [
+            "In history, the round split button at the bottom-right of each image opens the auto split modal.",
+            "It splits the asset sheet into separate assets based on the current configuration.",
           ],
         },
       ];
@@ -4789,7 +5425,6 @@ function InlineZoomViewer({ src, onCollapse, containerStyle = null, collapseButt
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
-  const [wheelActive, setWheelActive] = useState(false);
 
   const clampScale = useCallback((value) => Math.max(1, Math.min(6, Number(value) || 1)), []);
 
@@ -4797,12 +5432,10 @@ function InlineZoomViewer({ src, onCollapse, containerStyle = null, collapseButt
     setScale(1);
     setOffset({ x: 0, y: 0 });
     setDragging(false);
-    setWheelActive(false);
     dragRef.current = null;
   }, [src]);
 
   const handleWheel = useCallback((event) => {
-    if (!wheelActive) return;
     event.preventDefault();
     event.stopPropagation();
     const delta = event.deltaY < 0 ? 0.2 : -0.2;
@@ -4813,7 +5446,7 @@ function InlineZoomViewer({ src, onCollapse, containerStyle = null, collapseButt
       }
       return next;
     });
-  }, [clampScale, wheelActive]);
+  }, [clampScale]);
 
   useEffect(() => {
     const node = viewportRef.current;
@@ -4848,7 +5481,6 @@ function InlineZoomViewer({ src, onCollapse, containerStyle = null, collapseButt
 
   const handleMouseDown = useCallback((event) => {
     if (event.button !== 0) return;
-    setWheelActive(true);
     if (scale <= 1.02) return;
     event.preventDefault();
     dragRef.current = {
@@ -4876,7 +5508,6 @@ function InlineZoomViewer({ src, onCollapse, containerStyle = null, collapseButt
         ref={viewportRef}
         style={{ ...S.inlineZoomViewerViewport, ...(viewportStyle || null) }}
         onMouseDown={handleMouseDown}
-        onClick={() => setWheelActive(true)}
         onDoubleClick={() => {
           setScale(1);
           setOffset({ x: 0, y: 0 });
@@ -5687,8 +6318,11 @@ export default function App() {
   const [splitExporting, setSplitExporting] = useState(false);
   const [splitEnhancing, setSplitEnhancing] = useState(false);
   const [splitEnhanceEnabled, setSplitEnhanceEnabled] = useState(true);
-  const [splitWhiteBackground, setSplitWhiteBackground] = useState(true);
-  const [splitUseRemovedSource, setSplitUseRemovedSource] = useState(true);
+  const [splitUseRemovedSource, setSplitUseRemovedSource] = useState(false);
+  const [splitRenderMode, setSplitRenderMode] = useState(DEFAULT_SPLIT_RENDER_MODE);
+  const [splitShapeMode, setSplitShapeMode] = useState(DEFAULT_SPLIT_SHAPE_MODE);
+  const [splitBackgroundColor, setSplitBackgroundColor] = useState(DEFAULT_SPLIT_BG_COLOR);
+  const [splitSelectedItemIds, setSplitSelectedItemIds] = useState(new Set());
   const [splitUndoStack, setSplitUndoStack] = useState([]);
   const [splitStatusText, setSplitStatusText] = useState("");
   const [splitStatusTone, setSplitStatusTone] = useState("info");
@@ -5697,6 +6331,7 @@ export default function App() {
     image: "",
     originalImage: "",
     sourceImage: "",
+    processImage: "",
     removedBaseImage: "",
     removedEnhancedImage: "",
     removedImage: "",
@@ -6427,20 +7062,23 @@ export default function App() {
 
   const runSplitForImage = useCallback(async (payload, options = {}) => {
     const openModal = options.openModal !== false;
-    const defaultWhite = options.whiteBackground !== false;
+    const defaultRenderMode = normalizeSplitRenderMode(options.renderMode);
+    const defaultShapeMode = normalizeSplitShapeMode(options.shapeMode);
     const defaultEnhance = options.enhance !== false;
-    const defaultUseRemoved = options.useRemovedSource !== false;
+    const defaultUseRemoved = options.useRemovedSource === true;
     const resetUndo = options.resetUndo !== false;
     const imageKey = payload?.key || `split-${Date.now()}`;
     const rawImage = payload?.image;
     if (!rawImage) return;
     if (openModal) setShowSplitModal(true);
-    setSplitUseRemovedSource(defaultUseRemoved);
-    setSplitWhiteBackground(defaultWhite);
+    setSplitRenderMode(defaultRenderMode);
+    setSplitShapeMode(defaultShapeMode);
     setSplitEnhanceEnabled(defaultEnhance);
+    setSplitUseRemovedSource(defaultUseRemoved);
     setSplitBusy(true);
     setSplitExporting(false);
     setSplitEnhancing(defaultEnhance);
+    setSplitSelectedItemIds(new Set());
     if (resetUndo) setSplitUndoStack([]);
     setSplitStatusTone("info");
     setSplitStatusText(t("split.detecting"));
@@ -6453,6 +7091,7 @@ export default function App() {
       removedImage: "",
       removedBaseImage: "",
       removedEnhancedImage: "",
+      processImage: "",
       items: [],
       sourceImage: "",
       width: 0,
@@ -6469,16 +7108,22 @@ export default function App() {
         throw new Error(t("errors.failedToFetch"));
       }
       const originalSplit = await splitImageBySubjects(normalized);
-      const removedSplitSource = originalSplit.removedImage || normalized;
-      // Keep source semantics explicit: "Original" mode always splits from original image.
-      const splitTarget = defaultUseRemoved ? removedSplitSource : normalized;
-      const splitResult = defaultUseRemoved ? await splitImageBySubjects(removedSplitSource) : originalSplit;
+      let splitResult = originalSplit;
+      if (defaultUseRemoved) {
+        splitResult = await splitImageBySubjects(originalSplit.removedImage);
+      }
+      const splitTarget = defaultUseRemoved ? originalSplit.removedImage : normalized;
+      const nextBackgroundColor = originalSplit.backgroundColor || DEFAULT_SPLIT_BG_COLOR;
+      setSplitBackgroundColor(nextBackgroundColor);
       const preparedItems = await buildSplitItemDisplayList(
         splitResult.items.map((item, index) => ({ ...item, index: index + 1 })),
         {
-        whiteBackground: defaultWhite,
-        enhance: defaultEnhance,
-      });
+          renderMode: defaultRenderMode,
+          shapeMode: defaultShapeMode,
+          backgroundColor: nextBackgroundColor,
+          enhance: defaultEnhance,
+        }
+      );
       const removedDisplay = await buildRemovedDisplayImage(originalSplit.removedImage, {
         enhance: defaultEnhance,
         cachedEnhanced: "",
@@ -6490,6 +7135,7 @@ export default function App() {
         image: splitTarget,
         originalImage: normalized,
         sourceImage: splitResult.sourceImage,
+        processImage: splitResult.processImage || splitResult.sourceImage,
         removedBaseImage: originalSplit.removedImage,
         removedEnhancedImage: removedDisplay.enhancedImage,
         removedImage: removedDisplay.image,
@@ -6522,6 +7168,7 @@ export default function App() {
         image: rawImage,
         originalImage: "",
         sourceImage: "",
+        processImage: "",
         removedImage: "",
         removedBaseImage: "",
         removedEnhancedImage: "",
@@ -6541,9 +7188,10 @@ export default function App() {
   const openSplitModalForImage = useCallback((payload) => {
     runSplitForImage(payload, {
       openModal: true,
-      whiteBackground: true,
+      renderMode: DEFAULT_SPLIT_RENDER_MODE,
+      shapeMode: DEFAULT_SPLIT_SHAPE_MODE,
       enhance: true,
-      useRemovedSource: true,
+      useRemovedSource: false,
       resetUndo: true,
     });
   }, [runSplitForImage]);
@@ -6559,33 +7207,14 @@ export default function App() {
       },
       {
         openModal: false,
-        whiteBackground: splitWhiteBackground,
+        renderMode: splitRenderMode,
+        shapeMode: splitShapeMode,
         enhance: splitEnhanceEnabled,
         useRemovedSource: splitUseRemovedSource,
         resetUndo: true,
       }
     );
-  }, [splitContext, runSplitForImage, splitWhiteBackground, splitEnhanceEnabled, splitUseRemovedSource]);
-
-  const toggleSplitSourceMode = useCallback(() => {
-    const source = splitContext.originalImage || splitContext.image;
-    if (!source) return;
-    const nextUseRemoved = !splitUseRemovedSource;
-    runSplitForImage(
-      {
-        ...splitContext,
-        image: source,
-        key: splitContext.key || `split-${Date.now()}`,
-      },
-      {
-        openModal: false,
-        whiteBackground: splitWhiteBackground,
-        enhance: splitEnhanceEnabled,
-        useRemovedSource: nextUseRemoved,
-        resetUndo: true,
-      }
-    );
-  }, [splitContext, splitUseRemovedSource, runSplitForImage, splitWhiteBackground, splitEnhanceEnabled]);
+  }, [splitContext, runSplitForImage, splitRenderMode, splitShapeMode, splitEnhanceEnabled, splitUseRemovedSource]);
 
   const uploadSplitImageFromModal = useCallback(async (imageDataUrl, file) => {
     if (typeof imageDataUrl !== "string" || !imageDataUrl.startsWith("data:image/")) return;
@@ -6607,23 +7236,49 @@ export default function App() {
       },
       {
         openModal: true,
-        whiteBackground: splitWhiteBackground,
+        renderMode: splitRenderMode,
+        shapeMode: splitShapeMode,
         enhance: splitEnhanceEnabled,
         useRemovedSource: splitUseRemovedSource,
         resetUndo: true,
       }
     );
-  }, [runSplitForImage, splitWhiteBackground, splitEnhanceEnabled, splitUseRemovedSource]);
+  }, [runSplitForImage, splitRenderMode, splitShapeMode, splitEnhanceEnabled, splitUseRemovedSource]);
 
-  const toggleSplitWhiteBackground = useCallback(async () => {
-    const nextWhite = !splitWhiteBackground;
-    setSplitWhiteBackground(nextWhite);
+  const toggleSplitSourceMode = useCallback((useRemovedSource) => {
+    const nextUseRemoved = useRemovedSource === true;
+    if (nextUseRemoved === splitUseRemovedSource) return;
+    const source = splitContext.originalImage || splitContext.sourceImage || splitContext.image;
+    if (!source) return;
+    runSplitForImage(
+      {
+        ...splitContext,
+        image: splitContext.originalImage || source,
+        key: splitContext.key || `split-${Date.now()}`,
+      },
+      {
+        openModal: false,
+        renderMode: splitRenderMode,
+        shapeMode: splitShapeMode,
+        enhance: splitEnhanceEnabled,
+        useRemovedSource: nextUseRemoved,
+        resetUndo: true,
+      }
+    );
+  }, [splitUseRemovedSource, splitContext, runSplitForImage, splitRenderMode, splitShapeMode, splitEnhanceEnabled]);
+
+  const setSplitRenderModeMode = useCallback(async (mode) => {
+    const nextMode = normalizeSplitRenderMode(mode);
+    if (nextMode === splitRenderMode) return;
+    setSplitRenderMode(nextMode);
     const items = Array.isArray(splitContext.items) ? splitContext.items : [];
     if (!items.length) return;
     setSplitBusy(true);
     try {
       const nextItems = await buildSplitItemDisplayList(items, {
-        whiteBackground: nextWhite,
+        renderMode: nextMode,
+        shapeMode: splitShapeMode,
+        backgroundColor: splitBackgroundColor,
         enhance: splitEnhanceEnabled,
       });
       setSplitContext((prev) => ({
@@ -6640,10 +7295,168 @@ export default function App() {
     } finally {
       setSplitBusy(false);
     }
-  }, [splitWhiteBackground, splitContext.items, splitEnhanceEnabled, t]);
+  }, [splitRenderMode, splitContext.items, splitShapeMode, splitBackgroundColor, splitEnhanceEnabled, t]);
+
+  const setSplitShapeModeMode = useCallback(async (mode) => {
+    const nextMode = normalizeSplitShapeMode(mode);
+    if (nextMode === splitShapeMode) return;
+    setSplitShapeMode(nextMode);
+    const items = Array.isArray(splitContext.items) ? splitContext.items : [];
+    if (!items.length) return;
+    setSplitBusy(true);
+    try {
+      const nextItems = await buildSplitItemDisplayList(items, {
+        renderMode: splitRenderMode,
+        shapeMode: nextMode,
+        backgroundColor: splitBackgroundColor,
+        enhance: splitEnhanceEnabled,
+      });
+      setSplitContext((prev) => ({
+        ...prev,
+        items: nextItems,
+      }));
+    } catch (err) {
+      setSplitStatusTone("error");
+      setSplitStatusText(
+        t("split.loadFailed", {
+          error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t),
+        })
+      );
+    } finally {
+      setSplitBusy(false);
+    }
+  }, [splitShapeMode, splitContext.items, splitRenderMode, splitBackgroundColor, splitEnhanceEnabled, t]);
+
+  const toggleSplitItemSelected = useCallback((itemId) => {
+    if (!itemId) return;
+    setSplitSelectedItemIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) {
+        next.delete(itemId);
+      } else {
+        next.add(itemId);
+      }
+      return next;
+    });
+  }, []);
+
+  const mergeSelectedSplitItems = useCallback(async () => {
+    const items = Array.isArray(splitContext.items) ? splitContext.items : [];
+    if (!items.length) return;
+    const selected = items
+      .map((item, idx) => ({ item, idx }))
+      .filter(({ item }) => splitSelectedItemIds.has(item.id));
+    if (selected.length < 2) {
+      setSplitStatusTone("error");
+      setSplitStatusText(t("split.mergeNeedTwo"));
+      return;
+    }
+    setSplitBusy(true);
+    try {
+      const pickedItems = selected.map(({ item }) => item);
+      let minX = Number.POSITIVE_INFINITY;
+      let minY = Number.POSITIVE_INFINITY;
+      let maxX = Number.NEGATIVE_INFINITY;
+      let maxY = Number.NEGATIVE_INFINITY;
+      let areaSum = 0;
+      for (let i = 0; i < pickedItems.length; i += 1) {
+        const item = pickedItems[i];
+        const x = Number(item.x) || 0;
+        const y = Number(item.y) || 0;
+        const { baseWidth, baseHeight } = getSplitItemBaseSize(item);
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x + baseWidth);
+        maxY = Math.max(maxY, y + baseHeight);
+        areaSum += Number(item.area) || 0;
+      }
+      if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+        throw new Error("Invalid merge bounds");
+      }
+      const mergedBounds = {
+        x: Math.max(0, Math.floor(minX)),
+        y: Math.max(0, Math.floor(minY)),
+      };
+      mergedBounds.width = Math.max(1, Math.ceil(maxX) - mergedBounds.x);
+      mergedBounds.height = Math.max(1, Math.ceil(maxY) - mergedBounds.y);
+      const [rectImage, edgeImage, polygonImage] = await Promise.all([
+        composeMergedSplitField(pickedItems, "rect", mergedBounds),
+        composeMergedSplitField(pickedItems, "edge", mergedBounds),
+        composeMergedSplitField(pickedItems, "polygon", mergedBounds),
+      ]);
+      const mergedId = `subject-merge-${Date.now()}`;
+      const mergedRaw = {
+        id: mergedId,
+        index: 1,
+        x: mergedBounds.x,
+        y: mergedBounds.y,
+        width: mergedBounds.width,
+        height: mergedBounds.height,
+        baseWidth: mergedBounds.width,
+        baseHeight: mergedBounds.height,
+        area: areaSum || mergedBounds.width * mergedBounds.height,
+        rectImage: rectImage || edgeImage || polygonImage,
+        edgeImage: edgeImage || polygonImage || rectImage,
+        polygonImage: polygonImage || edgeImage || rectImage,
+        transparentImage: edgeImage || polygonImage || rectImage,
+        enhancedRectImage: "",
+        enhancedRectWidth: 0,
+        enhancedRectHeight: 0,
+        enhancedEdgeImage: "",
+        enhancedEdgeWidth: 0,
+        enhancedEdgeHeight: 0,
+        enhancedPolygonImage: "",
+        enhancedPolygonWidth: 0,
+        enhancedPolygonHeight: 0,
+        paintedRectImage: "",
+        paintedEdgeImage: "",
+        paintedPolygonImage: "",
+        paintedEnhancedRectImage: "",
+        paintedEnhancedEdgeImage: "",
+        paintedEnhancedPolygonImage: "",
+        paintedBackgroundColor: "",
+        image: edgeImage || polygonImage || rectImage,
+      };
+      const selectedIdSet = new Set(pickedItems.map((item) => item.id));
+      const firstIndex = Math.min(...selected.map((entry) => entry.idx));
+      const remaining = items.filter((item) => !selectedIdSet.has(item.id));
+      remaining.splice(firstIndex, 0, mergedRaw);
+      const nextItems = await buildSplitItemDisplayList(
+        remaining.map((item, index) => ({ ...item, index: index + 1 })),
+        {
+          renderMode: splitRenderMode,
+          shapeMode: splitShapeMode,
+          backgroundColor: splitBackgroundColor,
+          enhance: splitEnhanceEnabled,
+        }
+      );
+      setSplitContext((prev) => ({
+        ...prev,
+        items: nextItems,
+      }));
+      setSplitSelectedItemIds(new Set([mergedId]));
+      setSplitStatusTone("info");
+      setSplitStatusText(t("split.merged", { count: selected.length }));
+    } catch (err) {
+      setSplitStatusTone("error");
+      setSplitStatusText(
+        t("split.loadFailed", {
+          error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t),
+        })
+      );
+    } finally {
+      setSplitBusy(false);
+    }
+  }, [splitContext.items, splitSelectedItemIds, splitRenderMode, splitShapeMode, splitBackgroundColor, splitEnhanceEnabled, t]);
 
   const deleteSplitItem = useCallback((itemId) => {
     if (!itemId) return;
+    setSplitSelectedItemIds((prev) => {
+      if (!prev.has(itemId)) return prev;
+      const next = new Set(prev);
+      next.delete(itemId);
+      return next;
+    });
     setSplitContext((prev) => {
       const items = Array.isArray(prev.items) ? prev.items : [];
       const index = items.findIndex((item) => item.id === itemId);
@@ -6684,21 +7497,38 @@ export default function App() {
     });
   }, [t]);
 
-  const enhanceSplitItems = useCallback(async () => {
+  const setSplitEnhanceMode = useCallback(async (targetEnhance) => {
     const items = Array.isArray(splitContext.items) ? splitContext.items : [];
     const hasRemoved = !!splitContext.removedBaseImage;
     if (!items.length && !hasRemoved) return;
-    const nextEnhance = !splitEnhanceEnabled;
+    const nextEnhance = targetEnhance !== false;
+    if (nextEnhance === splitEnhanceEnabled) return;
     setSplitEnhanceEnabled(nextEnhance);
     setSplitEnhancing(nextEnhance);
     setSplitStatusTone("info");
     setSplitStatusText(nextEnhance ? t("split.enhancing") : t("split.qualityOriginal"));
     try {
       const sourceItems = nextEnhance
-        ? items.map((item) => ({ ...item, enhancedImage: "", whiteEnhancedImage: "" }))
+        ? items.map((item) => ({
+            ...item,
+            enhancedRectImage: "",
+            enhancedRectWidth: 0,
+            enhancedRectHeight: 0,
+            enhancedEdgeImage: "",
+            enhancedEdgeWidth: 0,
+            enhancedEdgeHeight: 0,
+            enhancedPolygonImage: "",
+            enhancedPolygonWidth: 0,
+            enhancedPolygonHeight: 0,
+            paintedEnhancedRectImage: "",
+            paintedEnhancedEdgeImage: "",
+            paintedEnhancedPolygonImage: "",
+          }))
         : items;
       const nextItems = await buildSplitItemDisplayList(sourceItems, {
-        whiteBackground: splitWhiteBackground,
+        renderMode: splitRenderMode,
+        shapeMode: splitShapeMode,
+        backgroundColor: splitBackgroundColor,
         enhance: nextEnhance,
       });
       const removedDisplay = await buildRemovedDisplayImage(splitContext.removedBaseImage, {
@@ -6728,7 +7558,7 @@ export default function App() {
     } finally {
       setSplitEnhancing(false);
     }
-  }, [splitContext.items, splitContext.removedBaseImage, splitContext.removedEnhancedImage, splitWhiteBackground, splitEnhanceEnabled, t]);
+  }, [splitContext.items, splitContext.removedBaseImage, splitContext.removedEnhancedImage, splitRenderMode, splitShapeMode, splitBackgroundColor, splitEnhanceEnabled, t]);
 
   const exportSplitItems = useCallback(async () => {
     const items = Array.isArray(splitContext.items) ? splitContext.items : [];
@@ -6788,7 +7618,9 @@ export default function App() {
               file: sourceData ? `original.${sourceData.ext}` : "",
             },
             splitSource: splitUseRemovedSource ? "removed-background" : "original",
-            whiteBackground: splitWhiteBackground,
+            renderMode: splitRenderMode,
+            shapeMode: splitShapeMode,
+            backgroundColor: splitBackgroundColor,
             enhanced: splitEnhanceEnabled,
             itemCount: manifestItems.length,
             items: manifestItems,
@@ -6812,7 +7644,7 @@ export default function App() {
     } finally {
       setSplitExporting(false);
     }
-  }, [splitContext, splitUseRemovedSource, splitWhiteBackground, splitEnhanceEnabled, t]);
+  }, [splitContext, splitUseRemovedSource, splitRenderMode, splitShapeMode, splitBackgroundColor, splitEnhanceEnabled, t]);
 
   const clearAllSelections = useCallback(() => {
     if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
@@ -7497,6 +8329,18 @@ export default function App() {
     ? t("common.savedAt", { time: formatUiTime(gptAssistSavedAt, uiLanguage) })
     : t("common.saved");
 
+  useEffect(() => {
+    if (!folderSupported || historyDirHandle || typeof window === "undefined") return;
+    let cancelled = false;
+    requestAnimationFrame(() => {
+      if (cancelled) return;
+      handlePickHistoryFolder();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [folderSupported, handlePickHistoryFolder, historyDirHandle]);
+
   return (
     <I18nContext.Provider value={{ uiLanguage, t }}>
     <div style={{ ...S.root, fontWeight: uiLanguage === "zh" ? 360 : undefined }}>
@@ -8173,11 +9017,13 @@ export default function App() {
           setSplitStatusTone("info");
         }}
         sourceImage={splitContext.originalImage || splitContext.sourceImage}
-        removedImage={splitContext.removedImage}
+        processImage={splitContext.processImage}
         splitItems={splitContext.items}
         splitOnRemoved={splitUseRemovedSource}
+        selectedItemIds={splitSelectedItemIds}
         enhanceEnabled={splitEnhanceEnabled}
-        whiteBackground={splitWhiteBackground}
+        renderMode={splitRenderMode}
+        shapeMode={splitShapeMode}
         canUndo={splitUndoStack.length > 0}
         busy={splitBusy}
         enhancing={splitEnhancing}
@@ -8186,8 +9032,11 @@ export default function App() {
         statusTone={splitStatusTone}
         onToggleSplitSource={toggleSplitSourceMode}
         onResplit={reSplitCurrentImage}
-        onToggleWhiteBackground={toggleSplitWhiteBackground}
-        onEnhance={enhanceSplitItems}
+        onSetRenderMode={setSplitRenderModeMode}
+        onSetShapeMode={setSplitShapeModeMode}
+        onSetEnhanceEnabled={setSplitEnhanceMode}
+        onToggleSelectItem={toggleSplitItemSelected}
+        onMergeSelectedItems={mergeSelectedSplitItems}
         onDeleteItem={deleteSplitItem}
         onUndoDelete={undoDeleteSplitItem}
         onExport={exportSplitItems}
@@ -8419,9 +9268,12 @@ const S = {
   splitRightCol: { borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: 10, display: "grid", gap: 10, minHeight: 520, alignContent: "start" },
   splitRightTop: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" },
   splitTopActions: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
-  splitRightBody: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(0,0,0,0.2)", padding: 8, minHeight: 430, maxHeight: "62vh", overflow: "auto", alignContent: "start" },
+  splitRightBody: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(0,0,0,0.2)", padding: 10, minHeight: 430, overflow: "visible", alignContent: "start" },
   splitPane: { borderRadius: 12, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", padding: 10, display: "grid", gap: 8, alignContent: "start", minHeight: 300 },
-  splitMidActions: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(2,6,23,0.38)", padding: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" },
+  splitMidActions: { borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(2,6,23,0.38)", padding: 8, display: "flex", gap: 8, flexWrap: "nowrap", overflowX: "auto", alignItems: "center" },
+  splitToggleGroup: { display: "inline-flex", alignItems: "center", gap: 6, padding: 2, borderRadius: 999, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(2,6,23,0.48)" },
+  splitToggleBtn: { height: 26, padding: "0 10px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.14)", background: "rgba(255,255,255,0.03)", color: "#cbd5e1", fontFamily: mono, fontSize: 11, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", whiteSpace: "nowrap" },
+  splitToggleBtnActive: { borderColor: THEME_PRIMARY_BORDER, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT },
   splitPaneTitle: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, fontSize: 12, color: "#e4e4e7", fontFamily: mono, textTransform: "uppercase", letterSpacing: 0.4 },
   splitPaneCount: { fontSize: 11, color: "#94a3b8", textTransform: "none", letterSpacing: 0, marginLeft: "auto" },
   splitOriginalWrap: { position: "relative", borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.08)", background: "#0b0b0d", minHeight: 260, display: "flex", alignItems: "center", justifyContent: "center" },
@@ -8432,12 +9284,14 @@ const S = {
   splitImageUploadBtn: { position: "absolute", right: 8, bottom: 8, zIndex: 4, height: 24, minWidth: 68, padding: "0 8px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.2)", background: "rgba(2,6,23,0.88)", color: "#e2e8f0", fontSize: 11, fontFamily: mono, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" },
   splitPaneInlineZoomViewer: { width: "100%", maxWidth: "100%", height: "min(520px, 62vh)", borderRadius: 10, border: "1px solid rgba(59,130,246,0.45)", background: "rgba(8,47,73,0.24)", boxShadow: "0 0 0 1px rgba(59,130,246,0.16), 0 10px 24px rgba(2,6,23,0.24)" },
   splitPaneInlineZoomCollapseBtn: { top: 8, right: 8, width: 24, height: 24, borderRadius: 12, fontSize: 12 },
-  splitGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))", gap: 8, alignContent: "start" },
+  splitGrid: { display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10, alignContent: "start" },
   splitItemCell: { position: "relative" },
-  splitItemBtn: { position: "relative", border: "1px solid rgba(255,255,255,0.1)", background: "rgba(2,6,23,0.5)", borderRadius: 10, overflow: "hidden", padding: 0, cursor: "zoom-in", textAlign: "left" },
+  splitItemBtn: { position: "relative", width: "100%", border: "1px solid rgba(255,255,255,0.1)", background: "rgba(2,6,23,0.5)", borderRadius: 10, overflow: "hidden", padding: 0, cursor: "zoom-in", textAlign: "left" },
   splitItemBtnWhiteBg: { background: "#ffffff" },
   splitItemOrder: { position: "absolute", top: 6, left: 6, minWidth: 20, height: 20, borderRadius: 10, padding: "0 6px", background: "rgba(2,6,23,0.78)", color: "#f8fafc", fontFamily: mono, fontSize: 10, display: "inline-flex", alignItems: "center", justifyContent: "center", zIndex: 2 },
-  splitItemImg: { width: "100%", aspectRatio: "1 / 1", objectFit: "contain", display: "block", background: "#020617" },
+  splitItemImg: { width: "100%", minHeight: 160, maxHeight: 280, objectFit: "contain", display: "block", background: "#020617" },
+  splitItemSelectBtn: { position: "absolute", top: 6, right: 54, zIndex: 3, width: 20, height: 20, borderRadius: 10, border: "1px solid rgba(148,163,184,0.65)", background: "rgba(15,23,42,0.86)", color: "#e2e8f0", fontSize: 11, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },
+  splitItemSelectBtnActive: { borderColor: THEME_PRIMARY_BORDER, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT },
   splitItemZoomBtn: { position: "absolute", top: 6, right: 30, zIndex: 3, width: 20, height: 20, borderRadius: 10, border: "1px solid rgba(255,255,255,0.16)", background: "rgba(2,6,23,0.82)", color: "#e2e8f0", fontSize: 11, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },
   splitItemZoomBtnActive: { borderColor: THEME_PRIMARY_BORDER, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT },
   splitItemDeleteBtn: { position: "absolute", top: 6, right: 6, zIndex: 3, width: 20, height: 20, borderRadius: 10, border: "1px solid rgba(248,113,113,0.65)", background: "rgba(127,29,29,0.88)", color: "#fee2e2", fontSize: 11, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },
