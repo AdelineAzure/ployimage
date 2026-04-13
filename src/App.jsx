@@ -52,6 +52,8 @@ const DEFAULT_API_BASE_URL = "https://api.deerapi.com";
 const DEFAULT_API_KEY = "";
 const DEFAULT_GPT_ASSIST_MODEL = "gpt-4o-mini";
 const DEFAULT_GPT_ASSIST_PROMPT = "你是一个提示词优化助手。你只改写 {{ }} 里的内容，保持用户原有写作风格、长度和随机感，不要改动大括号外的任何字符。";
+const DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT = true;
+const DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE = true;
 const DEFAULT_STYLE_THEME_ASSIST_PROMPT =
   "你是主题联想助手。用户会给你一个主题词，请输出12个可用于视觉创作的相关元素，要求具体、可见、彼此有区分。只输出JSON：{\"themes\":[\"...\", \"...\"]}，数组长度必须为12。";
 const PROMPT_EDITOR_MIN_HEIGHT = 104;
@@ -106,10 +108,17 @@ const UI_TEXT = {
     "gpt.title": "GPT Prompt",
     "gpt.rewriteLabel": "GPT Rewrite Instruction",
     "gpt.themeLabel": "Style Theme Association Instruction",
+    "gpt.contextLabel": "Prompt Context",
+    "gpt.sendPromptTextLabel": "Send prompt text",
+    "gpt.sendPromptTextHint": "Turning this off stops sending the current prompt text to GPT.",
+    "gpt.sendPromptImageLabel": "Send prompt image",
+    "gpt.sendPromptImageHint": "Turning this off stops sending the current input image to GPT.",
     "common.save": "Save",
     "common.saved": "Saved",
     "common.unsavedChanges": "Unsaved changes",
     "common.savedAt": "Saved at {{time}}",
+    "common.on": "On",
+    "common.off": "Off",
     "common.upload": "Upload",
     "common.processing": "Processing...",
     "common.unknownError": "Unknown error",
@@ -321,10 +330,17 @@ const UI_TEXT = {
     "gpt.title": "GPT 提示词",
     "gpt.rewriteLabel": "GPT 改写指令",
     "gpt.themeLabel": "主题联想指令",
+    "gpt.contextLabel": "Prompt 上下文",
+    "gpt.sendPromptTextLabel": "发送 prompt 文本",
+    "gpt.sendPromptTextHint": "关闭后，当前提示词文本不会发送给 GPT。",
+    "gpt.sendPromptImageLabel": "发送 prompt 图片",
+    "gpt.sendPromptImageHint": "关闭后，当前输入图片不会发送给 GPT。",
     "common.save": "保存",
     "common.saved": "已保存",
     "common.unsavedChanges": "有未保存改动",
     "common.savedAt": "保存于 {{time}}",
+    "common.on": "开启",
+    "common.off": "关闭",
     "common.upload": "上传",
     "common.processing": "处理中...",
     "common.unknownError": "未知错误",
@@ -887,6 +903,11 @@ function normalizeGptAssistPrompt(value) {
   if (typeof value !== "string") return DEFAULT_GPT_ASSIST_PROMPT;
   const next = value.trim();
   return next || DEFAULT_GPT_ASSIST_PROMPT;
+}
+
+function normalizeGptAssistFlag(value, fallback = true) {
+  if (typeof value === "boolean") return value;
+  return fallback;
 }
 
 function normalizeStyleThemeAssistPrompt(value) {
@@ -2006,6 +2027,41 @@ function buildSplitProcessPreview(imageData, mask, width, height) {
   return canvas.toDataURL("image/png");
 }
 
+async function buildSplitProcessPreviewForShape(sourceImage, baseProcessImage, items = [], shapeMode = DEFAULT_SPLIT_SHAPE_MODE) {
+  const mode = normalizeSplitShapeMode(shapeMode);
+  const fallbackImage = normalizeImageValue(baseProcessImage) || normalizeImageValue(sourceImage) || "";
+  if (mode !== "rect") return fallbackImage;
+  const normalizedSource = normalizeImageValue(sourceImage) || fallbackImage;
+  if (!normalizedSource) return fallbackImage;
+  const image = await loadImageElement(normalizedSource);
+  const width = Math.max(1, image.naturalWidth || image.width || 1);
+  const height = Math.max(1, image.naturalHeight || image.height || 1);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return fallbackImage;
+  ctx.drawImage(image, 0, 0, width, height);
+  const strokeWidth = Math.max(2, Math.min(6, Math.round(Math.min(width, height) / 220) || 2));
+  ctx.strokeStyle = "rgba(255,45,45,0.96)";
+  ctx.lineWidth = strokeWidth;
+  ctx.lineJoin = "round";
+  const safeItems = Array.isArray(items) ? items : [];
+  safeItems.forEach((item) => {
+    const x = Math.max(0, Math.round(Number(item?.x) || 0));
+    const y = Math.max(0, Math.round(Number(item?.y) || 0));
+    const { baseWidth, baseHeight } = getSplitItemBaseSize(item);
+    const drawWidth = Math.max(1, Math.min(width - x, Math.round(baseWidth)));
+    const drawHeight = Math.max(1, Math.min(height - y, Math.round(baseHeight)));
+    const inset = strokeWidth / 2;
+    const rectWidth = Math.max(1, drawWidth - strokeWidth);
+    const rectHeight = Math.max(1, drawHeight - strokeWidth);
+    if (drawWidth <= 0 || drawHeight <= 0) return;
+    ctx.strokeRect(x + inset, y + inset, rectWidth, rectHeight);
+  });
+  return canvas.toDataURL("image/png");
+}
+
 function getSplitItemBaseSize(item) {
   const baseWidth = Math.max(1, Number(item?.baseWidth) || Number(item?.width) || 1);
   const baseHeight = Math.max(1, Number(item?.baseHeight) || Number(item?.height) || 1);
@@ -2963,22 +3019,28 @@ async function loadGptAssistFromLocalFolder(rootHandle) {
     return {
       prompt: normalizeGptAssistPrompt(raw?.prompt),
       styleThemePrompt: normalizeStyleThemeAssistPrompt(raw?.styleThemePrompt),
+      sendPromptText: normalizeGptAssistFlag(raw?.sendPromptText, DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT),
+      sendPromptImage: normalizeGptAssistFlag(raw?.sendPromptImage, DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE),
     };
   } catch (err) {
     if (String(err?.name || "") === "NotFoundError") {
       return {
         prompt: DEFAULT_GPT_ASSIST_PROMPT,
         styleThemePrompt: DEFAULT_STYLE_THEME_ASSIST_PROMPT,
+        sendPromptText: DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT,
+        sendPromptImage: DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE,
       };
     }
     return {
       prompt: DEFAULT_GPT_ASSIST_PROMPT,
       styleThemePrompt: DEFAULT_STYLE_THEME_ASSIST_PROMPT,
+      sendPromptText: DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT,
+      sendPromptImage: DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE,
     };
   }
 }
 
-async function saveGptAssistToLocalFolder(rootHandle, prompt, styleThemePrompt) {
+async function saveGptAssistToLocalFolder(rootHandle, prompt, styleThemePrompt, sendPromptText, sendPromptImage) {
   const normalizedPrompt = normalizeGptAssistPrompt(prompt);
   const normalizedStyleThemePrompt = normalizeStyleThemeAssistPrompt(styleThemePrompt);
   await writeTextFile(
@@ -2988,6 +3050,8 @@ async function saveGptAssistToLocalFolder(rootHandle, prompt, styleThemePrompt) 
       {
         prompt: normalizedPrompt,
         styleThemePrompt: normalizedStyleThemePrompt,
+        sendPromptText: normalizeGptAssistFlag(sendPromptText, DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT),
+        sendPromptImage: normalizeGptAssistFlag(sendPromptImage, DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE),
       },
       null,
       2
@@ -3102,22 +3166,29 @@ async function callTextAssistAPI(proxyUrl, sourcePrompt, imageBase64, assistProm
   const { signal } = options;
   const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl);
   const apiKey = normalizeApiKey(options.apiKey);
+  const sendPromptText = normalizeGptAssistFlag(options.sendPromptText, DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT);
+  const sendPromptImage = normalizeGptAssistFlag(options.sendPromptImage, DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE);
   const placeholders = extractPlaceholderTokens(sourcePrompt);
   if (!placeholders.length) return sourcePrompt;
 
-  const textInstruction = [
+  const textInstructionLines = [
     "只改写 {{ }} 内的内容，不改动大括号外内容。",
     "输出严格 JSON：{\"replacements\":[\"...\", \"...\"]}。",
     "replacements 数组长度必须与占位符数量一致。",
     "改写要保留用户原有语气和随机感，不要模板化。",
     "",
-    `原始 prompt: ${sourcePrompt}`,
     `占位符数量: ${placeholders.length}`,
-    `占位符原文: ${JSON.stringify(placeholders)}`,
-  ].join("\n");
+  ];
+  if (sendPromptText) {
+    textInstructionLines.push(`原始 prompt: ${sourcePrompt}`);
+    textInstructionLines.push(`占位符原文: ${JSON.stringify(placeholders)}`);
+  } else {
+    textInstructionLines.push("本次未发送 prompt 文本，请只根据系统提示和已发送的上下文生成替换内容。");
+  }
+  const textInstruction = textInstructionLines.join("\n");
 
   const userContent = [{ type: "text", text: textInstruction }];
-  if (imageBase64) {
+  if (sendPromptImage && imageBase64) {
     userContent.push({ type: "image_url", image_url: { url: imageBase64 } });
   }
 
@@ -3162,8 +3233,18 @@ async function callThemeAssistAPI(proxyUrl, seedText, assistPrompt, options = {}
   const { signal } = options;
   const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl);
   const apiKey = normalizeApiKey(options.apiKey);
+  const sendPromptText = normalizeGptAssistFlag(options.sendPromptText, DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT);
   const normalizedSeed = typeof seedText === "string" ? seedText.trim() : "";
   if (!normalizedSeed) return [];
+
+  const contentLines = [];
+  if (sendPromptText) {
+    contentLines.push(`主题词：${normalizedSeed}`);
+  } else {
+    contentLines.push("本次未发送主题词文本，请只根据系统提示输出 12 个可用于视觉创作的元素。");
+  }
+  contentLines.push(`请输出 ${STYLE_THEME_SLOTS} 个与主题相关、可用于生图的视觉元素。`);
+  contentLines.push("请严格输出 JSON。");
 
   const body = {
     model: DEFAULT_GPT_ASSIST_MODEL,
@@ -3176,11 +3257,7 @@ async function callThemeAssistAPI(proxyUrl, seedText, assistPrompt, options = {}
         content: [
           {
             type: "text",
-            text: [
-              `主题词：${normalizedSeed}`,
-              `请输出 ${STYLE_THEME_SLOTS} 个与主题相关、可用于生图的视觉元素。`,
-              "请严格输出 JSON。",
-            ].join("\n"),
+            text: contentLines.join("\n"),
           },
         ],
       },
@@ -4270,6 +4347,12 @@ function GptAssistModal({
   prompt,
   draftPrompt,
   setDraftPrompt,
+  sendPromptText,
+  draftSendPromptText,
+  setDraftSendPromptText,
+  sendPromptImage,
+  draftSendPromptImage,
+  setDraftSendPromptImage,
   styleThemePrompt,
   draftStyleThemePrompt,
   setDraftStyleThemePrompt,
@@ -4281,7 +4364,9 @@ function GptAssistModal({
   if (!show) return null;
   const isDirty =
     normalizeGptAssistPrompt(draftPrompt) !== normalizeGptAssistPrompt(prompt) ||
-    normalizeStyleThemeAssistPrompt(draftStyleThemePrompt) !== normalizeStyleThemeAssistPrompt(styleThemePrompt);
+    normalizeStyleThemeAssistPrompt(draftStyleThemePrompt) !== normalizeStyleThemeAssistPrompt(styleThemePrompt) ||
+    normalizeGptAssistFlag(draftSendPromptText, DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT) !== normalizeGptAssistFlag(sendPromptText, DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT) ||
+    normalizeGptAssistFlag(draftSendPromptImage, DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE) !== normalizeGptAssistFlag(sendPromptImage, DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE);
   return (
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.settingsModal} onClick={(e) => e.stopPropagation()}>
@@ -4305,6 +4390,35 @@ function GptAssistModal({
           placeholder={uiLanguage === "zh" ? "告诉 GPT 如何联想 12 个主题元素..." : "Tell GPT how to expand one seed into 12 related themes..."}
           rows={5}
         />
+        <label style={{ ...S.fieldLabel, marginTop: 14 }}>{t("gpt.contextLabel")}</label>
+        <div style={S.settingToggleList}>
+          <div style={S.settingToggleRow}>
+            <div style={S.settingToggleTextWrap}>
+              <div style={S.settingToggleTitle}>{t("gpt.sendPromptTextLabel")}</div>
+              <div style={S.settingToggleHint}>{t("gpt.sendPromptTextHint")}</div>
+            </div>
+            <button
+              type="button"
+              style={{ ...S.settingToggleBtn, ...(draftSendPromptText ? S.settingToggleBtnActive : null) }}
+              onClick={() => setDraftSendPromptText((prev) => !prev)}
+            >
+              {draftSendPromptText ? t("common.on") : t("common.off")}
+            </button>
+          </div>
+          <div style={S.settingToggleRow}>
+            <div style={S.settingToggleTextWrap}>
+              <div style={S.settingToggleTitle}>{t("gpt.sendPromptImageLabel")}</div>
+              <div style={S.settingToggleHint}>{t("gpt.sendPromptImageHint")}</div>
+            </div>
+            <button
+              type="button"
+              style={{ ...S.settingToggleBtn, ...(draftSendPromptImage ? S.settingToggleBtnActive : null) }}
+              onClick={() => setDraftSendPromptImage((prev) => !prev)}
+            >
+              {draftSendPromptImage ? t("common.on") : t("common.off")}
+            </button>
+          </div>
+        </div>
         <div style={S.apiModalActions}>
           <span style={S.apiModalState}>{saveStateText}</span>
           <button
@@ -6271,6 +6385,10 @@ export default function App() {
   const [showApiModal, setShowApiModal] = useState(false);
   const [gptAssistPrompt, setGptAssistPrompt] = useState(DEFAULT_GPT_ASSIST_PROMPT);
   const [draftGptAssistPrompt, setDraftGptAssistPrompt] = useState(DEFAULT_GPT_ASSIST_PROMPT);
+  const [gptAssistSendPromptText, setGptAssistSendPromptText] = useState(DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT);
+  const [draftGptAssistSendPromptText, setDraftGptAssistSendPromptText] = useState(DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT);
+  const [gptAssistSendPromptImage, setGptAssistSendPromptImage] = useState(DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE);
+  const [draftGptAssistSendPromptImage, setDraftGptAssistSendPromptImage] = useState(DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE);
   const [styleThemeAssistPrompt, setStyleThemeAssistPrompt] = useState(DEFAULT_STYLE_THEME_ASSIST_PROMPT);
   const [draftStyleThemeAssistPrompt, setDraftStyleThemeAssistPrompt] = useState(DEFAULT_STYLE_THEME_ASSIST_PROMPT);
   const [gptAssistSavedAt, setGptAssistSavedAt] = useState(null);
@@ -6309,6 +6427,7 @@ export default function App() {
   const [historyDirHandle, setHistoryDirHandle] = useState(null);
   const [historyDirName, setHistoryDirName] = useState("");
   const [historyFolderMsg, setHistoryFolderMsg] = useState("");
+  const [isPickingHistoryFolder, setIsPickingHistoryFolder] = useState(false);
   const [hiddenTurnIds, setHiddenTurnIds] = useState([]);
   const [selectedAtlasItems, setSelectedAtlasItems] = useState([]);
   const [atlasThumbnail, setAtlasThumbnail] = useState(null);
@@ -6335,6 +6454,7 @@ export default function App() {
     image: "",
     originalImage: "",
     sourceImage: "",
+    processBaseImage: "",
     processImage: "",
     removedBaseImage: "",
     removedEnhancedImage: "",
@@ -6359,6 +6479,8 @@ export default function App() {
   const seqRef = useRef(1);
   const controllersRef = useRef({});
   const savingToFolderRef = useRef(new Set());
+  const isPickingHistoryFolderRef = useRef(false);
+  const hasAutoPromptedHistoryFolderRef = useRef(false);
   const t = useCallback((key, params) => translateUiText(uiLanguage, key, params), [uiLanguage]);
 
   const insertPlaceholderChip = useCallback(() => {
@@ -6476,13 +6598,19 @@ export default function App() {
     }
     const nextPrompt = normalizeGptAssistPrompt(draftGptAssistPrompt);
     const nextStyleThemePrompt = normalizeStyleThemeAssistPrompt(draftStyleThemeAssistPrompt);
+    const nextSendPromptText = normalizeGptAssistFlag(draftGptAssistSendPromptText, DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT);
+    const nextSendPromptImage = normalizeGptAssistFlag(draftGptAssistSendPromptImage, DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE);
     setGptAssistPrompt(nextPrompt);
     setStyleThemeAssistPrompt(nextStyleThemePrompt);
+    setGptAssistSendPromptText(nextSendPromptText);
+    setGptAssistSendPromptImage(nextSendPromptImage);
     setDraftGptAssistPrompt(nextPrompt);
     setDraftStyleThemeAssistPrompt(nextStyleThemePrompt);
+    setDraftGptAssistSendPromptText(nextSendPromptText);
+    setDraftGptAssistSendPromptImage(nextSendPromptImage);
     setGptAssistSavedAt(Date.now());
     setShowGptAssistModal(false);
-  }, [draftGptAssistPrompt, draftStyleThemeAssistPrompt, historyDirHandle, t]);
+  }, [draftGptAssistPrompt, draftGptAssistSendPromptImage, draftGptAssistSendPromptText, draftStyleThemeAssistPrompt, historyDirHandle, t]);
 
   const openTemplateEditor = useCallback((templateId) => {
     if (!historyDirHandle) return;
@@ -6638,7 +6766,12 @@ export default function App() {
           sourceItem.clearedPrompt,
           uploadedImage,
           gptAssistPrompt,
-          { apiBaseUrl, apiKey }
+          {
+            apiBaseUrl,
+            apiKey,
+            sendPromptText: gptAssistSendPromptText,
+            sendPromptImage: gptAssistSendPromptImage,
+          }
         );
         const syncedReplacements = extractPlaceholderTokens(sourceRewritten);
         rewritten.a = applyPlaceholderReplacements(items[0].clearedPrompt, syncedReplacements);
@@ -6650,7 +6783,12 @@ export default function App() {
           item.clearedPrompt,
           uploadedImage,
           gptAssistPrompt,
-          { apiBaseUrl, apiKey }
+          {
+            apiBaseUrl,
+            apiKey,
+            sendPromptText: gptAssistSendPromptText,
+            sendPromptImage: gptAssistSendPromptImage,
+          }
         );
       }
 
@@ -6673,7 +6811,7 @@ export default function App() {
     } finally {
       setGptAssistBusy(false);
     }
-  }, [gptAssistBusy, proxyUrl, taskMode, comparePrompts.a, comparePrompts.b, prompt, uploadedImage, gptAssistPrompt, apiBaseUrl, apiKey, compareAEditor, compareBEditor, promptEditor, t]);
+  }, [gptAssistBusy, proxyUrl, taskMode, comparePrompts.a, comparePrompts.b, prompt, uploadedImage, gptAssistPrompt, gptAssistSendPromptImage, gptAssistSendPromptText, apiBaseUrl, apiKey, compareAEditor, compareBEditor, promptEditor, t]);
 
   const clearAllStyleThemes = useCallback(() => {
     setStyleThemes(Array.from({ length: STYLE_THEME_SLOTS }, () => ""));
@@ -6698,7 +6836,7 @@ export default function App() {
         proxyUrl,
         seed,
         styleThemeAssistPrompt,
-        { apiBaseUrl, apiKey }
+        { apiBaseUrl, apiKey, sendPromptText: gptAssistSendPromptText }
       );
       if (!generated.length) {
         setHistoryFolderMsg(t("history.themeAssistInvalid"));
@@ -6719,7 +6857,7 @@ export default function App() {
     } finally {
       setStyleThemeAssistBusy(false);
     }
-  }, [styleThemeAssistBusy, taskMode, proxyUrl, styleThemeSeedInput, styleThemeAssistPrompt, apiBaseUrl, apiKey, t]);
+  }, [styleThemeAssistBusy, taskMode, proxyUrl, styleThemeSeedInput, styleThemeAssistPrompt, gptAssistSendPromptText, apiBaseUrl, apiKey, t]);
 
   const toggleModel = useCallback((id) => {
     setSelectedModels((prev) => {
@@ -7095,6 +7233,7 @@ export default function App() {
       removedImage: "",
       removedBaseImage: "",
       removedEnhancedImage: "",
+      processBaseImage: "",
       processImage: "",
       items: [],
       sourceImage: "",
@@ -7139,6 +7278,7 @@ export default function App() {
         image: splitTarget,
         originalImage: normalized,
         sourceImage: splitResult.sourceImage,
+        processBaseImage: splitResult.processImage || splitResult.sourceImage,
         processImage: splitResult.processImage || splitResult.sourceImage,
         removedBaseImage: originalSplit.removedImage,
         removedEnhancedImage: removedDisplay.enhancedImage,
@@ -7172,6 +7312,7 @@ export default function App() {
         image: rawImage,
         originalImage: "",
         sourceImage: "",
+        processBaseImage: "",
         processImage: "",
         removedImage: "",
         removedBaseImage: "",
@@ -7188,6 +7329,38 @@ export default function App() {
       });
     }
   }, [apiBaseUrl, proxyUrl, t]);
+
+  useEffect(() => {
+    const sourceImage = splitContext.sourceImage;
+    const processBaseImage = splitContext.processBaseImage || splitContext.processImage || sourceImage;
+    if (!sourceImage && !processBaseImage) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const nextProcessImage = await buildSplitProcessPreviewForShape(
+          sourceImage,
+          processBaseImage,
+          splitContext.items,
+          splitShapeMode
+        );
+        if (cancelled || !nextProcessImage) return;
+        setSplitContext((prev) => {
+          if (prev.sourceImage !== sourceImage) return prev;
+          if ((prev.processBaseImage || prev.processImage || prev.sourceImage) !== processBaseImage) return prev;
+          if (prev.processImage === nextProcessImage) return prev;
+          return {
+            ...prev,
+            processImage: nextProcessImage,
+          };
+        });
+      } catch {
+        // Keep the last preview if regenerating the process image fails.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [splitContext.items, splitContext.processBaseImage, splitContext.sourceImage, splitShapeMode]);
 
   const openSplitModalForImage = useCallback((payload) => {
     runSplitForImage(payload, {
@@ -7815,6 +7988,10 @@ export default function App() {
     const loadedGptAssistConfig = await loadGptAssistFromLocalFolder(dirHandle);
     setGptAssistPrompt(loadedGptAssistConfig.prompt);
     setDraftGptAssistPrompt(loadedGptAssistConfig.prompt);
+    setGptAssistSendPromptText(loadedGptAssistConfig.sendPromptText);
+    setDraftGptAssistSendPromptText(loadedGptAssistConfig.sendPromptText);
+    setGptAssistSendPromptImage(loadedGptAssistConfig.sendPromptImage);
+    setDraftGptAssistSendPromptImage(loadedGptAssistConfig.sendPromptImage);
     setStyleThemeAssistPrompt(loadedGptAssistConfig.styleThemePrompt);
     setDraftStyleThemeAssistPrompt(loadedGptAssistConfig.styleThemePrompt);
     setGptAssistSavedAt(Date.now());
@@ -7865,11 +8042,18 @@ export default function App() {
     return true;
   }, [t]);
 
-  const handlePickHistoryFolder = useCallback(async () => {
+  const handlePickHistoryFolder = useCallback(async (options = {}) => {
+    const source = options?.source === "auto" ? "auto" : "manual";
     if (!supportsFileSystemAccess()) {
       setHistoryFolderMsg(t("history.browserUnsupported"));
       return;
     }
+    if (isPickingHistoryFolderRef.current) return;
+    if (source === "auto") {
+      hasAutoPromptedHistoryFolderRef.current = true;
+    }
+    isPickingHistoryFolderRef.current = true;
+    setIsPickingHistoryFolder(true);
     try {
       const dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
       const loaded = await loadHistoryFromFolder(dirHandle);
@@ -7878,7 +8062,11 @@ export default function App() {
       setHistoryDirName(dirHandle.name || "");
     } catch (err) {
       if (String(err?.name || "") === "AbortError") return;
+      if (/File picker already active/i.test(String(err?.message || ""))) return;
       setHistoryFolderMsg(t("history.pickFolderFailed", { error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t) }));
+    } finally {
+      isPickingHistoryFolderRef.current = false;
+      setIsPickingHistoryFolder(false);
     }
   }, [loadHistoryFromFolder, t]);
 
@@ -8267,10 +8455,16 @@ export default function App() {
       const canWrite = await ensureDirectoryPermission(historyDirHandle, true);
       if (!canWrite) return;
       try {
-        await saveGptAssistToLocalFolder(historyDirHandle, gptAssistPrompt, styleThemeAssistPrompt);
+        await saveGptAssistToLocalFolder(
+          historyDirHandle,
+          gptAssistPrompt,
+          styleThemeAssistPrompt,
+          gptAssistSendPromptText,
+          gptAssistSendPromptImage
+        );
       } catch {}
     })();
-  }, [historyDirHandle, gptAssistPrompt, styleThemeAssistPrompt]);
+  }, [historyDirHandle, gptAssistPrompt, styleThemeAssistPrompt, gptAssistSendPromptText, gptAssistSendPromptImage]);
 
   useEffect(() => {
     if (!historyDirHandle) return;
@@ -8318,7 +8512,9 @@ export default function App() {
   const isApiKeyDirty = normalizeApiKey(draftApiKey) !== normalizeApiKey(apiKey);
   const isGptAssistPromptDirty =
     normalizeGptAssistPrompt(draftGptAssistPrompt) !== normalizeGptAssistPrompt(gptAssistPrompt) ||
-    normalizeStyleThemeAssistPrompt(draftStyleThemeAssistPrompt) !== normalizeStyleThemeAssistPrompt(styleThemeAssistPrompt);
+    normalizeStyleThemeAssistPrompt(draftStyleThemeAssistPrompt) !== normalizeStyleThemeAssistPrompt(styleThemeAssistPrompt) ||
+    normalizeGptAssistFlag(draftGptAssistSendPromptText, DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT) !== normalizeGptAssistFlag(gptAssistSendPromptText, DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT) ||
+    normalizeGptAssistFlag(draftGptAssistSendPromptImage, DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE) !== normalizeGptAssistFlag(gptAssistSendPromptImage, DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE);
   const canSaveGptAssistPrompt = !!historyDirHandle;
   const apiKeySaveStateText = isApiKeyDirty
     ? t("common.unsavedChanges")
@@ -8335,10 +8531,12 @@ export default function App() {
 
   useEffect(() => {
     if (!folderSupported || historyDirHandle || typeof window === "undefined") return;
+    if (hasAutoPromptedHistoryFolderRef.current) return;
+    hasAutoPromptedHistoryFolderRef.current = true;
     let cancelled = false;
     requestAnimationFrame(() => {
       if (cancelled) return;
-      handlePickHistoryFolder();
+      handlePickHistoryFolder({ source: "auto" });
     });
     return () => {
       cancelled = true;
@@ -8405,6 +8603,8 @@ export default function App() {
               style={{ ...S.apiSwitchBtn, ...(showGptAssistModal ? S.apiSwitchBtnActive : null) }}
               onClick={() => {
                 setDraftGptAssistPrompt(gptAssistPrompt);
+                setDraftGptAssistSendPromptText(gptAssistSendPromptText);
+                setDraftGptAssistSendPromptImage(gptAssistSendPromptImage);
                 setDraftStyleThemeAssistPrompt(styleThemeAssistPrompt);
                 setShowGptAssistModal(true);
               }}
@@ -8812,7 +9012,11 @@ export default function App() {
           {hasAnySuccess && <button style={S.zipBtn} onClick={() => downloadAllAsZip(turns)}>{t("workspace.downloadAll")}</button>}
         </div>
         <div style={S.folderRow}>
-          <button style={S.zipBtn} onClick={handlePickHistoryFolder} disabled={!folderSupported}>
+          <button
+            style={S.zipBtn}
+            onClick={() => handlePickHistoryFolder({ source: "manual" })}
+            disabled={!folderSupported || isPickingHistoryFolder}
+          >
             {historyDirHandle ? t("workspace.switchHistoryFolder") : t("workspace.selectHistoryFolder")}
           </button>
           {historyDirHandle && (
@@ -8957,6 +9161,12 @@ export default function App() {
         prompt={gptAssistPrompt}
         draftPrompt={draftGptAssistPrompt}
         setDraftPrompt={setDraftGptAssistPrompt}
+        sendPromptText={gptAssistSendPromptText}
+        draftSendPromptText={draftGptAssistSendPromptText}
+        setDraftSendPromptText={setDraftGptAssistSendPromptText}
+        sendPromptImage={gptAssistSendPromptImage}
+        draftSendPromptImage={draftGptAssistSendPromptImage}
+        setDraftSendPromptImage={setDraftGptAssistSendPromptImage}
         styleThemePrompt={styleThemeAssistPrompt}
         draftStyleThemePrompt={draftStyleThemeAssistPrompt}
         setDraftStyleThemePrompt={setDraftStyleThemeAssistPrompt}
@@ -9235,6 +9445,13 @@ const S = {
   fieldLabel: { display: "block", fontSize: 12, fontFamily: mono, fontWeight: 500, color: "#999", marginBottom: 6 },
   proxyInput: { width: "100%", padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)", color: "#e4e4e7", fontFamily: mono, fontSize: 14, outline: "none" },
   hint: { fontSize: 12, color: "#888", marginTop: 8, lineHeight: 1.5 },
+  settingToggleList: { marginTop: 2, display: "grid", gap: 10 },
+  settingToggleRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)" },
+  settingToggleTextWrap: { minWidth: 0, display: "grid", gap: 3 },
+  settingToggleTitle: { fontSize: 13, color: "#e4e4e7", fontFamily: mono },
+  settingToggleHint: { fontSize: 12, color: "#888", lineHeight: 1.5 },
+  settingToggleBtn: { minWidth: 62, height: 30, padding: "0 10px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.14)", background: "rgba(255,255,255,0.03)", color: "#a1a1aa", fontFamily: mono, fontSize: 12, cursor: "pointer", flexShrink: 0 },
+  settingToggleBtnActive: { borderColor: THEME_PRIMARY_BORDER, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT },
   toggleCodeBtn: { padding: "8px 16px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#aaa", fontSize: 12, fontFamily: mono, cursor: "pointer" },
   codeBlock: { marginTop: 12, padding: 16, background: "#0d0d0f", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, fontSize: 11, fontFamily: mono, color: "#a0a0b0", overflow: "auto", maxHeight: 300, lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word" },
   apiModalActions: { marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 },
