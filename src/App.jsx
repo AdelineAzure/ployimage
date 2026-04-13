@@ -108,9 +108,9 @@ const UI_TEXT = {
     "gpt.title": "GPT Prompt",
     "gpt.rewriteLabel": "GPT Rewrite Instruction",
     "gpt.themeLabel": "Style Theme Association Instruction",
-    "gpt.contextLabel": "Prompt Context",
-    "gpt.sendPromptTextLabel": "Send prompt text",
-    "gpt.sendPromptTextHint": "Turning this off stops sending the current prompt text to GPT.",
+    "gpt.contextLabel": "Generation Prompt Context",
+    "gpt.sendPromptTextLabel": "Send generation prompt text",
+    "gpt.sendPromptTextHint": "This controls the image-generation prompt, not the rewrite instruction above.",
     "gpt.sendPromptImageLabel": "Send prompt image",
     "gpt.sendPromptImageHint": "Turning this off stops sending the current input image to GPT.",
     "common.save": "Save",
@@ -276,6 +276,8 @@ const UI_TEXT = {
     "viewer.previewReference": "Preview reference image",
     "viewer.inlineViewer": "Open inline viewer",
     "viewer.previewStyleImage": "Preview style image {{index}}",
+    "viewer.compareInput": "INPUT",
+    "viewer.compareOutput": "OUTPUT",
     "viewer.fullImage": "Full",
     "viewer.inputImageAlt": "Input Image",
     "select.select": "Select",
@@ -330,9 +332,9 @@ const UI_TEXT = {
     "gpt.title": "GPT 提示词",
     "gpt.rewriteLabel": "GPT 改写指令",
     "gpt.themeLabel": "主题联想指令",
-    "gpt.contextLabel": "Prompt 上下文",
-    "gpt.sendPromptTextLabel": "发送 prompt 文本",
-    "gpt.sendPromptTextHint": "关闭后，当前提示词文本不会发送给 GPT。",
+    "gpt.contextLabel": "生图 Prompt 上下文",
+    "gpt.sendPromptTextLabel": "发送生图 prompt 文本",
+    "gpt.sendPromptTextHint": "这里控制的是当前生图提示词，不是上面的 GPT 改写指令。",
     "gpt.sendPromptImageLabel": "发送 prompt 图片",
     "gpt.sendPromptImageHint": "关闭后，当前输入图片不会发送给 GPT。",
     "common.save": "保存",
@@ -498,6 +500,8 @@ const UI_TEXT = {
     "viewer.previewReference": "预览参考图",
     "viewer.inlineViewer": "打开内嵌查看器",
     "viewer.previewStyleImage": "预览风格图 {{index}}",
+    "viewer.compareInput": "输入图",
+    "viewer.compareOutput": "输出图",
     "viewer.fullImage": "大图",
     "viewer.inputImageAlt": "输入图",
     "select.select": "选中",
@@ -4179,6 +4183,17 @@ function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placeholder, ro
   const handleClick = useCallback((event) => {
     const root = rootRef.current;
     if (!root) return;
+    const selection = window.getSelection();
+    if (
+      selection &&
+      selection.rangeCount &&
+      !selection.isCollapsed
+    ) {
+      const range = selection.getRangeAt(0);
+      if (root.contains(range.startContainer) && root.contains(range.endContainer)) {
+        return;
+      }
+    }
     const target = event.target instanceof Element ? event.target : null;
     const chip = target?.closest?.('[data-placeholder-chip="1"]');
     if (chip && root.contains(chip)) {
@@ -5414,10 +5429,30 @@ function ModelChip({ model, selected, onToggle, disabled, count, onCountChange, 
   );
 }
 
+function normalizePreviewPayload(value) {
+  if (!value) return { outputSrc: "", inputSrc: "" };
+  if (typeof value === "string") {
+    return {
+      outputSrc: normalizeImageValue(value),
+      inputSrc: "",
+    };
+  }
+  const outputSrc = normalizeImageValue(value?.outputSrc ?? value?.src ?? value?.image ?? "");
+  const inputSrc = normalizeImageValue(value?.inputSrc ?? value?.referenceImage ?? "");
+  return {
+    outputSrc,
+    inputSrc: inputSrc && inputSrc !== outputSrc ? inputSrc : "",
+  };
+}
+
 function ImagePreviewModal({ src, onClose }) {
   const { t } = useI18n();
   const viewportRef = useRef(null);
   const dragRef = useRef(null);
+  const preview = useMemo(() => normalizePreviewPayload(src), [src]);
+  const outputSrc = preview.outputSrc;
+  const inputSrc = preview.inputSrc;
+  const isComparePreview = !!inputSrc && !!outputSrc;
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
@@ -5431,7 +5466,7 @@ function ImagePreviewModal({ src, onClose }) {
     setDragging(false);
     setWheelActive(false);
     dragRef.current = null;
-  }, [src]);
+  }, [inputSrc, outputSrc]);
 
   const handleWheel = useCallback((event) => {
     if (!wheelActive) return;
@@ -5490,10 +5525,20 @@ function ImagePreviewModal({ src, onClose }) {
     setDragging(true);
   }, [offset.x, offset.y, scale]);
 
-  if (!src) return null;
+  if (!outputSrc) return null;
+  const sharedPreviewImageStyle = {
+    maxWidth: "100%",
+    maxHeight: "100%",
+    objectFit: "contain",
+    transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+    transformOrigin: "center center",
+    transition: dragging ? "none" : "transform 0.08s ease-out",
+    cursor: scale > 1 ? (dragging ? "grabbing" : "grab") : "zoom-in",
+    userSelect: "none",
+  };
   return (
     <div style={S.modalOverlay} onClick={onClose}>
-      <div style={{ position: "relative", width: "94vw", height: "90vh", maxWidth: 1360 }} onClick={(e) => e.stopPropagation()}>
+      <div style={{ position: "relative", width: "94vw", height: "90vh", maxWidth: isComparePreview ? 1480 : 1360 }} onClick={(e) => e.stopPropagation()}>
         <button onClick={onClose} style={{ ...S.closeBtn, position: "absolute", top: 12, right: 12, zIndex: 10 }}>✕</button>
         <div
           ref={viewportRef}
@@ -5505,8 +5550,8 @@ function ImagePreviewModal({ src, onClose }) {
             background: "#0b0b0d",
             overflow: "hidden",
             display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
+            alignItems: "stretch",
+            justifyContent: "stretch",
             userSelect: "none",
           }}
           onMouseDown={handleMouseDown}
@@ -5516,20 +5561,41 @@ function ImagePreviewModal({ src, onClose }) {
             setOffset({ x: 0, y: 0 });
           }}
         >
-          <img
-            src={src}
-            alt={t("viewer.fullImage")}
-            draggable={false}
-            style={{
-              maxWidth: "100%",
-              maxHeight: "100%",
-              objectFit: "contain",
-              transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
-              transformOrigin: "center center",
-              transition: dragging ? "none" : "transform 0.08s ease-out",
-              cursor: scale > 1 ? (dragging ? "grabbing" : "grab") : "zoom-in",
-            }}
-          />
+          {isComparePreview ? (
+            <div style={S.previewCompareGrid}>
+              <div style={S.previewComparePane}>
+                <div style={S.previewCompareLabel}>{t("viewer.compareInput")}</div>
+                <div style={S.previewCompareImageWrap}>
+                  <img
+                    src={inputSrc}
+                    alt={t("viewer.compareInput")}
+                    draggable={false}
+                    style={{ ...S.previewCompareImage, ...sharedPreviewImageStyle }}
+                  />
+                </div>
+              </div>
+              <div style={{ ...S.previewComparePane, borderRight: "none" }}>
+                <div style={S.previewCompareLabel}>{t("viewer.compareOutput")}</div>
+                <div style={S.previewCompareImageWrap}>
+                  <img
+                    src={outputSrc}
+                    alt={t("viewer.compareOutput")}
+                    draggable={false}
+                    style={{ ...S.previewCompareImage, ...sharedPreviewImageStyle }}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div style={S.previewSingleWrap}>
+              <img
+                src={outputSrc}
+                alt={t("viewer.fullImage")}
+                draggable={false}
+                style={sharedPreviewImageStyle}
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -5934,7 +6000,7 @@ function TurnPanel({
 }) {
   const { uiLanguage, t } = useI18n();
   const [inlineViewerSrc, setInlineViewerSrc] = useState(null);
-  const expandPromptPreview = truncatePromptText && !!inlineViewerSrc;
+  const expandPromptPreview = !!inlineViewerSrc;
   const promptVariants = getTurnPromptVariants(turn);
   const turnMode = getTurnMode(turn);
   const isCompareMode = turnMode === "compare";
@@ -5946,6 +6012,24 @@ function TurnPanel({
       : turn?.prompt || promptVariants[0]?.prompt || "";
   const selectedModelIds = Array.isArray(turn?.selectedModelIds) ? turn.selectedModelIds : [];
   const styleReferenceImages = Array.isArray(turn?.styleReferenceImages) ? turn.styleReferenceImages : [];
+  const previewInputImage = normalizeImageValue(turn.referenceImage) || normalizeImageValue(styleReferenceImages[0] || "");
+  const handleGeneratedImagePreview = useCallback((image) => {
+    const normalizedImage = normalizeImageValue(image);
+    if (!normalizedImage) return;
+    if (previewInputImage && previewInputImage !== normalizedImage) {
+      onPreview?.({
+        inputSrc: previewInputImage,
+        outputSrc: normalizedImage,
+      });
+      return;
+    }
+    onPreview?.(normalizedImage);
+  }, [onPreview, previewInputImage]);
+  const formatPromptPreviewText = useCallback((text) => {
+    const source = typeof text === "string" ? text : "";
+    if (!truncatePromptText) return source;
+    return getPromptPreviewText(source, expandPromptPreview ? 960 : 220);
+  }, [expandPromptPreview, truncatePromptText]);
 
   useEffect(() => {
     if (!turn.referenceImage && inlineViewerSrc) {
@@ -6238,7 +6322,7 @@ function TurnPanel({
                           img={item.image}
                           fileStem={item.fileStem}
                           index={item.index}
-                          onPreview={onPreview}
+                          onPreview={handleGeneratedImagePreview}
                           label={getLocalizedPromptLabel(item.promptLabel, item.promptKey, uiLanguage)}
                           compact
                           showSelect
@@ -6338,7 +6422,7 @@ function TurnPanel({
                       <ResultColumn
                         key={`${turn.id}-${r.modelId}-${getResultPromptKey(r)}-${i}`}
                         result={r}
-                        onPreview={onPreview}
+                        onPreview={handleGeneratedImagePreview}
                         onCancel={() => onCancelModel?.(turn.id, r.modelId, getResultPromptKey(r))}
                         turnId={turn.id}
                         turnSeq={turn.seq}
@@ -9440,6 +9524,12 @@ const S = {
   imageActionPlusCompact: { fontSize: 12, lineHeight: 1, fontWeight: 700 },
   dlBtn: { width: "100%", padding: "8px 0", border: "none", borderTop: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.04)", color: "#aaa", fontSize: 12, fontFamily: mono, cursor: "pointer" },
   modalOverlay: { position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.8)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", animation: "fadeIn 0.15s ease" },
+  previewCompareGrid: { width: "100%", height: "100%", display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 0 },
+  previewComparePane: { minWidth: 0, minHeight: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", borderRight: "1px solid rgba(255,255,255,0.08)" },
+  previewCompareLabel: { height: 42, display: "flex", alignItems: "center", padding: "0 14px", borderBottom: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", color: "#cbd5e1", fontFamily: mono, fontSize: 12, letterSpacing: 0.5, textTransform: "uppercase" },
+  previewCompareImageWrap: { minWidth: 0, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: "#0b0b0d" },
+  previewCompareImage: { maxWidth: "100%", maxHeight: "100%", objectFit: "contain" },
+  previewSingleWrap: { width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: "#0b0b0d" },
   settingsModal: { width: "90%", maxWidth: 560, background: "#161618", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 16, padding: 28, maxHeight: "80vh", overflow: "auto" },
   closeBtn: { width: 32, height: 32, borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.05)", color: "#aaa", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
   fieldLabel: { display: "block", fontSize: 12, fontFamily: mono, fontWeight: 500, color: "#999", marginBottom: 6 },
