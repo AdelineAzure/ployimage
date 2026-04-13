@@ -953,6 +953,12 @@ function expandPlaceholderValues(input = "") {
   return text.replace(/\{\{([^{}]*)\}\}/g, (_, inner) => String(inner ?? "").trim());
 }
 
+function getFilledPlaceholderTokens(input = "") {
+  return extractPlaceholderTokens(input)
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean);
+}
+
 function splitPromptByPlaceholders(input = "") {
   const text = typeof input === "string" ? input : "";
   const chunks = [];
@@ -3172,10 +3178,14 @@ async function callTextAssistAPI(proxyUrl, sourcePrompt, imageBase64, assistProm
   const apiKey = normalizeApiKey(options.apiKey);
   const sendPromptText = normalizeGptAssistFlag(options.sendPromptText, DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT);
   const sendPromptImage = normalizeGptAssistFlag(options.sendPromptImage, DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE);
+  const normalizedAssistPrompt = normalizeGptAssistPrompt(assistPrompt);
   const placeholders = extractPlaceholderTokens(sourcePrompt);
   if (!placeholders.length) return sourcePrompt;
 
   const textInstructionLines = [
+    "以下 GPT 改写指令必须严格执行：",
+    normalizedAssistPrompt,
+    "",
     "只改写 {{ }} 内的内容，不改动大括号外内容。",
     "输出严格 JSON：{\"replacements\":[\"...\", \"...\"]}。",
     "replacements 数组长度必须与占位符数量一致。",
@@ -3201,7 +3211,7 @@ async function callTextAssistAPI(proxyUrl, sourcePrompt, imageBase64, assistProm
     stream: false,
     temperature: 1.15,
     messages: [
-      { role: "system", content: normalizeGptAssistPrompt(assistPrompt) },
+      { role: "system", content: normalizedAssistPrompt },
       { role: "user", content: userContent },
     ],
   };
@@ -5429,12 +5439,31 @@ function ModelChip({ model, selected, onToggle, disabled, count, onCountChange, 
   );
 }
 
-function normalizePreviewPayload(value) {
-  if (!value) return { outputSrc: "", inputSrc: "" };
+function normalizePreviewTokens(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (typeof item === "string" ? item.trim() : String(item ?? "").trim()))
+      .filter(Boolean);
+  }
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  return [];
+}
+
+function normalizePreviewItem(value) {
+  if (!value) {
+    return {
+      outputSrc: "",
+      inputSrc: "",
+      inputTokens: [],
+      imageKey: "",
+    };
+  }
   if (typeof value === "string") {
     return {
       outputSrc: normalizeImageValue(value),
       inputSrc: "",
+      inputTokens: [],
+      imageKey: "",
     };
   }
   const outputSrc = normalizeImageValue(value?.outputSrc ?? value?.src ?? value?.image ?? "");
@@ -5442,23 +5471,149 @@ function normalizePreviewPayload(value) {
   return {
     outputSrc,
     inputSrc: inputSrc && inputSrc !== outputSrc ? inputSrc : "",
+    inputTokens: normalizePreviewTokens(value?.inputTokens ?? value?.promptTokens),
+    imageKey: typeof value?.imageKey === "string" ? value.imageKey : "",
   };
+}
+
+function normalizePreviewPayload(value) {
+  const base = normalizePreviewItem(value);
+  const galleryItems = Array.isArray(value?.galleryItems)
+    ? value.galleryItems.map((item) => normalizePreviewItem(item)).filter((item) => item.outputSrc)
+    : [];
+  const fallbackIndex = base.imageKey ? galleryItems.findIndex((item) => item.imageKey === base.imageKey) : -1;
+  const requestedIndex = Number(value?.currentIndex);
+  const currentIndex = galleryItems.length
+    ? Math.max(
+        0,
+        Math.min(
+          galleryItems.length - 1,
+          Number.isFinite(requestedIndex)
+            ? requestedIndex
+            : fallbackIndex >= 0
+            ? fallbackIndex
+            : 0
+        )
+      )
+    : 0;
+  return {
+    ...base,
+    galleryItems,
+    currentIndex,
+  };
+}
+
+function buildTurnPreviewItems(turn) {
+  if (!turn) return [];
+  const promptVariants = getTurnPromptVariants(turn);
+  const promptLookup = new Map(promptVariants.map((variant) => [variant.key, variant]));
+  const selectedModelIds = Array.isArray(turn?.selectedModelIds) ? turn.selectedModelIds : [];
+  const modelOrder = new Map(selectedModelIds.map((id, index) => [id, index]));
+  const promptVariantOrder = new Map(promptVariants.map((variant, index) => [variant.key, index]));
+  const previewInputImage =
+    normalizeImageValue(turn?.referenceImage) ||
+    normalizeImageValue(Array.isArray(turn?.styleReferenceImages) ? turn.styleReferenceImages[0] : "");
+  const mode = getTurnMode(turn);
+
+  if (mode === "style") {
+    return (Array.isArray(turn?.results) ? turn.results : [])
+      .slice()
+      .sort((a, b) => {
+        const ai = modelOrder.has(a.modelId) ? modelOrder.get(a.modelId) : Number.MAX_SAFE_INTEGER;
+        const bi = modelOrder.has(b.modelId) ? modelOrder.get(b.modelId) : Number.MAX_SAFE_INTEGER;
+        if (ai !== bi) return ai - bi;
+        const ak = promptVariantOrder.has(getResultPromptKey(a))
+          ? promptVariantOrder.get(getResultPromptKey(a))
+          : Number.MAX_SAFE_INTEGER;
+        const bk = promptVariantOrder.has(getResultPromptKey(b))
+          ? promptVariantOrder.get(getResultPromptKey(b))
+          : Number.MAX_SAFE_INTEGER;
+        if (ak !== bk) return ak - bk;
+        return String(a.modelId).localeCompare(String(b.modelId));
+      })
+      .flatMap((result) => {
+        const promptKey = getResultPromptKey(result);
+        const promptText =
+          typeof result?.promptText === "string"
+            ? result.promptText
+            : promptLookup.get(promptKey)?.prompt || turn?.prompt || "";
+        const inputTokens = getFilledPlaceholderTokens(promptText);
+        const images = Array.isArray(result?.images) ? result.images : [];
+        return images.map((image, index) => ({
+          imageKey: buildTurnImageKey(turn.id, result.modelId, promptKey, index + 1),
+          outputSrc: normalizeImageValue(image),
+          inputSrc: previewInputImage,
+          inputTokens,
+        }));
+      })
+      .filter((item) => item.outputSrc);
+  }
+
+  return promptVariants
+    .flatMap((variant) =>
+      (Array.isArray(turn?.results) ? turn.results : [])
+        .filter((result) => getResultPromptKey(result) === variant.key)
+        .slice()
+        .sort((a, b) => {
+          const ai = modelOrder.has(a.modelId) ? modelOrder.get(a.modelId) : Number.MAX_SAFE_INTEGER;
+          const bi = modelOrder.has(b.modelId) ? modelOrder.get(b.modelId) : Number.MAX_SAFE_INTEGER;
+          if (ai !== bi) return ai - bi;
+          return String(a.modelId).localeCompare(String(b.modelId));
+        })
+        .flatMap((result) => {
+          const promptText =
+            typeof result?.promptText === "string"
+              ? result.promptText
+              : promptLookup.get(variant.key)?.prompt || turn?.prompt || "";
+          const inputTokens = getFilledPlaceholderTokens(promptText);
+          const images = Array.isArray(result?.images) ? result.images : [];
+          return images.map((image, index) => ({
+            imageKey: buildTurnImageKey(turn.id, result.modelId, variant.key, index + 1),
+            outputSrc: normalizeImageValue(image),
+            inputSrc: previewInputImage,
+            inputTokens,
+          }));
+        })
+    )
+    .filter((item) => item.outputSrc);
 }
 
 function ImagePreviewModal({ src, onClose }) {
   const { t } = useI18n();
   const viewportRef = useRef(null);
   const dragRef = useRef(null);
+  const swipeRef = useRef({ active: false, startX: 0, startY: 0 });
   const preview = useMemo(() => normalizePreviewPayload(src), [src]);
-  const outputSrc = preview.outputSrc;
-  const inputSrc = preview.inputSrc;
+  const [currentIndex, setCurrentIndex] = useState(preview.currentIndex || 0);
+  const galleryItems = preview.galleryItems;
+  const activePreview = galleryItems[currentIndex] || preview;
+  const outputSrc = activePreview.outputSrc;
+  const inputSrc = activePreview.inputSrc;
+  const inputTokens = activePreview.inputTokens;
   const isComparePreview = !!inputSrc && !!outputSrc;
+  const hasGallery = galleryItems.length > 1;
+  const canGoPrev = hasGallery && currentIndex > 0;
+  const canGoNext = hasGallery && currentIndex < galleryItems.length - 1;
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const [wheelActive, setWheelActive] = useState(false);
 
   const clampScale = useCallback((value) => Math.max(1, Math.min(8, Number(value) || 1)), []);
+
+  const goPrev = useCallback(() => {
+    if (galleryItems.length <= 1) return;
+    setCurrentIndex((prev) => Math.max(0, prev - 1));
+  }, [galleryItems.length]);
+
+  const goNext = useCallback(() => {
+    if (galleryItems.length <= 1) return;
+    setCurrentIndex((prev) => Math.min(galleryItems.length - 1, prev + 1));
+  }, [galleryItems.length]);
+
+  useEffect(() => {
+    setCurrentIndex(preview.currentIndex || 0);
+  }, [preview.currentIndex, preview.outputSrc, preview.imageKey, galleryItems.length]);
 
   useEffect(() => {
     setScale(1);
@@ -5467,6 +5622,23 @@ function ImagePreviewModal({ src, onClose }) {
     setWheelActive(false);
     dragRef.current = null;
   }, [inputSrc, outputSrc]);
+
+  useEffect(() => {
+    if (!hasGallery) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        goPrev();
+        return;
+      }
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        goNext();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [goNext, goPrev, hasGallery]);
 
   const handleWheel = useCallback((event) => {
     if (!wheelActive) return;
@@ -5540,6 +5712,39 @@ function ImagePreviewModal({ src, onClose }) {
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={{ position: "relative", width: "94vw", height: "90vh", maxWidth: isComparePreview ? 1480 : 1360 }} onClick={(e) => e.stopPropagation()}>
         <button onClick={onClose} style={{ ...S.closeBtn, position: "absolute", top: 12, right: 12, zIndex: 10 }}>✕</button>
+        {hasGallery && (
+          <>
+            <button
+              type="button"
+              style={{
+                ...S.previewNavBtn,
+                left: 14,
+                opacity: canGoPrev ? 1 : 0.35,
+                cursor: canGoPrev ? "pointer" : "not-allowed",
+              }}
+              onClick={goPrev}
+              disabled={!canGoPrev}
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              style={{
+                ...S.previewNavBtn,
+                right: 14,
+                opacity: canGoNext ? 1 : 0.35,
+                cursor: canGoNext ? "pointer" : "not-allowed",
+              }}
+              onClick={goNext}
+              disabled={!canGoNext}
+            >
+              ›
+            </button>
+            <div style={S.previewCounter}>
+              {currentIndex + 1} / {galleryItems.length}
+            </div>
+          </>
+        )}
         <div
           ref={viewportRef}
           style={{
@@ -5556,6 +5761,29 @@ function ImagePreviewModal({ src, onClose }) {
           }}
           onMouseDown={handleMouseDown}
           onClick={() => setWheelActive(true)}
+          onTouchStart={(event) => {
+            const touch = event.touches?.[0];
+            if (!touch) return;
+            swipeRef.current = {
+              active: true,
+              startX: touch.clientX,
+              startY: touch.clientY,
+            };
+          }}
+          onTouchEnd={(event) => {
+            if (!swipeRef.current.active) return;
+            const touch = event.changedTouches?.[0];
+            swipeRef.current.active = false;
+            if (!touch) return;
+            const dx = touch.clientX - swipeRef.current.startX;
+            const dy = touch.clientY - swipeRef.current.startY;
+            if (Math.abs(dx) < 56 || Math.abs(dx) <= Math.abs(dy)) return;
+            if (dx > 0) {
+              goPrev();
+            } else {
+              goNext();
+            }
+          }}
           onDoubleClick={() => {
             setScale(1);
             setOffset({ x: 0, y: 0 });
@@ -5564,7 +5792,18 @@ function ImagePreviewModal({ src, onClose }) {
           {isComparePreview ? (
             <div style={S.previewCompareGrid}>
               <div style={S.previewComparePane}>
-                <div style={S.previewCompareLabel}>{t("viewer.compareInput")}</div>
+                <div style={S.previewCompareLabel}>
+                  <span>{t("viewer.compareInput")}</span>
+                  {inputTokens.length > 0 && (
+                    <span style={S.previewCompareTokens}>
+                      {inputTokens.map((token, index) => (
+                        <span key={`${token}-${index}`} style={S.previewCompareToken}>
+                          {token}
+                        </span>
+                      ))}
+                    </span>
+                  )}
+                </div>
                 <div style={S.previewCompareImageWrap}>
                   <img
                     src={inputSrc}
@@ -5786,6 +6025,10 @@ function ResultColumn({
                 fileStem={buildResultFileStem(result)}
                 index={imageIndex}
                 onPreview={onPreview}
+                previewPayload={{
+                  imageKey,
+                  promptText: typeof result?.promptText === "string" ? result.promptText : "",
+                }}
                 label={showImageLabel ? (result.promptLabel || "") : ""}
                 compact={compactImages}
                 showSelect={enableSelect}
@@ -5887,6 +6130,7 @@ function ImageCard({
   fileStem,
   index,
   onPreview,
+  previewPayload = null,
   label,
   selected,
   onToggleSelect,
@@ -5958,7 +6202,19 @@ function ImageCard({
         </button>
       )}
       {!replacing ? (
-        <img src={src} alt={`Gen ${index}`} style={compact ? S.thumbCompact : S.thumb} onClick={() => onPreview(src)} onError={onImgError} />
+        <img
+          src={src}
+          alt={`Gen ${index}`}
+          style={compact ? S.thumbCompact : S.thumb}
+          onClick={() =>
+            onPreview(
+              previewPayload && typeof previewPayload === "object"
+                ? { ...previewPayload, outputSrc: src }
+                : src
+            )
+          }
+          onError={onImgError}
+        />
       ) : (
         <div style={compact ? S.thumbRetryingCompact : S.thumbRetrying}>{t("action.retry")}…</div>
       )}
@@ -6013,17 +6269,17 @@ function TurnPanel({
   const selectedModelIds = Array.isArray(turn?.selectedModelIds) ? turn.selectedModelIds : [];
   const styleReferenceImages = Array.isArray(turn?.styleReferenceImages) ? turn.styleReferenceImages : [];
   const previewInputImage = normalizeImageValue(turn.referenceImage) || normalizeImageValue(styleReferenceImages[0] || "");
-  const handleGeneratedImagePreview = useCallback((image) => {
-    const normalizedImage = normalizeImageValue(image);
+  const handleGeneratedImagePreview = useCallback((payload) => {
+    const previewPayload = normalizePreviewPayload(payload);
+    const normalizedImage = previewPayload.outputSrc;
     if (!normalizedImage) return;
-    if (previewInputImage && previewInputImage !== normalizedImage) {
-      onPreview?.({
-        inputSrc: previewInputImage,
-        outputSrc: normalizedImage,
-      });
-      return;
-    }
-    onPreview?.(normalizedImage);
+    const promptText = typeof payload?.promptText === "string" ? payload.promptText : "";
+    const inputTokens = getFilledPlaceholderTokens(promptText);
+    onPreview?.({
+      ...previewPayload,
+      inputSrc: previewInputImage && previewInputImage !== normalizedImage ? previewInputImage : previewPayload.inputSrc,
+      inputTokens,
+    });
   }, [onPreview, previewInputImage]);
   const formatPromptPreviewText = useCallback((text) => {
     const source = typeof text === "string" ? text : "";
@@ -6086,6 +6342,7 @@ function TurnPanel({
       modelName,
       promptKey,
       promptLabel,
+      promptText: typeof result.promptText === "string" ? result.promptText : "",
       fileStem: buildResultFileStem(result),
     }));
   });
@@ -6188,7 +6445,7 @@ function TurnPanel({
                       ...(expandPromptPreview ? S.turnPromptTextExpanded : null),
                     }}
                     >
-                    {styleBasePrompt ? <PromptTextWithChips text={getPromptPreviewText(styleBasePrompt, expandPromptPreview ? 960 : 220)} /> : t("status.noPrompt")}
+                    {styleBasePrompt ? <PromptTextWithChips text={formatPromptPreviewText(styleBasePrompt)} /> : t("status.noPrompt")}
                   </div>
                 </div>
               ) : (
@@ -6209,7 +6466,7 @@ function TurnPanel({
                         ...(expandPromptPreview ? S.turnPromptTextExpanded : null),
                       }}
                     >
-                      {variant.prompt ? <PromptTextWithChips text={getPromptPreviewText(variant.prompt, expandPromptPreview ? 960 : 220)} /> : t("status.noPrompt")}
+                      {variant.prompt ? <PromptTextWithChips text={formatPromptPreviewText(variant.prompt)} /> : t("status.noPrompt")}
                     </div>
                   </div>
                 ))
@@ -6323,6 +6580,10 @@ function TurnPanel({
                           fileStem={item.fileStem}
                           index={item.index}
                           onPreview={handleGeneratedImagePreview}
+                          previewPayload={{
+                            imageKey,
+                            promptText: item.promptText,
+                          }}
                           label={getLocalizedPromptLabel(item.promptLabel, item.promptKey, uiLanguage)}
                           compact
                           showSelect
@@ -8570,6 +8831,10 @@ export default function App() {
   const historyTurns = visibleTurns.filter((t) => !activeTurn || t.id !== activeTurn.id).sort((a, b) => b.seq - a.seq);
   const visibleHistory = historyTurns.slice(0, historyLimit);
   const hasMoreHistory = historyTurns.length > historyLimit;
+  const previewGalleryItems = useMemo(
+    () => [activeTurn, ...visibleHistory].filter(Boolean).flatMap((turn) => buildTurnPreviewItems(turn)),
+    [activeTurn, visibleHistory]
+  );
   const queueCount = visibleTurns.filter((t) => t.status === "queued").length;
   const runningCount = visibleTurns.filter((t) => t.status === "running").length;
   const hasAnySuccess = visibleTurns.some((t) => t.results?.some((r) => r.status === "success" && r.images?.length));
@@ -8612,6 +8877,27 @@ export default function App() {
     : gptAssistSavedAt
     ? t("common.savedAt", { time: formatUiTime(gptAssistSavedAt, uiLanguage) })
     : t("common.saved");
+
+  const openPreviewImage = useCallback((payload) => {
+    if (!payload) {
+      setPreviewImage(null);
+      return;
+    }
+    const normalized = normalizePreviewPayload(payload);
+    if (!normalized.outputSrc) return;
+    if (normalized.imageKey) {
+      const galleryIndex = previewGalleryItems.findIndex((item) => item.imageKey === normalized.imageKey);
+      if (galleryIndex >= 0) {
+        setPreviewImage({
+          ...normalized,
+          galleryItems: previewGalleryItems,
+          currentIndex: galleryIndex,
+        });
+        return;
+      }
+    }
+    setPreviewImage(normalized);
+  }, [previewGalleryItems]);
 
   useEffect(() => {
     if (!folderSupported || historyDirHandle || typeof window === "undefined") return;
@@ -9164,7 +9450,7 @@ export default function App() {
             </h3>
             <TurnPanel
               turn={activeTurn}
-              onPreview={setPreviewImage}
+              onPreview={openPreviewImage}
               onCancelModel={cancelModelTask}
               onDelete={deleteTurn}
               onReuse={reuseTurn}
@@ -9196,7 +9482,7 @@ export default function App() {
                 <div key={turn.id} style={{ padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
                   <TurnPanel
                     turn={turn}
-                    onPreview={setPreviewImage}
+                    onPreview={openPreviewImage}
                     onCancelModel={cancelModelTask}
                     onDelete={deleteTurn}
                     onReuse={reuseTurn}
@@ -9305,7 +9591,7 @@ export default function App() {
         onGenerate={generateAtlasThumbnail}
         thumbnail={atlasThumbnail}
         busy={atlasBusy}
-        onPreview={setPreviewImage}
+        onPreview={openPreviewImage}
       />
       <SpriteSplitModal
         show={showSplitModal}
@@ -9338,7 +9624,7 @@ export default function App() {
         onDeleteItem={deleteSplitItem}
         onUndoDelete={undoDeleteSplitItem}
         onExport={exportSplitItems}
-        onPreview={setPreviewImage}
+        onPreview={openPreviewImage}
         onUploadImageDataUrl={uploadSplitImageFromModal}
       />
       <ImagePreviewModal src={previewImage} onClose={() => setPreviewImage(null)} />
@@ -9524,9 +9810,13 @@ const S = {
   imageActionPlusCompact: { fontSize: 12, lineHeight: 1, fontWeight: 700 },
   dlBtn: { width: "100%", padding: "8px 0", border: "none", borderTop: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.04)", color: "#aaa", fontSize: 12, fontFamily: mono, cursor: "pointer" },
   modalOverlay: { position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.8)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", animation: "fadeIn 0.15s ease" },
+  previewNavBtn: { position: "absolute", top: "50%", transform: "translateY(-50%)", zIndex: 11, width: 38, height: 38, borderRadius: 19, border: "1px solid rgba(255,255,255,0.14)", background: "rgba(2,6,23,0.74)", color: "#f8fafc", fontSize: 24, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },
+  previewCounter: { position: "absolute", top: 14, left: "50%", transform: "translateX(-50%)", zIndex: 11, minWidth: 72, height: 28, padding: "0 10px", borderRadius: 999, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(2,6,23,0.74)", color: "#e2e8f0", fontFamily: mono, fontSize: 12, display: "inline-flex", alignItems: "center", justifyContent: "center" },
   previewCompareGrid: { width: "100%", height: "100%", display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 0 },
   previewComparePane: { minWidth: 0, minHeight: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", borderRight: "1px solid rgba(255,255,255,0.08)" },
-  previewCompareLabel: { height: 42, display: "flex", alignItems: "center", padding: "0 14px", borderBottom: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", color: "#cbd5e1", fontFamily: mono, fontSize: 12, letterSpacing: 0.5, textTransform: "uppercase" },
+  previewCompareLabel: { minHeight: 42, display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", borderBottom: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)", color: "#cbd5e1", fontFamily: mono, fontSize: 12, letterSpacing: 0.5, textTransform: "uppercase", flexWrap: "wrap" },
+  previewCompareTokens: { display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" },
+  previewCompareToken: { padding: "2px 8px", borderRadius: 999, border: `1px solid ${THEME_PRIMARY_BORDER}`, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT, fontSize: 11, letterSpacing: 0, textTransform: "none" },
   previewCompareImageWrap: { minWidth: 0, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: "#0b0b0d" },
   previewCompareImage: { maxWidth: "100%", maxHeight: "100%", objectFit: "contain" },
   previewSingleWrap: { width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: "#0b0b0d" },
