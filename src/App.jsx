@@ -1101,11 +1101,22 @@ function getBailianAspectRatioSize(aspectRatio = DEFAULT_ASPECT_RATIO) {
   return `${width}*${height}`;
 }
 
+function getBailianImageInputLimit(model) {
+  if (isQwenImageModel(model)) return 3;
+  if (/^wan2\.7-image(?:-pro)?(?:-|$)/.test(String(model?.id || ""))) return 9;
+  return MAX_INPUT_IMAGES_PER_BATCH;
+}
+
 function getBailianImageSize(model, aspectRatio = DEFAULT_ASPECT_RATIO, hasImageInputs = false) {
-  const fallbackSize = isQwenImageModel(model) ? "2048*2048" : "2K";
+  const isQwenModel = isQwenImageModel(model);
+  const fallbackSize = isQwenModel ? "2048*2048" : "2K";
   const normalizedRatio = normalizeAspectRatio(aspectRatio);
-  if (normalizedRatio === DEFAULT_ASPECT_RATIO) return fallbackSize;
-  if (!isQwenImageModel(model) && hasImageInputs) return fallbackSize;
+  if (normalizedRatio === DEFAULT_ASPECT_RATIO) {
+    // For Qwen image editing, omitting size lets Bailian keep the last input image ratio.
+    if (isQwenModel && hasImageInputs) return null;
+    return fallbackSize;
+  }
+  if (!isQwenModel && hasImageInputs) return fallbackSize;
   return getBailianAspectRatioSize(normalizedRatio) || fallbackSize;
 }
 
@@ -3901,19 +3912,20 @@ async function callBailianImageAPI(proxyUrl, model, prompt, imageBase64, options
   const apiKey = normalizeApiKey(options.apiKey);
   const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
   const isQwenModel = isQwenImageModel(model);
-  const supportsImageInputs = !isQwenModel;
-  const effectiveImageInputs = supportsImageInputs ? imageInputs.slice(0, MAX_INPUT_IMAGES_PER_BATCH) : [];
+  const effectiveImageInputs = imageInputs
+    .slice(0, getBailianImageInputLimit(model))
+    .map((image) => normalizeImageValue(image, apiBaseUrl))
+    .filter(Boolean);
   const content = [];
 
   const textPrompt = typeof prompt === "string" && prompt.trim() ? prompt.trim() : "Generate a creative image";
   effectiveImageInputs.forEach((image) => {
-    const normalized = normalizeImageValue(image, apiBaseUrl);
-    if (!normalized) return;
     content.push({
-      image: normalized,
+      image,
     });
   });
   content.push({ text: textPrompt });
+  const imageSize = getBailianImageSize(model, options.aspectRatio, effectiveImageInputs.length > 0);
 
   const body = {
     model: model.id,
@@ -3927,7 +3939,7 @@ async function callBailianImageAPI(proxyUrl, model, prompt, imageBase64, options
     },
     parameters: {
       n: Math.min(Math.max(1, Number(count) || 1), isQwenModel ? 6 : 4),
-      size: getBailianImageSize(model, options.aspectRatio, effectiveImageInputs.length > 0),
+      ...(imageSize ? { size: imageSize } : {}),
       watermark: false,
       ...(isQwenModel ? { prompt_extend: true } : {}),
       ...(!isQwenModel && !effectiveImageInputs.length && model?.id === "wan2.7-image-pro" ? { thinking_mode: true } : {}),
@@ -6391,6 +6403,7 @@ function HelpPage() {
           lines: [
             "输入图支持一次多选上传。",
             "主输入框点击后会直接上传，`编辑` 会打开管理弹窗用于删除或新增图片。",
+            "对于支持图像编辑的模型（如 Qwen 图像模型），上传输入图后会自动走图生或编辑；不上传则继续走文生图。",
             "在 `当前任务` 和 `历史记录` 中，点击输入图上的放大镜，可以在原位置展开大图。先点一下大图，再用滚轮缩放、拖拽平移，点击右上角缩小按钮即可恢复缩略图。",
             "在 `风格` 里，参考图使用独立的编辑弹窗。",
           ],
@@ -6471,6 +6484,7 @@ function HelpPage() {
           lines: [
             "Input images support multi-select uploads.",
             "The main input box uploads directly, while `Edit` opens a manager to add or remove images.",
+            "For models that support image editing, such as Qwen image models, uploading an input image automatically switches the request to image-to-image or edit mode; without an upload it stays text-to-image.",
             "In `Current Dialog` and `History Dialogs`, click the magnifier on the input image to expand it in place. Click the enlarged image first, then use the wheel to zoom, drag to pan, and click the corner collapse button to restore the thumbnail.",
             "In `Style`, reference images open their own editor modal.",
           ],
