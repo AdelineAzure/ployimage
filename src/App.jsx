@@ -1116,7 +1116,8 @@ function getBailianImageSize(model, aspectRatio = DEFAULT_ASPECT_RATIO, hasImage
     if (isQwenModel && hasImageInputs) return null;
     return fallbackSize;
   }
-  if (!isQwenModel && hasImageInputs) return fallbackSize;
+  // Wan and Qwen both accept custom width*height values, so a non-auto ratio
+  // should keep using an explicit size even when image inputs are present.
   return getBailianAspectRatioSize(normalizedRatio) || fallbackSize;
 }
 
@@ -10994,10 +10995,10 @@ const S = {
   imageSplitBtnBusy: { opacity: 0.65, cursor: "wait" },
   imageThemeTag: { position: "absolute", left: 8, top: 8, zIndex: 2, maxWidth: "70%", padding: "2px 7px", borderRadius: 999, fontSize: 10, fontFamily: mono, color: THEME_PRIMARY_TEXT, background: "rgba(6,78,59,0.82)", border: `1px solid ${THEME_PRIMARY_BORDER}`, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   imageThemeTagCompact: { left: 4, top: 4, maxWidth: "75%", padding: "1px 5px", fontSize: 9, borderRadius: 999 },
-  thumb: { width: "100%", aspectRatio: "4 / 3", objectFit: "contain", cursor: "pointer", display: "block", background: "#0b0b0d" },
-  thumbCompact: { width: "100%", aspectRatio: "1 / 1", objectFit: "cover", cursor: "pointer", display: "block", background: "#0b0b0d" },
-  thumbRetrying: { width: "100%", aspectRatio: "4 / 3", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(2,6,23,0.65)", color: "#cbd5e1", fontFamily: mono, fontSize: 12 },
-  thumbRetryingCompact: { width: "100%", aspectRatio: "1 / 1", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(2,6,23,0.65)", color: "#cbd5e1", fontFamily: mono, fontSize: 10 },
+  thumb: { width: "100%", height: "auto", objectFit: "contain", cursor: "pointer", display: "block", background: "#0b0b0d" },
+  thumbCompact: { width: "100%", height: "auto", objectFit: "contain", cursor: "pointer", display: "block", background: "#0b0b0d", maxHeight: 220 },
+  thumbRetrying: { width: "100%", minHeight: 180, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(2,6,23,0.65)", color: "#cbd5e1", fontFamily: mono, fontSize: 12 },
+  thumbRetryingCompact: { width: "100%", minHeight: 120, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(2,6,23,0.65)", color: "#cbd5e1", fontFamily: mono, fontSize: 10 },
   imageActionBar: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", borderTop: "1px solid rgba(255,255,255,0.06)", background: "rgba(255,255,255,0.03)" },
   imageActionBarCompact: { minHeight: 28 },
   imageActionBtn: { height: 34, border: "none", borderRight: "1px solid rgba(255,255,255,0.06)", background: "transparent", color: "#cbd5e1", fontFamily: mono, fontSize: 12, cursor: "pointer" },
