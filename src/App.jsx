@@ -1,20 +1,26 @@
 import { createContext, useContext, useState, useRef, useCallback, useEffect, useMemo } from "react";
 
-// ─── DeerAPI Model Registry ───
-// Each model has its own apiType defining which DeerAPI endpoint/format to use
+// ─── Model Registry ───
+// Each model has its own apiType defining which upstream endpoint/format to use.
 const IMAGE_MODELS = [
   // Seedream — /v1/images/generations (豆包生图)
-  { id: "doubao-seedream-4-0-250828", name: "Seedream 4.0", shortName: "Seed 4.0", provider: "ByteDance", apiType: "images" },
-  { id: "doubao-seedream-4-5-251128", name: "Seedream 4.5", shortName: "Seed 4.5", provider: "ByteDance", apiType: "images", badge: "NEW" },
-  { id: "doubao-seedream-5-0-260128", name: "Seedream 5.0 Lite", shortName: "Seed 5", provider: "ByteDance", apiType: "images", badge: "NEW" },
+  { id: "doubao-seedream-4-0-250828", name: "Seedream 4.0", shortName: "Seed 4.0", provider: "ByteDance", apiType: "images", platforms: ["deerapi"] },
+  { id: "doubao-seedream-4-5-251128", name: "Seedream 4.5", shortName: "Seed 4.5", provider: "ByteDance", apiType: "images", badge: "NEW", platforms: ["deerapi"] },
+  { id: "doubao-seedream-5-0-260128", name: "Seedream 5.0 Lite", shortName: "Seed 5", provider: "ByteDance", apiType: "images", badge: "NEW", platforms: ["deerapi"] },
   // Midjourney via /mj
-  { id: "midjourney-imagine", name: "Midjourney Imagine", shortName: "Midjourney", provider: "Midjourney", apiType: "midjourney", badge: "BETA" },
+  { id: "midjourney-imagine", name: "Midjourney Imagine", shortName: "Midjourney", provider: "Midjourney", apiType: "midjourney", badge: "BETA", platforms: ["deerapi"] },
   // GPT‑1.5 image — 依旧走 /v1/images/generations
-  { id: "gpt-image-1.5", name: "GPT‑1.5 Image", shortName: "GPT-1.5", provider: "OpenAI", apiType: "images", badge: "HOT" },
+  { id: "gpt-image-1.5", name: "GPT‑1.5 Image", shortName: "GPT-1.5", provider: "OpenAI", apiType: "images", badge: "HOT", platforms: ["deerapi"] },
+  // Bailian Qwen Image 系列：走 /api/v1/services/aigc/multimodal-generation/generation
+  { id: "qwen-image-2.0", name: "qwen", shortName: "qwen", provider: "Alibaba", apiType: "bailian", badge: "NEW", platforms: ["bailian"] },
+  { id: "qwen-image-2.0-pro", name: "qwen pro", shortName: "qwen pro", provider: "Alibaba", apiType: "bailian", badge: "PRO", platforms: ["bailian"] },
   // NanoBanana 系列：本质调用 Gemini 图像模型
-  { id: "gemini-2.5-flash-image", name: "NanoBanana", shortName: "Nano", provider: "Google", apiType: "gemini", badge: "HOT" },
-  { id: "gemini-3.1-flash-image-preview", name: "NanoBanana 2", shortName: "Nano 2", provider: "Google", apiType: "gemini", badge: "NEW" },
-  { id: "gemini-3-pro-image", name: "NanoBanana Pro", shortName: "Nano Pro", provider: "Google", apiType: "gemini", badge: "PRO" },
+  { id: "gemini-2.5-flash-image", name: "NanoBanana", shortName: "Nano", provider: "Google", apiType: "gemini", badge: "HOT", platforms: ["deerapi"] },
+  { id: "gemini-3.1-flash-image-preview", name: "NanoBanana 2", shortName: "Nano 2", provider: "Google", apiType: "gemini", badge: "NEW", platforms: ["deerapi"] },
+  { id: "gemini-3-pro-image", name: "NanoBanana Pro", shortName: "Nano Pro", provider: "Google", apiType: "gemini", badge: "PRO", platforms: ["deerapi"] },
+  // Bailian Wan 2.7 系列
+  { id: "wan2.7-image", name: "wan", shortName: "wan", provider: "Alibaba", apiType: "bailian", badge: "NEW", platforms: ["bailian"] },
+  { id: "wan2.7-image-pro", name: "wanpro", shortName: "wanpro", provider: "Alibaba", apiType: "bailian", badge: "PRO", platforms: ["bailian"] },
 ];
 
 const PROVIDER_COLORS = {
@@ -22,6 +28,7 @@ const PROVIDER_COLORS = {
   Google: { bg: "#1a73e8", text: "#fff" },
   ByteDance: { bg: "#fe2c55", text: "#fff" },
   Midjourney: { bg: "#6d28d9", text: "#fff" },
+  Alibaba: { bg: "#ff6a00", text: "#fff" },
 };
 
 const LOCAL_STATE_KEY = "polyimage_local_state_v1";
@@ -48,9 +55,19 @@ const DEFAULT_TASK_MODE = "single";
 const DEFAULT_COMPARE_PROMPTS = { a: "", b: "" };
 const DEFAULT_LAST_EDITED_COUNT = 1;
 const DEFAULT_ASPECT_RATIO = "auto";
-const DEFAULT_API_BASE_URL = "https://api.deerapi.com";
+const DEFAULT_API_PLATFORM = "deerapi";
+const DEFAULT_API_BASE_URLS = {
+  deerapi: "https://api.deerapi.com",
+  bailian: "https://dashscope.aliyuncs.com",
+};
+const DEFAULT_API_BASE_URL = DEFAULT_API_BASE_URLS[DEFAULT_API_PLATFORM];
 const DEFAULT_API_KEY = "";
+const DEFAULT_API_KEYS = {
+  deerapi: DEFAULT_API_KEY,
+  bailian: DEFAULT_API_KEY,
+};
 const DEFAULT_GPT_ASSIST_MODEL = "gpt-4o-mini";
+const DEFAULT_BAILIAN_ASSIST_MODEL = "qwen-plus";
 const DEFAULT_GPT_ASSIST_PROMPT = "你是一个提示词优化助手。你只改写 {{ }} 里的内容，保持用户原有写作风格、长度和随机感，不要改动大括号外的任何字符。";
 const DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT = true;
 const DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE = true;
@@ -63,6 +80,7 @@ const STYLE_THEME_SLOTS = 12;
 const MAX_STYLE_REFERENCE_IMAGES = 4;
 const MAX_ATLAS_SELECTED_IMAGES = 20;
 const MAX_INPUT_IMAGES_PER_BATCH = 10;
+const INPUT_IMAGE_EDITOR_COLORS = ["#f8fafc", "#ef4444", "#f59e0b", "#22c55e", "#38bdf8", "#a855f7"];
 const MAX_SPLIT_EXPORT_ITEMS = 120;
 const SPLIT_SHAPE_MODE_ORDER = ["edge", "polygon", "rect"];
 const SPLIT_RENDER_MODE_ORDER = ["painted", "direct"];
@@ -104,7 +122,8 @@ const UI_TEXT = {
     "settings.languageEnglish": "English",
     "settings.languageChinese": "中文",
     "api.title": "API Key",
-    "api.label": "Deer API Key",
+    "api.deerapiLabel": "DeerAPI Key",
+    "api.bailianLabel": "Bailian Key",
     "gpt.title": "GPT Prompt",
     "gpt.rewriteLabel": "GPT Rewrite Instruction",
     "gpt.themeLabel": "Style Theme Association Instruction",
@@ -142,6 +161,27 @@ const UI_TEXT = {
     "images.inputTitle": "Input Images",
     "images.referenceTitle": "Reference Images",
     "images.modalHint": "First slot is upload. Changes save automatically when you close.",
+    "imageEditor.title": "Prompt Image Editor",
+    "imageEditor.hint": "Drag on the canvas to crop or annotate. Confirm will replace the current prompt images.",
+    "imageEditor.tools": "Tools",
+    "imageEditor.colors": "Colors",
+    "imageEditor.toolCrop": "Crop",
+    "imageEditor.toolRect": "Box",
+    "imageEditor.toolLine": "Line",
+    "imageEditor.toolArrow": "Arrow",
+    "imageEditor.undo": "Undo",
+    "imageEditor.applyCrop": "Apply Crop",
+    "imageEditor.clearCrop": "Clear Crop",
+    "imageEditor.confirm": "Confirm",
+    "imageEditor.cancel": "Cancel",
+    "imageEditor.prev": "Prev",
+    "imageEditor.next": "Next",
+    "imageEditor.page": "Image {{current}} / {{total}}",
+    "imageEditor.noImage": "No image loaded.",
+    "imageEditor.cropHint": "Drag to define a crop area, then click Apply Crop.",
+    "imageEditor.drawHint": "Drag on the image to draw the current annotation.",
+    "imageEditor.cropReady": "Crop area ready.",
+    "imageEditor.multiHint": "Switch the thumbnails below to edit each uploaded image.",
     "selectionLimit.title": "Selection limit reached",
     "selectionLimit.text": "You can select up to {{limit}} images for atlas export.",
     "action.save": "Save",
@@ -203,7 +243,7 @@ const UI_TEXT = {
     "nav.help": "Help",
     "nav.gptPrompt": "GPT Prompt",
     "nav.api": "API",
-    "header.subtitle": "Multi-Model Generation · DeerAPI",
+    "header.subtitle": "Multi-Model Generation · DeerAPI / Bailian",
     "workspace.prompt": "PROMPT",
     "workspace.prompts": "PROMPTS",
     "workspace.compareHint": "Shared image, dual prompt runs",
@@ -328,7 +368,8 @@ const UI_TEXT = {
     "settings.languageEnglish": "English",
     "settings.languageChinese": "中文",
     "api.title": "API Key",
-    "api.label": "Deer API Key",
+    "api.deerapiLabel": "DeerAPI Key",
+    "api.bailianLabel": "百炼 Key",
     "gpt.title": "GPT 提示词",
     "gpt.rewriteLabel": "GPT 改写指令",
     "gpt.themeLabel": "主题联想指令",
@@ -366,6 +407,27 @@ const UI_TEXT = {
     "images.inputTitle": "输入图",
     "images.referenceTitle": "参考图",
     "images.modalHint": "第一个格子用于上传。关闭弹窗后会自动保存变更。",
+    "imageEditor.title": "提示词图片编辑",
+    "imageEditor.hint": "在画布上拖动即可裁剪或标注。点击确认后会替换当前提示词图片。",
+    "imageEditor.tools": "工具",
+    "imageEditor.colors": "颜色",
+    "imageEditor.toolCrop": "裁剪",
+    "imageEditor.toolRect": "画框",
+    "imageEditor.toolLine": "直线",
+    "imageEditor.toolArrow": "箭头",
+    "imageEditor.undo": "撤回",
+    "imageEditor.applyCrop": "应用裁剪",
+    "imageEditor.clearCrop": "清除裁剪",
+    "imageEditor.confirm": "确认",
+    "imageEditor.cancel": "取消",
+    "imageEditor.prev": "上一张",
+    "imageEditor.next": "下一张",
+    "imageEditor.page": "第 {{current}} / {{total}} 张",
+    "imageEditor.noImage": "暂无可编辑图片。",
+    "imageEditor.cropHint": "拖动选出裁剪区域，再点击“应用裁剪”。",
+    "imageEditor.drawHint": "在图片上拖动即可绘制当前标注。",
+    "imageEditor.cropReady": "裁剪区域已准备好。",
+    "imageEditor.multiHint": "下方缩略图可切换并逐张编辑已上传图片。",
     "selectionLimit.title": "已达到选择上限",
     "selectionLimit.text": "图集导出最多只能选择 {{limit}} 张图片。",
     "action.save": "下载",
@@ -427,7 +489,7 @@ const UI_TEXT = {
     "nav.help": "帮助",
     "nav.gptPrompt": "GPT 提示词",
     "nav.api": "API",
-    "header.subtitle": "多模型生图工作台 · DeerAPI",
+    "header.subtitle": "多模型生图工作台 · DeerAPI / 百炼",
     "workspace.prompt": "提示词",
     "workspace.prompts": "提示词",
     "workspace.compareHint": "共享输入图，双提示词同时运行",
@@ -618,97 +680,113 @@ function localizeRuntimeMessage(message, t) {
 
 // ─── Cloudflare Worker Proxy Code ───
 const CF_WORKER_CODE = `// Deploy this as a Cloudflare Worker
-// Set DEERAPI_KEY as an environment variable in your Worker settings
+// Optional env vars:
+//   - DEERAPI_KEY
+//   - DASHSCOPE_API_KEY
+// Platform is inferred from X-Upstream-Base when X-Api-Platform is absent.
 
 export default {
   async fetch(request, env) {
-    if (request.method === "OPTIONS") {
-      return new Response(null, {
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type, X-Target-Path, X-Image-Url, X-Upstream-Base, X-Api-Key",
-        },
-      });
+    const method = request.method.toUpperCase();
+    const url = new URL(request.url);
+
+    if (method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders() });
     }
 
-    if (request.method !== "POST" && request.method !== "GET") {
-      return new Response("Method not allowed", { status: 405 });
-    }
-
-    const imageUrl = request.headers.get("X-Image-Url");
-    if (imageUrl) {
-      const imgResp = await fetch(imageUrl, { method: "GET", redirect: "follow" });
-      const imgType = imgResp.headers.get("Content-Type") || "application/octet-stream";
-      const imgData = await imgResp.arrayBuffer();
-      return new Response(imgData, {
-        status: imgResp.status,
-        headers: {
-          "Content-Type": imgType,
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Headers": "Content-Type, X-Target-Path, X-Image-Url, X-Upstream-Base, X-Api-Key",
-        },
-      });
-    }
-
-    // The frontend sends the target path in a header
-    const targetPath = request.headers.get("X-Target-Path") || "/v1/chat/completions";
-    const upstreamBase = resolveUpstreamBase(request.headers.get("X-Upstream-Base"));
-    if (!upstreamBase) {
-      return new Response(JSON.stringify({ error: "Invalid X-Upstream-Base" }), { status: 400 });
-    }
-    const body = await request.text();
-
-    const requestApiKey = normalizeApiKey(request.headers.get("X-Api-Key") || "");
-    const fallbackApiKey = normalizeApiKey(env.DEERAPI_KEY || "");
-    const apiKey = requestApiKey || fallbackApiKey;
-    if (!apiKey) {
-      return new Response(JSON.stringify({ error: "API key missing. Provide X-Api-Key or configure DEERAPI_KEY." }), { status: 400 });
-    }
-
-    const isGemini = targetPath.includes("/v1beta/");
-    const primaryAuth = isGemini ? apiKey : \`Bearer \${apiKey}\`;
-    const fallbackAuth = isGemini ? \`Bearer \${apiKey}\` : apiKey;
-    const baseHeaders = {
-      "Content-Type": "application/json",
-      "X-Api-Key": apiKey,
-      "X-Goog-Api-Key": apiKey,
-    };
-
-    const forward = (authorization) =>
-      fetch(\`\${upstreamBase}\${targetPath}\`, {
-        method: "POST",
-        headers: {
-          ...baseHeaders,
-          "Authorization": authorization,
-        },
-        body,
-      });
-
-    let resp = await forward(primaryAuth);
-    let data = await resp.text();
-    const authError = /auth|authorization|api.?key|bearer|x-goog-api-key|invalid key|token|密钥/i.test(data);
-    if ([400, 401, 403].includes(resp.status) && authError && fallbackAuth !== primaryAuth) {
-      const retry = await forward(fallbackAuth);
-      const retryData = await retry.text();
-      if (retry.ok || !resp.ok) {
-        resp = retry;
-        data = retryData;
+    try {
+      const imageUrl = request.headers.get("X-Image-Url") || url.searchParams.get("image_url");
+      if (imageUrl) {
+        if (method !== "GET") return json({ error: "Image proxy only supports GET" }, 405);
+        const imgResp = await fetch(imageUrl, { method: "GET", redirect: "follow" });
+        const imgType = imgResp.headers.get("Content-Type") || "application/octet-stream";
+        const imgData = await imgResp.arrayBuffer();
+        return new Response(imgData, {
+          status: imgResp.status,
+          headers: {
+            "Content-Type": imgType,
+            ...corsHeaders(),
+          },
+        });
       }
-    }
 
-    return new Response(data, {
-      status: resp.status,
-      headers: {
+      const targetPath = request.headers.get("X-Target-Path") || "/v1/chat/completions";
+      const upstreamBase = resolveUpstreamBase(request.headers.get("X-Upstream-Base"));
+      if (!upstreamBase) return json({ error: "Invalid X-Upstream-Base" }, 400);
+
+      const isAllowedGetPath =
+        /^\\/mj\\/task\\/[^/]+\\/fetch(?:\\?.*)?$/.test(targetPath) ||
+        /^\\/replicate\\/v1\\/predictions\\/[^/]+(?:\\?.*)?$/.test(targetPath);
+      if (method !== "POST" && !(method === "GET" && isAllowedGetPath)) {
+        return json({ error: "Method not allowed" }, 405);
+      }
+
+      const body = method === "POST" ? await request.text() : undefined;
+      const apiPlatform = normalizeApiPlatform(
+        request.headers.get("X-Api-Platform") || inferApiPlatformFromBase(upstreamBase)
+      );
+      const requestApiKey = normalizeApiKey(request.headers.get("X-Api-Key") || "");
+      const fallbackApiKey = getFallbackApiKey(env, apiPlatform);
+      const apiKey = requestApiKey || fallbackApiKey;
+      if (!apiKey) {
+        const envName = apiPlatform === "bailian" ? "DASHSCOPE_API_KEY" : "DEERAPI_KEY";
+        return json({ error: \`API key missing. Provide X-Api-Key or configure \${envName}.\` }, 400);
+      }
+
+      const isGemini = targetPath.includes("/v1beta/");
+      const prefersBearer = apiPlatform === "bailian" || !isGemini;
+      const primaryAuth = prefersBearer ? \`Bearer \${apiKey}\` : apiKey;
+      const fallbackAuth = prefersBearer ? apiKey : \`Bearer \${apiKey}\`;
+      const baseHeaders = {
         "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type, X-Target-Path, X-Image-Url, X-Upstream-Base, X-Api-Key",
-      },
-    });
+        "X-Api-Key": apiKey,
+        "X-Goog-Api-Key": apiKey,
+      };
+
+      const forward = (authorization) =>
+        fetch(\`\${upstreamBase}\${targetPath}\`, {
+          method,
+          headers: {
+            ...baseHeaders,
+            "Authorization": authorization,
+          },
+          body,
+        });
+
+      let resp = await forward(primaryAuth);
+      let data = await resp.text();
+      const authError = /auth|authorization|api.?key|bearer|x-goog-api-key|invalid key|token|密钥/i.test(data);
+      if ([400, 401, 403].includes(resp.status) && authError && fallbackAuth !== primaryAuth) {
+        const retry = await forward(fallbackAuth);
+        const retryData = await retry.text();
+        if (retry.ok || !resp.ok) {
+          resp = retry;
+          data = retryData;
+        }
+      }
+
+      return new Response(data, {
+        status: resp.status,
+        headers: {
+          "Content-Type": "application/json",
+          ...corsHeaders(),
+        },
+      });
+    } catch (err) {
+      return json({ error: err.message }, 500);
+    }
   },
 };
 
 const DEFAULT_UPSTREAM_BASE = "https://api.deerapi.com";
+
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, X-Target-Path, X-Image-Url, X-Upstream-Base, X-Api-Key, X-Api-Platform",
+  };
+}
 
 function normalizeApiKey(value) {
   if (typeof value !== "string") return "";
@@ -717,19 +795,44 @@ function normalizeApiKey(value) {
   next = next.replace(/^authorization\\s*:\\s*/i, "").trim();
   next = next.replace(/^x-goog-api-key\\s*:\\s*/i, "").trim();
   next = next.replace(/^bearer\\s+/i, "").trim();
-  next = next.replace(/^[\"']+|[\"']+$/g, "").trim();
+  next = next.replace(/^[\\"']+|[\\"']+$/g, "").trim();
   return next;
+}
+
+function normalizeApiPlatform(value) {
+  return value === "bailian" ? "bailian" : "deerapi";
+}
+
+function inferApiPlatformFromBase(value) {
+  return /dashscope\\.aliyuncs\\.com/i.test(value || "") ? "bailian" : "deerapi";
+}
+
+function getFallbackApiKey(env, apiPlatform) {
+  if (apiPlatform === "bailian") {
+    return normalizeApiKey(env.DASHSCOPE_API_KEY || env.BAILIAN_API_KEY || "");
+  }
+  return normalizeApiKey(env.DEERAPI_KEY || "");
 }
 
 function resolveUpstreamBase(value) {
   if (!value) return DEFAULT_UPSTREAM_BASE;
   try {
-    const url = new URL(value);
-    if (!/^https?:$/i.test(url.protocol)) return null;
-    return \`\${url.origin}\${url.pathname}\`.replace(/\\/+$/, "");
+    const target = new URL(value);
+    if (!/^https?:$/i.test(target.protocol)) return null;
+    return \`\${target.origin}\${target.pathname}\`.replace(/\\/+$/, "");
   } catch {
     return null;
   }
+}
+
+function json(obj, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      ...corsHeaders(),
+    },
+  });
 }`;
 
 // ─── Helpers ───
@@ -854,8 +957,16 @@ function normalizeApiBaseUrl(value) {
   }
 }
 
-function resolveApiBaseUrl(value) {
-  return normalizeApiBaseUrl(value) || DEFAULT_API_BASE_URL;
+function normalizeApiPlatform(value) {
+  return value === "bailian" ? "bailian" : DEFAULT_API_PLATFORM;
+}
+
+function getDefaultApiBaseUrl(apiPlatform = DEFAULT_API_PLATFORM) {
+  return DEFAULT_API_BASE_URLS[normalizeApiPlatform(apiPlatform)] || DEFAULT_API_BASE_URL;
+}
+
+function resolveApiBaseUrl(value, apiPlatform = DEFAULT_API_PLATFORM) {
+  return normalizeApiBaseUrl(value) || getDefaultApiBaseUrl(apiPlatform);
 }
 
 function normalizeApiKey(value) {
@@ -867,6 +978,71 @@ function normalizeApiKey(value) {
   next = next.replace(/^bearer\s+/i, "").trim();
   next = next.replace(/^["']+|["']+$/g, "").trim();
   return next;
+}
+
+function normalizeApiKeys(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    deerapi: normalizeApiKey(source.deerapi || source.deerApiKey || source.deerapiKey || source.DEERAPI_KEY || ""),
+    bailian: normalizeApiKey(source.bailian || source.bailianKey || source.dashscopeKey || source.DASHSCOPE_API_KEY || ""),
+  };
+}
+
+function getApiKeyForPlatform(apiKeys, apiPlatform = DEFAULT_API_PLATFORM) {
+  const normalizedKeys = normalizeApiKeys(apiKeys);
+  const platform = normalizeApiPlatform(apiPlatform);
+  return normalizedKeys[platform] || "";
+}
+
+function getAssistPlatformOrder(apiKeys) {
+  const normalizedKeys = normalizeApiKeys(apiKeys);
+  if (normalizedKeys.deerapi && normalizedKeys.bailian) return ["deerapi", "bailian"];
+  if (normalizedKeys.deerapi) return ["deerapi", "bailian"];
+  if (normalizedKeys.bailian) return ["bailian", "deerapi"];
+  return ["deerapi", "bailian"];
+}
+
+function resolveTextAssistTargetPath(apiPlatform = DEFAULT_API_PLATFORM) {
+  return normalizeApiPlatform(apiPlatform) === "bailian"
+    ? "/compatible-mode/v1/chat/completions"
+    : "/v1/chat/completions";
+}
+
+function resolveTextAssistModelId(apiPlatform = DEFAULT_API_PLATFORM) {
+  return normalizeApiPlatform(apiPlatform) === "bailian"
+    ? DEFAULT_BAILIAN_ASSIST_MODEL
+    : DEFAULT_GPT_ASSIST_MODEL;
+}
+
+function isModelAvailableOnPlatform(model, apiPlatform = DEFAULT_API_PLATFORM) {
+  if (!model) return false;
+  const supportedPlatforms =
+    Array.isArray(model.platforms) && model.platforms.length
+      ? model.platforms
+      : [DEFAULT_API_PLATFORM];
+  return supportedPlatforms.includes(normalizeApiPlatform(apiPlatform));
+}
+
+function getModelApiPlatform(model) {
+  if (!model) return DEFAULT_API_PLATFORM;
+  const supportedPlatforms =
+    Array.isArray(model.platforms) && model.platforms.length
+      ? model.platforms
+      : [DEFAULT_API_PLATFORM];
+  return normalizeApiPlatform(supportedPlatforms[0]);
+}
+
+function getApiConfigForPlatform(apiPlatform, apiKeys) {
+  const platform = normalizeApiPlatform(apiPlatform);
+  return {
+    apiPlatform: platform,
+    apiBaseUrl: getDefaultApiBaseUrl(platform),
+    apiKey: getApiKeyForPlatform(apiKeys, platform),
+  };
+}
+
+function getApiConfigForModel(model, apiKeys) {
+  return getApiConfigForPlatform(getModelApiPlatform(model), apiKeys);
 }
 
 function normalizeAspectRatio(value) {
@@ -882,6 +1058,55 @@ function normalizeModelId(id) {
   if (typeof id !== "string") return id;
   if (NANO_PRO_LEGACY_MODEL_IDS.includes(id)) return NANO_PRO_OFFICIAL_MODEL_ID;
   return id;
+}
+
+function isQwenImageModel(model) {
+  return /^qwen-image-2\.0(?:-pro)?(?:-|$)/.test(String(model?.id || ""));
+}
+
+function roundBailianSize(value, step = 64) {
+  const safe = Number(value) || step;
+  return Math.max(step, Math.round(safe / step) * step);
+}
+
+function getBailianAspectRatioSize(aspectRatio = DEFAULT_ASPECT_RATIO) {
+  const normalizedRatio = normalizeAspectRatio(aspectRatio);
+  const presetSizes = {
+    "1:1": "2048*2048",
+    "4:3": "2368*1728",
+    "3:4": "1728*2368",
+    "16:9": "2688*1536",
+    "9:16": "1536*2688",
+  };
+  if (presetSizes[normalizedRatio]) return presetSizes[normalizedRatio];
+  if (normalizedRatio === DEFAULT_ASPECT_RATIO) return null;
+
+  const [widthRatio, heightRatio] = normalizedRatio.split(":").map((value) => Number(value) || 0);
+  if (!widthRatio || !heightRatio) return null;
+
+  const maxPixels = 2048 * 2048;
+  let width = roundBailianSize(Math.sqrt((maxPixels * widthRatio) / heightRatio));
+  let height = roundBailianSize((width * heightRatio) / widthRatio);
+
+  while (width * height > maxPixels && width > 512 && height > 512) {
+    if (widthRatio >= heightRatio) {
+      width = Math.max(512, width - 64);
+      height = roundBailianSize((width * heightRatio) / widthRatio);
+    } else {
+      height = Math.max(512, height - 64);
+      width = roundBailianSize((height * widthRatio) / heightRatio);
+    }
+  }
+
+  return `${width}*${height}`;
+}
+
+function getBailianImageSize(model, aspectRatio = DEFAULT_ASPECT_RATIO, hasImageInputs = false) {
+  const fallbackSize = isQwenImageModel(model) ? "2048*2048" : "2K";
+  const normalizedRatio = normalizeAspectRatio(aspectRatio);
+  if (normalizedRatio === DEFAULT_ASPECT_RATIO) return fallbackSize;
+  if (!isQwenImageModel(model) && hasImageInputs) return fallbackSize;
+  return getBailianAspectRatioSize(normalizedRatio) || fallbackSize;
 }
 
 function getGeminiModelCandidates(id) {
@@ -1109,6 +1334,117 @@ function loadImageElement(src) {
   });
 }
 
+function normalizeEditorRect(start, end, boundsWidth, boundsHeight) {
+  const maxWidth = Math.max(1, Number(boundsWidth) || 1);
+  const maxHeight = Math.max(1, Number(boundsHeight) || 1);
+  const clamp = (value, max) => Math.max(0, Math.min(max, Number(value) || 0));
+  const x1 = clamp(Math.min(start?.x ?? 0, end?.x ?? 0), maxWidth);
+  const y1 = clamp(Math.min(start?.y ?? 0, end?.y ?? 0), maxHeight);
+  const x2 = clamp(Math.max(start?.x ?? 0, end?.x ?? 0), maxWidth);
+  const y2 = clamp(Math.max(start?.y ?? 0, end?.y ?? 0), maxHeight);
+  return {
+    x: x1,
+    y: y1,
+    width: Math.max(0, x2 - x1),
+    height: Math.max(0, y2 - y1),
+  };
+}
+
+function isEditorRectValid(rect, minSize = 8) {
+  return !!rect && rect.width >= minSize && rect.height >= minSize;
+}
+
+function getInputImageEditorStrokeWidth(width, height) {
+  const longSide = Math.max(1, Number(width) || 1, Number(height) || 1);
+  return Math.max(3, Math.round(longSide / 320));
+}
+
+function drawInputImageEditorShape(ctx, operation) {
+  if (!ctx || !operation || !operation.type) return;
+  ctx.save();
+  ctx.strokeStyle = operation.color || "#f8fafc";
+  ctx.lineWidth = Math.max(2, Number(operation.strokeWidth) || 2);
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  if (operation.type === "rect" && operation.rect) {
+    ctx.strokeRect(operation.rect.x, operation.rect.y, operation.rect.width, operation.rect.height);
+  } else if ((operation.type === "line" || operation.type === "arrow") && operation.start && operation.end) {
+    ctx.beginPath();
+    ctx.moveTo(operation.start.x, operation.start.y);
+    ctx.lineTo(operation.end.x, operation.end.y);
+    ctx.stroke();
+
+    if (operation.type === "arrow") {
+      const angle = Math.atan2(operation.end.y - operation.start.y, operation.end.x - operation.start.x);
+      const headLength = Math.max(12, ctx.lineWidth * 4);
+      ctx.beginPath();
+      ctx.moveTo(operation.end.x, operation.end.y);
+      ctx.lineTo(
+        operation.end.x - headLength * Math.cos(angle - Math.PI / 6),
+        operation.end.y - headLength * Math.sin(angle - Math.PI / 6)
+      );
+      ctx.moveTo(operation.end.x, operation.end.y);
+      ctx.lineTo(
+        operation.end.x - headLength * Math.cos(angle + Math.PI / 6),
+        operation.end.y - headLength * Math.sin(angle + Math.PI / 6)
+      );
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+}
+
+async function applyInputImageEditorOperation(sourceDataUrl, operation) {
+  const normalizedSource = normalizeImageValue(sourceDataUrl) || sourceDataUrl;
+  if (!normalizedSource) return sourceDataUrl;
+  const image = await loadImageElement(normalizedSource);
+  const width = Math.max(1, image.naturalWidth || image.width || 1);
+  const height = Math.max(1, image.naturalHeight || image.height || 1);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return sourceDataUrl;
+  ctx.drawImage(image, 0, 0, width, height);
+  drawInputImageEditorShape(ctx, operation);
+  return canvas.toDataURL("image/png");
+}
+
+async function cropInputImageDataUrl(sourceDataUrl, cropRect) {
+  const normalizedSource = normalizeImageValue(sourceDataUrl) || sourceDataUrl;
+  if (!normalizedSource || !isEditorRectValid(cropRect, 2)) return sourceDataUrl;
+  const image = await loadImageElement(normalizedSource);
+  const width = Math.max(1, image.naturalWidth || image.width || 1);
+  const height = Math.max(1, image.naturalHeight || image.height || 1);
+  const safeRect = normalizeEditorRect(
+    { x: cropRect.x, y: cropRect.y },
+    { x: cropRect.x + cropRect.width, y: cropRect.y + cropRect.height },
+    width,
+    height
+  );
+  if (!isEditorRectValid(safeRect, 2)) return sourceDataUrl;
+
+  const outCanvas = document.createElement("canvas");
+  outCanvas.width = Math.max(1, Math.round(safeRect.width));
+  outCanvas.height = Math.max(1, Math.round(safeRect.height));
+  const ctx = outCanvas.getContext("2d");
+  if (!ctx) return sourceDataUrl;
+  ctx.drawImage(
+    image,
+    safeRect.x,
+    safeRect.y,
+    safeRect.width,
+    safeRect.height,
+    0,
+    0,
+    outCanvas.width,
+    outCanvas.height
+  );
+  return outCanvas.toDataURL("image/png");
+}
+
 async function createAtlasThumbnailDataUrl(imageSources = [], options = {}) {
   const sources = (Array.isArray(imageSources) ? imageSources : [])
     .filter((item) => typeof item === "string" && item.trim())
@@ -1151,10 +1487,10 @@ async function createAtlasThumbnailDataUrl(imageSources = [], options = {}) {
   return canvas.toDataURL("image/png");
 }
 
-function buildProxyHeaders(targetPath, apiBaseUrl, apiKey, extraHeaders = {}) {
+function buildProxyHeaders(targetPath, apiBaseUrl, apiKey, extraHeaders = {}, apiPlatform = DEFAULT_API_PLATFORM) {
   const headers = { ...extraHeaders };
   if (targetPath) headers["X-Target-Path"] = targetPath;
-  headers["X-Upstream-Base"] = resolveApiBaseUrl(apiBaseUrl);
+  headers["X-Upstream-Base"] = resolveApiBaseUrl(apiBaseUrl, apiPlatform);
   const normalizedApiKey = normalizeApiKey(apiKey);
   if (normalizedApiKey) headers["X-Api-Key"] = normalizedApiKey;
   return headers;
@@ -1162,19 +1498,30 @@ function buildProxyHeaders(targetPath, apiBaseUrl, apiKey, extraHeaders = {}) {
 
 async function postJsonWithRetry(proxyUrl, targetPath, body, options = {}) {
   const {
-    signal,
-    maxAttempts = 3,
-    baseDelayMs = 900,
+      signal,
+      maxAttempts = 3,
+      baseDelayMs = 900,
+      apiPlatform = DEFAULT_API_PLATFORM,
   } = options;
 
   let lastError = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const resp = await fetch(proxyUrl, {
-      method: "POST",
-      headers: buildProxyHeaders(targetPath, options.apiBaseUrl, options.apiKey, { "Content-Type": "application/json" }),
-      body: JSON.stringify(body),
-      signal,
-    });
+    let resp;
+    try {
+      resp = await fetch(proxyUrl, {
+        method: "POST",
+        headers: buildProxyHeaders(targetPath, options.apiBaseUrl, options.apiKey, { "Content-Type": "application/json" }, apiPlatform),
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (err) {
+      if (isAbortError(err)) throw err;
+      lastError = err;
+      if (attempt >= maxAttempts) break;
+      const jitter = Math.floor(Math.random() * 250);
+      await sleep(baseDelayMs * attempt + jitter, signal);
+      continue;
+    }
 
     if (resp.ok) return resp.json();
 
@@ -1230,7 +1577,11 @@ function normalizeImageValue(value, apiBaseUrl) {
   if (v.startsWith("data:image/")) return v;
   if (/^https?:\/\//i.test(v)) return v;
   if (v.startsWith("//")) return `https:${v}`;
-  if (v.startsWith("/")) return `${resolveApiBaseUrl(apiBaseUrl || (typeof window !== "undefined" ? window.__apiBaseUrl : ""))}${v}`;
+  if (v.startsWith("/")) {
+    const fallbackBaseUrl = apiBaseUrl || (typeof window !== "undefined" ? window.__apiBaseUrl : "");
+    const fallbackPlatform = typeof window !== "undefined" ? window.__apiPlatform : DEFAULT_API_PLATFORM;
+    return `${resolveApiBaseUrl(fallbackBaseUrl, fallbackPlatform)}${v}`;
+  }
   const mdUrl = v.match(/\((https?:\/\/[^)]+)\)/)?.[1] || v.match(/https?:\/\/\S+/)?.[0];
   if (mdUrl) return mdUrl.replace(/[),.;]+$/, "");
   if (/^[A-Za-z0-9+/=]+$/.test(v) && v.length > 128) {
@@ -2756,7 +3107,7 @@ async function saveTurnToLocalFolder(rootHandle, turn) {
     styleThemes: normalizeStyleThemes(turn.styleThemes),
     promptVariants,
     apiBaseUrl: resolveApiBaseUrl(turn.apiBaseUrl),
-    apiKey: normalizeApiKey(turn.apiKey),
+    apiKeys: normalizeApiKeys(turn.apiKeys),
     aspectRatio: normalizeAspectRatio(turn.aspectRatio ?? turn.geminiAspectRatio),
     referenceImageFile,
     styleReferenceImageFiles,
@@ -2924,7 +3275,13 @@ async function loadTurnsFromLocalFolder(rootHandle) {
         styleThemes: normalizeStyleThemes(meta.styleThemes),
         promptVariants,
         apiBaseUrl: resolveApiBaseUrl(meta.apiBaseUrl),
-        apiKey: normalizeApiKey(meta.apiKey),
+        apiKeys: normalizeApiKeys(
+          meta.apiKeys && typeof meta.apiKeys === "object"
+            ? meta.apiKeys
+            : {
+                [normalizeApiPlatform(meta.apiPlatform)]: normalizeApiKey(meta.apiKey),
+              }
+        ),
         aspectRatio: normalizeAspectRatio(meta.aspectRatio ?? meta.geminiAspectRatio),
         referenceImage,
         styleReferenceImages,
@@ -3070,35 +3427,103 @@ async function saveGptAssistToLocalFolder(rootHandle, prompt, styleThemePrompt, 
 }
 
 async function loadApiConfigFromLocalFolder(rootHandle) {
+  async function recoverApiKeysFromTurns() {
+    let bestSeq = -1;
+    let bestCreatedAt = -1;
+    let recovered = normalizeApiKeys(DEFAULT_API_KEYS);
+    let found = false;
+
+    for await (const [entryName, entryHandle] of rootHandle.entries()) {
+      if (entryHandle.kind !== "directory" || !entryName.startsWith("turn-")) continue;
+      try {
+        const promptHandle = await entryHandle.getFileHandle("prompt.json");
+        const promptFile = await promptHandle.getFile();
+        const raw = JSON.parse(await promptFile.text());
+        const candidateKeys = normalizeApiKeys(
+          raw?.apiKeys && typeof raw.apiKeys === "object"
+            ? raw.apiKeys
+            : {
+                [normalizeApiPlatform(raw?.apiPlatform)]: raw?.apiKey,
+              }
+        );
+        if (!candidateKeys.deerapi && !candidateKeys.bailian) continue;
+        const seq = Number(raw?.seq) || 0;
+        const createdAt = Number(raw?.createdAt) || 0;
+        const isNewer = seq > bestSeq || (seq === bestSeq && createdAt >= bestCreatedAt);
+        if (!isNewer) continue;
+        bestSeq = seq;
+        bestCreatedAt = createdAt;
+        recovered = candidateKeys;
+        found = true;
+      } catch {}
+    }
+
+    return {
+      ...recovered,
+      exists: found,
+    };
+  }
+
   try {
     const fileHandle = await rootHandle.getFileHandle(API_CONFIG_FILE_NAME);
     const file = await fileHandle.getFile();
-    const raw = JSON.parse(await file.text());
+    const text = await file.text();
+    const raw = JSON.parse(text);
+    const rawObject = raw && typeof raw === "object" ? raw : {};
+    const rawString = typeof raw === "string" ? raw : "";
+    const legacyPlatform = normalizeApiPlatform(raw?.apiPlatform);
+    const legacyKey = normalizeApiKey(raw?.apiKey);
+    const normalizedKeys = normalizeApiKeys({
+      deerapi:
+        rawObject?.deerapiKey ||
+        rawObject?.deerApiKey ||
+        rawObject?.apiKeys?.deerapi ||
+        rawObject?.apiKeys?.deerApiKey ||
+        rawString ||
+        (legacyPlatform === "deerapi" ? legacyKey : ""),
+      bailian:
+        rawObject?.bailianKey ||
+        rawObject?.dashscopeKey ||
+        rawObject?.apiKeys?.bailian ||
+        rawObject?.apiKeys?.dashscopeKey ||
+        (legacyPlatform === "bailian" ? legacyKey : ""),
+    });
+    if (!normalizedKeys.deerapi && !normalizedKeys.bailian) {
+      return recoverApiKeysFromTurns();
+    }
     return {
-      apiKey: normalizeApiKey(raw?.apiKey),
+      ...normalizedKeys,
       exists: true,
     };
   } catch (err) {
     if (String(err?.name || "") === "NotFoundError") {
-      return {
-        apiKey: DEFAULT_API_KEY,
-        exists: false,
-      };
+      return recoverApiKeysFromTurns();
     }
+    const recovered = await recoverApiKeysFromTurns();
+    if (recovered.exists) return recovered;
     return {
-      apiKey: DEFAULT_API_KEY,
+      ...DEFAULT_API_KEYS,
       exists: false,
     };
   }
 }
 
-async function saveApiConfigToLocalFolder(rootHandle, apiKey) {
+async function saveApiConfigToLocalFolder(rootHandle, apiKeys) {
+  const normalizedKeys = normalizeApiKeys(apiKeys);
   await writeTextFile(
     rootHandle,
     API_CONFIG_FILE_NAME,
     JSON.stringify(
       {
-        apiKey: normalizeApiKey(apiKey),
+        deerapiKey: normalizedKeys.deerapi,
+        bailianKey: normalizedKeys.bailian,
+        apiKeys: {
+          deerapi: normalizedKeys.deerapi,
+          bailian: normalizedKeys.bailian,
+        },
+        // Keep legacy DeerAPI fields so old folders remain readable by older builds.
+        apiKey: normalizedKeys.deerapi,
+        apiPlatform: normalizedKeys.deerapi ? "deerapi" : normalizedKeys.bailian ? "bailian" : "deerapi",
       },
       null,
       2
@@ -3125,7 +3550,7 @@ async function downloadAllAsZip(turns) {
           prompt: turn.prompt || promptVariants[0]?.prompt || "",
           promptVariants,
           apiBaseUrl: resolveApiBaseUrl(turn.apiBaseUrl),
-          apiKey: normalizeApiKey(turn.apiKey),
+          apiKeys: normalizeApiKeys(turn.apiKeys),
           selectedModels: turn.selectedModelIds,
           selectedModelCounts: turn.modelCounts || {},
           status: turn.status,
@@ -3174,11 +3599,13 @@ async function downloadAllAsZip(turns) {
 
 async function callTextAssistAPI(proxyUrl, sourcePrompt, imageBase64, assistPrompt, options = {}) {
   const { signal } = options;
-  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl);
+  const apiPlatform = normalizeApiPlatform(options.apiPlatform);
+  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl, apiPlatform);
   const apiKey = normalizeApiKey(options.apiKey);
   const sendPromptText = normalizeGptAssistFlag(options.sendPromptText, DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT);
   const sendPromptImage = normalizeGptAssistFlag(options.sendPromptImage, DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE);
   const normalizedAssistPrompt = normalizeGptAssistPrompt(assistPrompt);
+  const targetPath = resolveTextAssistTargetPath(apiPlatform);
   const placeholders = extractPlaceholderTokens(sourcePrompt);
   if (!placeholders.length) return sourcePrompt;
 
@@ -3207,7 +3634,7 @@ async function callTextAssistAPI(proxyUrl, sourcePrompt, imageBase64, assistProm
   }
 
   const body = {
-    model: DEFAULT_GPT_ASSIST_MODEL,
+    model: resolveTextAssistModelId(apiPlatform),
     stream: false,
     temperature: 1.15,
     messages: [
@@ -3216,12 +3643,13 @@ async function callTextAssistAPI(proxyUrl, sourcePrompt, imageBase64, assistProm
     ],
   };
 
-  const data = await postJsonWithRetry(proxyUrl, "/v1/chat/completions", body, {
+  const data = await postJsonWithRetry(proxyUrl, targetPath, body, {
     signal,
     maxAttempts: 3,
     baseDelayMs: 900,
     apiBaseUrl,
     apiKey,
+    apiPlatform,
   });
 
   const rawText = assistantMessageToText(data?.choices?.[0]?.message?.content);
@@ -3245,9 +3673,11 @@ async function callTextAssistAPI(proxyUrl, sourcePrompt, imageBase64, assistProm
 
 async function callThemeAssistAPI(proxyUrl, seedText, assistPrompt, options = {}) {
   const { signal } = options;
-  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl);
+  const apiPlatform = normalizeApiPlatform(options.apiPlatform);
+  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl, apiPlatform);
   const apiKey = normalizeApiKey(options.apiKey);
   const sendPromptText = normalizeGptAssistFlag(options.sendPromptText, DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT);
+  const targetPath = resolveTextAssistTargetPath(apiPlatform);
   const normalizedSeed = typeof seedText === "string" ? seedText.trim() : "";
   if (!normalizedSeed) return [];
 
@@ -3261,7 +3691,7 @@ async function callThemeAssistAPI(proxyUrl, seedText, assistPrompt, options = {}
   contentLines.push("请严格输出 JSON。");
 
   const body = {
-    model: DEFAULT_GPT_ASSIST_MODEL,
+    model: resolveTextAssistModelId(apiPlatform),
     stream: false,
     temperature: 1.1,
     messages: [
@@ -3278,23 +3708,60 @@ async function callThemeAssistAPI(proxyUrl, seedText, assistPrompt, options = {}
     ],
   };
 
-  const data = await postJsonWithRetry(proxyUrl, "/v1/chat/completions", body, {
+  const data = await postJsonWithRetry(proxyUrl, targetPath, body, {
     signal,
     maxAttempts: 3,
     baseDelayMs: 900,
     apiBaseUrl,
     apiKey,
+    apiPlatform,
   });
 
   const rawText = assistantMessageToText(data?.choices?.[0]?.message?.content);
   return parseThemeSuggestions(rawText);
 }
 
+async function callTextAssistWithFallback(proxyUrl, sourcePrompt, imageBase64, assistPrompt, options = {}) {
+  const apiKeys = normalizeApiKeys(options.apiKeys);
+  const platformOrder = getAssistPlatformOrder(apiKeys);
+  let lastError = null;
+  for (const platform of platformOrder) {
+    try {
+      return await callTextAssistAPI(proxyUrl, sourcePrompt, imageBase64, assistPrompt, {
+        ...options,
+        ...getApiConfigForPlatform(platform, apiKeys),
+      });
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error("Text assist request failed");
+}
+
+async function callThemeAssistWithFallback(proxyUrl, seedText, assistPrompt, options = {}) {
+  const apiKeys = normalizeApiKeys(options.apiKeys);
+  const platformOrder = getAssistPlatformOrder(apiKeys);
+  let lastError = null;
+  for (const platform of platformOrder) {
+    try {
+      return await callThemeAssistAPI(proxyUrl, seedText, assistPrompt, {
+        ...options,
+        ...getApiConfigForPlatform(platform, apiKeys),
+      });
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error("Theme assist request failed");
+}
+
 // 1. OpenAI Chat Completions format (gpt-4o-image, gpt-5-image)
 async function callChatAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
   const { signal } = options;
-  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl);
+  const apiPlatform = normalizeApiPlatform(options.apiPlatform);
+  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl, apiPlatform);
   const apiKey = normalizeApiKey(options.apiKey);
+  const targetPath = resolveTextAssistTargetPath(apiPlatform);
   const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
   const content = [];
   if (prompt) content.push({ type: "text", text: prompt });
@@ -3309,12 +3776,13 @@ async function callChatAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
     messages: [{ role: "user", content }],
   };
 
-  const data = await postJsonWithRetry(proxyUrl, "/v1/chat/completions", body, {
+  const data = await postJsonWithRetry(proxyUrl, targetPath, body, {
     signal,
     maxAttempts: 3,
     baseDelayMs: 900,
     apiBaseUrl,
     apiKey,
+    apiPlatform,
   });
 
   const images = [];
@@ -3342,7 +3810,8 @@ async function callChatAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
 // 2. OpenAI Images / Seedream format (gpt-image-1, gpt-image-1.5, seedream)
 async function callImagesAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
   const { signal, count = 1 } = options;
-  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl);
+  const apiPlatform = normalizeApiPlatform(options.apiPlatform);
+  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl, apiPlatform);
   const apiKey = normalizeApiKey(options.apiKey);
   const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
   const primaryImage = imageInputs[0] || "";
@@ -3369,6 +3838,7 @@ async function callImagesAPI(proxyUrl, model, prompt, imageBase64, options = {})
     baseDelayMs: 1200,
     apiBaseUrl,
     apiKey,
+    apiPlatform,
   });
 
   const images = [];
@@ -3424,10 +3894,110 @@ async function callImagesAPI(proxyUrl, model, prompt, imageBase64, options = {})
   return finalImages;
 }
 
+async function callBailianImageAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
+  const { signal, count = 1 } = options;
+  const apiPlatform = normalizeApiPlatform(options.apiPlatform);
+  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl, apiPlatform);
+  const apiKey = normalizeApiKey(options.apiKey);
+  const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
+  const isQwenModel = isQwenImageModel(model);
+  const supportsImageInputs = !isQwenModel;
+  const effectiveImageInputs = supportsImageInputs ? imageInputs.slice(0, MAX_INPUT_IMAGES_PER_BATCH) : [];
+  const content = [];
+
+  const textPrompt = typeof prompt === "string" && prompt.trim() ? prompt.trim() : "Generate a creative image";
+  effectiveImageInputs.forEach((image) => {
+    const normalized = normalizeImageValue(image, apiBaseUrl);
+    if (!normalized) return;
+    content.push({
+      image: normalized,
+    });
+  });
+  content.push({ text: textPrompt });
+
+  const body = {
+    model: model.id,
+    input: {
+      messages: [
+        {
+          role: "user",
+          content,
+        },
+      ],
+    },
+    parameters: {
+      n: Math.min(Math.max(1, Number(count) || 1), isQwenModel ? 6 : 4),
+      size: getBailianImageSize(model, options.aspectRatio, effectiveImageInputs.length > 0),
+      watermark: false,
+      ...(isQwenModel ? { prompt_extend: true } : {}),
+      ...(!isQwenModel && !effectiveImageInputs.length && model?.id === "wan2.7-image-pro" ? { thinking_mode: true } : {}),
+    },
+  };
+
+  const data = await postJsonWithRetry(proxyUrl, "/api/v1/services/aigc/multimodal-generation/generation", body, {
+    signal,
+    maxAttempts: 3,
+    baseDelayMs: 1200,
+    apiBaseUrl,
+    apiKey,
+    apiPlatform,
+  });
+
+  const images = [];
+  if (Array.isArray(data?.output?.choices)) {
+    data.output.choices.forEach((choice) => {
+      const blocks = Array.isArray(choice?.message?.content) ? choice.message.content : [];
+      blocks.forEach((item) => {
+        const normalized =
+          normalizeImageValue(typeof item === "string" ? item : null, apiBaseUrl) ||
+          normalizeImageValue(item?.image, apiBaseUrl) ||
+          normalizeImageValue(item?.url, apiBaseUrl) ||
+          normalizeImageValue(item?.image_url, apiBaseUrl);
+        if (normalized) images.push(normalized);
+      });
+    });
+  }
+  if (Array.isArray(data?.output?.images)) {
+    data.output.images.forEach((item) => {
+      const normalized =
+        normalizeImageValue(typeof item === "string" ? item : null, apiBaseUrl) ||
+        normalizeImageValue(item?.url, apiBaseUrl) ||
+        normalizeImageValue(item?.image, apiBaseUrl) ||
+        normalizeImageValue(item?.image_url, apiBaseUrl);
+      if (normalized) images.push(normalized);
+    });
+  }
+  if (!images.length && Array.isArray(data?.output?.results)) {
+    data.output.results.forEach((item) => {
+      const normalized =
+        normalizeImageValue(typeof item === "string" ? item : null, apiBaseUrl) ||
+        normalizeImageValue(item?.url, apiBaseUrl) ||
+        normalizeImageValue(item?.image, apiBaseUrl) ||
+        normalizeImageValue(item?.image_url, apiBaseUrl);
+      if (normalized) images.push(normalized);
+    });
+  }
+  if (!images.length) {
+    extractImageCandidates(data, images, apiBaseUrl);
+  }
+
+  const deduped = Array.from(new Set(images.map((value) => normalizeImageValue(value, apiBaseUrl)).filter(Boolean)));
+  if (!deduped.length) {
+    throw new Error("百炼未返回可用图片");
+  }
+
+  const resolved = await Promise.all(deduped.map((u) => proxyFetchImageAsDataUrl(proxyUrl, u)));
+  return resolved
+    .map((v) => normalizeImageValue(v, apiBaseUrl))
+    .filter(Boolean)
+    .map((v) => buildWorkerImageProxyUrl(proxyUrl, v) || v);
+}
+
 // 3. Gemini generateContent format
 async function callGeminiAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
   const { signal } = options;
-  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl);
+  const apiPlatform = normalizeApiPlatform(options.apiPlatform);
+  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl, apiPlatform);
   const apiKey = normalizeApiKey(options.apiKey);
   const aspectRatio = normalizeAspectRatio(options.aspectRatio);
   const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
@@ -3496,7 +4066,7 @@ async function callGeminiAPI(proxyUrl, model, prompt, imageBase64, options = {})
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const resp = await fetch(proxyUrl, {
         method: "POST",
-        headers: buildProxyHeaders(`/v1beta/models/${currentModelId}:generateContent`, apiBaseUrl, apiKey, { "Content-Type": "application/json" }),
+        headers: buildProxyHeaders(`/v1beta/models/${currentModelId}:generateContent`, apiBaseUrl, apiKey, { "Content-Type": "application/json" }, apiPlatform),
         body: JSON.stringify(body),
         signal,
       });
@@ -3532,7 +4102,8 @@ async function callGeminiAPI(proxyUrl, model, prompt, imageBase64, options = {})
 // 4. Midjourney imagine + fetch（按接口文档，只显示 1 张）
 async function callMidjourneyAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
   const { signal, count = 1 } = options;
-  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl);
+  const apiPlatform = normalizeApiPlatform(options.apiPlatform);
+  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl, apiPlatform);
   const apiKey = normalizeApiKey(options.apiKey);
   const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
   if (!prompt) throw new Error("Midjourney 需要文字 prompt");
@@ -3569,7 +4140,7 @@ async function callMidjourneyAPI(proxyUrl, model, prompt, imageBase64, options =
       method: "POST",
       headers: buildProxyHeaders("/mj/submit/imagine", apiBaseUrl, apiKey, {
         "Content-Type": "application/json",
-      }),
+      }, apiPlatform),
       body: JSON.stringify(submitBody),
       signal,
     });
@@ -3614,7 +4185,7 @@ async function callMidjourneyAPI(proxyUrl, model, prompt, imageBase64, options =
 
       const fetchResp = await fetch(proxyUrl, {
         method: "GET",
-        headers: buildProxyHeaders(`/mj/task/${taskId}/fetch`, apiBaseUrl, apiKey),
+        headers: buildProxyHeaders(`/mj/task/${taskId}/fetch`, apiBaseUrl, apiKey, {}, apiPlatform),
         signal,
       });
       if (!fetchResp.ok) throw new Error(`API ${fetchResp.status}: ${(await fetchResp.text()).slice(0, 300)}`);
@@ -3658,7 +4229,8 @@ async function callMidjourneyAPI(proxyUrl, model, prompt, imageBase64, options =
 // 5. NanoBanana via replicate
 async function callReplicateNanoBananaAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
   const { signal, count = 1 } = options;
-  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl);
+  const apiPlatform = normalizeApiPlatform(options.apiPlatform);
+  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl, apiPlatform);
   const apiKey = normalizeApiKey(options.apiKey);
   const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
   const primaryImage = imageInputs[0] || "";
@@ -3680,7 +4252,7 @@ async function callReplicateNanoBananaAPI(proxyUrl, model, prompt, imageBase64, 
     method: "POST",
     headers: buildProxyHeaders(`/replicate/v1/models/${models}/predictions`, apiBaseUrl, apiKey, {
       "Content-Type": "application/json",
-    }),
+    }, apiPlatform),
     body: JSON.stringify(submitBody),
     signal,
   });
@@ -3697,7 +4269,7 @@ async function callReplicateNanoBananaAPI(proxyUrl, model, prompt, imageBase64, 
 
     const fetchResp = await fetch(proxyUrl, {
       method: "GET",
-      headers: buildProxyHeaders(`/replicate/v1/predictions/${predictionId}`, apiBaseUrl, apiKey),
+      headers: buildProxyHeaders(`/replicate/v1/predictions/${predictionId}`, apiBaseUrl, apiKey, {}, apiPlatform),
       signal,
     });
     if (!fetchResp.ok) throw new Error(`API ${fetchResp.status}: ${(await fetchResp.text()).slice(0, 300)}`);
@@ -3720,13 +4292,17 @@ async function generateImage(proxyUrl, model, prompt, imageBase64, options = {})
   const requested = Math.max(1, Number(options.count) || 1);
   const aspectRatio = normalizeAspectRatio(options.aspectRatio);
   const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
+  const apiPlatform = normalizeApiPlatform(options.apiPlatform);
   const primaryImage = imageInputs[0] || "";
   const expandedPrompt = expandPlaceholderValues(prompt || "");
+  if (!isModelAvailableOnPlatform(model, apiPlatform)) {
+    throw new Error(`${model?.name || model?.id || "当前模型"} 当前不支持 ${apiPlatform === "bailian" ? "百炼" : "DeerAPI"} 平台`);
+  }
   const promptWithAspectRatio =
-    model.apiType === "gemini"
+    model.apiType === "gemini" || model.apiType === "bailian"
       ? expandedPrompt.trim()
       : mergePromptWithAspectRatio(expandedPrompt, aspectRatio, model);
-  const nextOptions = { ...options, aspectRatio, imageInputs };
+  const nextOptions = { ...options, apiPlatform, aspectRatio, imageInputs };
   switch (model.apiType) {
     case "chat": {
       const all = [];
@@ -3738,6 +4314,8 @@ async function generateImage(proxyUrl, model, prompt, imageBase64, options = {})
     }
     case "images":
       return callImagesAPI(proxyUrl, model, promptWithAspectRatio, primaryImage, { ...nextOptions, count: requested });
+    case "bailian":
+      return callBailianImageAPI(proxyUrl, model, promptWithAspectRatio, primaryImage, { ...nextOptions, count: requested });
     case "gemini": {
       const all = [];
       let lastErr = null;
@@ -4311,11 +4889,11 @@ function SettingsModal({ show, onClose, proxyUrl, setProxyUrl, uiLanguage, setUi
         <p style={S.hint}>
           {uiLanguage === "zh" ? (
             <>
-              请先部署下面的 Worker，并在环境变量中设置 <code style={{ color: "#a78bfa" }}>DEERAPI_KEY</code>（你的 DeerAPI Key，格式如 <code style={{ color: "#a78bfa" }}>sk-...</code>）。
+              请先部署下面的 Worker。使用 DeerAPI 时可配置 <code style={{ color: "#a78bfa" }}>DEERAPI_KEY</code>，使用百炼时可配置 <code style={{ color: "#a78bfa" }}>DASHSCOPE_API_KEY</code>；如果你已在 API 面板里保存密钥，则会优先使用面板里的值。
             </>
           ) : (
             <>
-              Deploy the Worker below. Set <code style={{ color: "#a78bfa" }}>DEERAPI_KEY</code> (your DeerAPI key <code style={{ color: "#a78bfa" }}>sk-...</code>) as environment variable.
+              Deploy the Worker below. Use <code style={{ color: "#a78bfa" }}>DEERAPI_KEY</code> for DeerAPI or <code style={{ color: "#a78bfa" }}>DASHSCOPE_API_KEY</code> for Bailian. If you save a key in the API panel, that value takes precedence.
             </>
           )}
         </p>
@@ -4328,10 +4906,22 @@ function SettingsModal({ show, onClose, proxyUrl, setProxyUrl, uiLanguage, setUi
   );
 }
 
-function ApiKeyModal({ show, onClose, apiKey, draftApiKey, setDraftApiKey, onSave, saveStateText }) {
+function ApiKeyModal({
+  show,
+  onClose,
+  apiKeys,
+  draftApiKeys,
+  setDraftApiKeys,
+  onSave,
+  saveStateText,
+}) {
   const { uiLanguage, t } = useI18n();
   if (!show) return null;
-  const isDirty = normalizeApiKey(draftApiKey) !== normalizeApiKey(apiKey);
+  const normalizedCurrentKeys = normalizeApiKeys(apiKeys);
+  const normalizedDraftKeys = normalizeApiKeys(draftApiKeys);
+  const isDirty =
+    normalizedDraftKeys.deerapi !== normalizedCurrentKeys.deerapi ||
+    normalizedDraftKeys.bailian !== normalizedCurrentKeys.bailian;
   return (
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.settingsModal} onClick={(e) => e.stopPropagation()}>
@@ -4339,11 +4929,18 @@ function ApiKeyModal({ show, onClose, apiKey, draftApiKey, setDraftApiKey, onSav
           <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>🔑 {t("api.title")}</h2>
           <button onClick={onClose} style={S.closeBtn}>✕</button>
         </div>
-        <label style={S.fieldLabel}>{t("api.label")}</label>
+        <label style={S.fieldLabel}>{t("api.deerapiLabel")}</label>
         <input
           style={S.proxyInput}
-          value={draftApiKey}
-          onChange={(e) => setDraftApiKey(e.target.value)}
+          value={normalizedDraftKeys.deerapi}
+          onChange={(e) => setDraftApiKeys((prev) => ({ ...normalizeApiKeys(prev), deerapi: e.target.value }))}
+          placeholder="sk-..."
+        />
+        <label style={{ ...S.fieldLabel, marginTop: 14 }}>{t("api.bailianLabel")}</label>
+        <input
+          style={S.proxyInput}
+          value={normalizedDraftKeys.bailian}
+          onChange={(e) => setDraftApiKeys((prev) => ({ ...normalizeApiKeys(prev), bailian: e.target.value }))}
           placeholder="sk-..."
         />
         <div style={S.apiModalActions}>
@@ -4358,8 +4955,8 @@ function ApiKeyModal({ show, onClose, apiKey, draftApiKey, setDraftApiKey, onSav
         </div>
         <p style={S.hint}>
           {uiLanguage === "zh"
-            ? "点保存后才会用于请求。留空后保存，将回退到 Worker 环境变量。"
-            : "Requests use the key only after you click Save. Saving an empty key falls back to the Worker environment variable."}
+            ? "保存后会按模型自动使用对应平台。留空的输入框会回退到 Worker 环境变量：DeerAPI 走 DEERAPI_KEY，百炼走 DASHSCOPE_API_KEY。"
+            : "After saving, each model automatically uses its matching provider. Empty fields fall back to Worker env vars: DEERAPI_KEY for DeerAPI and DASHSCOPE_API_KEY for Bailian."}
         </p>
       </div>
     </div>
@@ -4633,6 +5230,529 @@ function InputImagesModal({ show, onClose, title, images, maxCount, onUploadFile
             event.target.value = "";
           }}
         />
+      </div>
+    </div>
+  );
+}
+
+function PromptImageEditorModal({ show, onClose, images, initialIndex = 0, onConfirm }) {
+  const { t } = useI18n();
+  const viewportRef = useRef(null);
+  const canvasRef = useRef(null);
+  const canvasMetricsRef = useRef(null);
+  const [draftImages, setDraftImages] = useState([]);
+  const [undoStacks, setUndoStacks] = useState([]);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [tool, setTool] = useState("crop");
+  const [strokeColor, setStrokeColor] = useState(INPUT_IMAGE_EDITOR_COLORS[0]);
+  const [busy, setBusy] = useState(false);
+  const [viewportSize, setViewportSize] = useState({ width: 720, height: 520 });
+  const [currentImageInfo, setCurrentImageInfo] = useState(null);
+  const [interaction, setInteraction] = useState(null);
+  const [pendingCrop, setPendingCrop] = useState(null);
+
+  useEffect(() => {
+    if (!show) return;
+    const safeImages = Array.isArray(images)
+      ? images.filter((item) => typeof item === "string" && item).slice(0, MAX_INPUT_IMAGES_PER_BATCH)
+      : [];
+    setDraftImages(safeImages);
+    setUndoStacks(safeImages.map(() => []));
+    setActiveIndex(Math.max(0, Math.min(safeImages.length - 1, Number(initialIndex) || 0)));
+    setTool("crop");
+    setStrokeColor(INPUT_IMAGE_EDITOR_COLORS[0]);
+    setBusy(false);
+    setInteraction(null);
+    setPendingCrop(null);
+  }, [show, images, initialIndex]);
+
+  const currentImage = draftImages[activeIndex] || "";
+  const currentUndoCount = Array.isArray(undoStacks[activeIndex]) ? undoStacks[activeIndex].length : 0;
+  const toolOptions = useMemo(() => ([
+    { id: "crop", label: t("imageEditor.toolCrop") },
+    { id: "rect", label: t("imageEditor.toolRect") },
+    { id: "line", label: t("imageEditor.toolLine") },
+    { id: "arrow", label: t("imageEditor.toolArrow") },
+  ]), [t]);
+
+  useEffect(() => {
+    if (!show || !currentImage) {
+      setCurrentImageInfo(null);
+      return undefined;
+    }
+    let cancelled = false;
+    loadImageElement(currentImage)
+      .then((image) => {
+        if (cancelled) return;
+        setCurrentImageInfo({
+          image,
+          width: Math.max(1, image.naturalWidth || image.width || 1),
+          height: Math.max(1, image.naturalHeight || image.height || 1),
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setCurrentImageInfo(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [show, currentImage]);
+
+  useEffect(() => {
+    if (!show) return undefined;
+    const updateViewportSize = () => {
+      const node = viewportRef.current;
+      if (!node) return;
+      setViewportSize({
+        width: Math.max(320, node.clientWidth || 320),
+        height: Math.max(320, node.clientHeight || 320),
+      });
+    };
+
+    updateViewportSize();
+    let observer = null;
+    if (typeof ResizeObserver !== "undefined" && viewportRef.current) {
+      observer = new ResizeObserver(updateViewportSize);
+      observer.observe(viewportRef.current);
+    }
+    window.addEventListener("resize", updateViewportSize);
+    return () => {
+      observer?.disconnect?.();
+      window.removeEventListener("resize", updateViewportSize);
+    };
+  }, [show]);
+
+  useEffect(() => {
+    setInteraction(null);
+    setPendingCrop(null);
+  }, [activeIndex, tool]);
+
+  const getPointerData = useCallback((event) => {
+    const canvas = canvasRef.current;
+    const metrics = canvasMetricsRef.current;
+    if (!canvas || !metrics) return null;
+    const rect = canvas.getBoundingClientRect();
+    const rawX = event.clientX - rect.left;
+    const rawY = event.clientY - rect.top;
+    const inside =
+      rawX >= metrics.offsetX &&
+      rawX <= metrics.offsetX + metrics.drawWidth &&
+      rawY >= metrics.offsetY &&
+      rawY <= metrics.offsetY + metrics.drawHeight;
+    const clampedX = Math.max(metrics.offsetX, Math.min(metrics.offsetX + metrics.drawWidth, rawX));
+    const clampedY = Math.max(metrics.offsetY, Math.min(metrics.offsetY + metrics.drawHeight, rawY));
+    return {
+      inside,
+      image: {
+        x: ((clampedX - metrics.offsetX) / metrics.drawWidth) * metrics.imageWidth,
+        y: ((clampedY - metrics.offsetY) / metrics.drawHeight) * metrics.imageHeight,
+      },
+    };
+  }, []);
+
+  const commitCurrentImageChange = useCallback(async (resolver) => {
+    const source = draftImages[activeIndex];
+    if (busy || !source) return;
+    setBusy(true);
+    try {
+      const nextImage = await resolver(source);
+      if (typeof nextImage !== "string" || !nextImage.startsWith("data:image/") || nextImage === source) return;
+      setDraftImages((prev) => {
+        const next = [...prev];
+        next[activeIndex] = nextImage;
+        return next;
+      });
+      setUndoStacks((prev) => {
+        const next = prev.map((stack) => (Array.isArray(stack) ? [...stack] : []));
+        next[activeIndex] = [...(next[activeIndex] || []), source];
+        return next;
+      });
+    } catch {
+      // Ignore editor operation failures and keep the current draft intact.
+    } finally {
+      setBusy(false);
+      setInteraction(null);
+      setPendingCrop(null);
+    }
+  }, [activeIndex, busy, draftImages]);
+
+  const handleUndo = useCallback(() => {
+    if (busy || !currentUndoCount) return;
+    setDraftImages((prev) => {
+      const next = [...prev];
+      const previousImage = undoStacks[activeIndex]?.[undoStacks[activeIndex].length - 1];
+      if (typeof previousImage === "string" && previousImage) {
+        next[activeIndex] = previousImage;
+      }
+      return next;
+    });
+    setUndoStacks((prev) => {
+      const next = prev.map((stack) => (Array.isArray(stack) ? [...stack] : []));
+      if (next[activeIndex]?.length) next[activeIndex].pop();
+      return next;
+    });
+    setInteraction(null);
+    setPendingCrop(null);
+  }, [activeIndex, busy, currentUndoCount, undoStacks]);
+
+  const applyPendingCrop = useCallback(async () => {
+    if (!isEditorRectValid(pendingCrop, 8)) return;
+    await commitCurrentImageChange((source) => cropInputImageDataUrl(source, pendingCrop));
+  }, [commitCurrentImageChange, pendingCrop]);
+
+  const handlePointerDown = useCallback((event) => {
+    if (busy || !currentImageInfo || event.button !== 0) return;
+    const point = getPointerData(event);
+    if (!point?.inside) return;
+    event.preventDefault();
+    if (tool === "crop") setPendingCrop(null);
+    setInteraction({
+      start: point.image,
+      end: point.image,
+    });
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }, [busy, currentImageInfo, getPointerData, tool]);
+
+  const handlePointerMove = useCallback((event) => {
+    if (!interaction) return;
+    const point = getPointerData(event);
+    if (!point) return;
+    setInteraction((prev) => (prev ? { ...prev, end: point.image } : prev));
+  }, [getPointerData, interaction]);
+
+  const handlePointerUp = useCallback(async (event) => {
+    if (!interaction || !currentImageInfo) return;
+    const point = getPointerData(event);
+    const endPoint = point?.image || interaction.end;
+    const nextRect = normalizeEditorRect(interaction.start, endPoint, currentImageInfo.width, currentImageInfo.height);
+    setInteraction(null);
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+
+    if (tool === "crop") {
+      setPendingCrop(isEditorRectValid(nextRect, 8) ? nextRect : null);
+      return;
+    }
+
+    if (tool === "rect") {
+      if (!isEditorRectValid(nextRect, 8)) return;
+      await commitCurrentImageChange((source) =>
+        applyInputImageEditorOperation(source, {
+          type: "rect",
+          rect: nextRect,
+          color: strokeColor,
+          strokeWidth: getInputImageEditorStrokeWidth(currentImageInfo.width, currentImageInfo.height),
+        })
+      );
+      return;
+    }
+
+    const deltaX = (endPoint?.x ?? 0) - (interaction.start?.x ?? 0);
+    const deltaY = (endPoint?.y ?? 0) - (interaction.start?.y ?? 0);
+    const distance = Math.hypot(deltaX, deltaY);
+    if (distance < 8) return;
+    await commitCurrentImageChange((source) =>
+      applyInputImageEditorOperation(source, {
+        type: tool,
+        start: interaction.start,
+        end: endPoint,
+        color: strokeColor,
+        strokeWidth: getInputImageEditorStrokeWidth(currentImageInfo.width, currentImageInfo.height),
+      })
+    );
+  }, [commitCurrentImageChange, currentImageInfo, getPointerData, interaction, strokeColor, tool]);
+
+  useEffect(() => {
+    if (!show) return undefined;
+    const handleKeyDown = (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        handleUndo();
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose?.();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleUndo, onClose, show]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const info = currentImageInfo;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const width = Math.max(320, Math.round(viewportSize.width || 320));
+    const height = Math.max(320, Math.round(viewportSize.height || 320));
+    const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = "#09090b";
+    ctx.fillRect(0, 0, width, height);
+
+    if (!info) {
+      canvasMetricsRef.current = null;
+      ctx.fillStyle = "#71717a";
+      ctx.font = '14px monospace';
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(t("imageEditor.noImage"), width / 2, height / 2);
+      return;
+    }
+
+    const scale = Math.min(width / info.width, height / info.height);
+    const drawWidth = Math.max(1, info.width * scale);
+    const drawHeight = Math.max(1, info.height * scale);
+    const offsetX = Math.round((width - drawWidth) / 2);
+    const offsetY = Math.round((height - drawHeight) / 2);
+    canvasMetricsRef.current = {
+      offsetX,
+      offsetY,
+      drawWidth,
+      drawHeight,
+      imageWidth: info.width,
+      imageHeight: info.height,
+    };
+
+    ctx.fillStyle = "rgba(255,255,255,0.04)";
+    ctx.fillRect(offsetX - 1, offsetY - 1, drawWidth + 2, drawHeight + 2);
+    ctx.drawImage(info.image, offsetX, offsetY, drawWidth, drawHeight);
+
+    const toCanvasRect = (rect) => ({
+      x: offsetX + (rect.x / info.width) * drawWidth,
+      y: offsetY + (rect.y / info.height) * drawHeight,
+      width: (rect.width / info.width) * drawWidth,
+      height: (rect.height / info.height) * drawHeight,
+    });
+    const toCanvasPoint = (point) => ({
+      x: offsetX + (point.x / info.width) * drawWidth,
+      y: offsetY + (point.y / info.height) * drawHeight,
+    });
+
+    if (tool === "crop") {
+      const cropRect = interaction
+        ? normalizeEditorRect(interaction.start, interaction.end, info.width, info.height)
+        : pendingCrop;
+      if (isEditorRectValid(cropRect, 2)) {
+        const previewRect = toCanvasRect(cropRect);
+        ctx.save();
+        ctx.fillStyle = "rgba(2,6,23,0.48)";
+        ctx.fillRect(offsetX, offsetY, drawWidth, drawHeight);
+        ctx.drawImage(
+          info.image,
+          cropRect.x,
+          cropRect.y,
+          cropRect.width,
+          cropRect.height,
+          previewRect.x,
+          previewRect.y,
+          previewRect.width,
+          previewRect.height
+        );
+        ctx.strokeStyle = strokeColor;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 6]);
+        ctx.strokeRect(previewRect.x, previewRect.y, previewRect.width, previewRect.height);
+        ctx.restore();
+      }
+      return;
+    }
+
+    if (!interaction) return;
+    const previewStrokeWidth = Math.max(2, Math.round(Math.max(drawWidth, drawHeight) / 260));
+    if (tool === "rect") {
+      const rect = normalizeEditorRect(interaction.start, interaction.end, info.width, info.height);
+      if (!isEditorRectValid(rect, 2)) return;
+      drawInputImageEditorShape(ctx, {
+        type: "rect",
+        rect: toCanvasRect(rect),
+        color: strokeColor,
+        strokeWidth: previewStrokeWidth,
+      });
+      return;
+    }
+
+    drawInputImageEditorShape(ctx, {
+      type: tool,
+      start: toCanvasPoint(interaction.start),
+      end: toCanvasPoint(interaction.end),
+      color: strokeColor,
+      strokeWidth: previewStrokeWidth,
+    });
+  }, [currentImageInfo, interaction, pendingCrop, strokeColor, t, tool, viewportSize.height, viewportSize.width]);
+
+  if (!show) return null;
+
+  const currentPage = draftImages.length ? activeIndex + 1 : 0;
+  const activeHint = pendingCrop ? t("imageEditor.cropReady") : tool === "crop" ? t("imageEditor.cropHint") : t("imageEditor.drawHint");
+
+  return (
+    <div style={S.modalOverlay} onClick={onClose}>
+      <div style={S.inputImageEditorModal} onClick={(event) => event.stopPropagation()}>
+        <div style={S.inputImageEditorHeader}>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>{t("imageEditor.title")}</h2>
+            <div style={S.inputImageEditorHeaderHint}>{t("imageEditor.hint")}</div>
+          </div>
+          <button onClick={onClose} style={S.closeBtn} disabled={busy}>✕</button>
+        </div>
+
+        <div style={S.inputImageEditorLayout}>
+          <aside style={S.inputImageEditorSidebar}>
+            <div style={S.inputImageEditorBlock}>
+              <div style={S.inputImageEditorLabel}>{t("imageEditor.tools")}</div>
+              <div style={S.inputImageEditorToolGrid}>
+                {toolOptions.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    style={{ ...S.inputImageEditorToolBtn, ...(tool === option.id ? S.inputImageEditorToolBtnActive : null) }}
+                    onClick={() => setTool(option.id)}
+                    disabled={busy}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={S.inputImageEditorBlock}>
+              <div style={S.inputImageEditorLabel}>{t("imageEditor.colors")}</div>
+              <div style={S.inputImageEditorColorRow}>
+                {INPUT_IMAGE_EDITOR_COLORS.map((color) => (
+                  <button
+                    key={color}
+                    type="button"
+                    style={{
+                      ...S.inputImageEditorColorBtn,
+                      background: color,
+                      ...(strokeColor === color ? S.inputImageEditorColorBtnActive : null),
+                    }}
+                    onClick={() => setStrokeColor(color)}
+                    disabled={busy}
+                    title={color}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div style={S.inputImageEditorBlock}>
+              <div style={S.inputImageEditorLabel}>{t("imageEditor.page", { current: currentPage, total: draftImages.length })}</div>
+              <div style={S.inputImageEditorNavRow}>
+                <button
+                  type="button"
+                  style={{ ...S.inputImageEditorMiniBtn, ...(activeIndex <= 0 ? S.inputImageEditorMiniBtnDisabled : null) }}
+                  onClick={() => setActiveIndex((prev) => Math.max(0, prev - 1))}
+                  disabled={busy || activeIndex <= 0}
+                >
+                  {t("imageEditor.prev")}
+                </button>
+                <button
+                  type="button"
+                  style={{ ...S.inputImageEditorMiniBtn, ...(activeIndex >= draftImages.length - 1 ? S.inputImageEditorMiniBtnDisabled : null) }}
+                  onClick={() => setActiveIndex((prev) => Math.min(draftImages.length - 1, prev + 1))}
+                  disabled={busy || activeIndex >= draftImages.length - 1}
+                >
+                  {t("imageEditor.next")}
+                </button>
+              </div>
+              <div style={S.inputImageEditorStatus}>{activeHint}</div>
+              {draftImages.length > 1 && <div style={S.inputImageEditorSubHint}>{t("imageEditor.multiHint")}</div>}
+            </div>
+
+            <div style={{ ...S.inputImageEditorBlock, marginTop: "auto" }}>
+              <div style={S.inputImageEditorActionGrid}>
+                <button
+                  type="button"
+                  style={{ ...S.inputImageEditorActionBtn, ...(currentUndoCount ? null : S.inputImageEditorActionBtnDisabled) }}
+                  onClick={handleUndo}
+                  disabled={busy || !currentUndoCount}
+                >
+                  {t("imageEditor.undo")}
+                </button>
+                {tool === "crop" ? (
+                  <>
+                    <button
+                      type="button"
+                      style={{ ...S.inputImageEditorActionBtn, ...(isEditorRectValid(pendingCrop, 8) ? null : S.inputImageEditorActionBtnDisabled) }}
+                      onClick={applyPendingCrop}
+                      disabled={busy || !isEditorRectValid(pendingCrop, 8)}
+                    >
+                      {t("imageEditor.applyCrop")}
+                    </button>
+                    <button
+                      type="button"
+                      style={{ ...S.inputImageEditorGhostBtn, ...(pendingCrop ? null : S.inputImageEditorActionBtnDisabled) }}
+                      onClick={() => setPendingCrop(null)}
+                      disabled={busy || !pendingCrop}
+                    >
+                      {t("imageEditor.clearCrop")}
+                    </button>
+                  </>
+                ) : null}
+                <button
+                  type="button"
+                  style={S.inputImageEditorGhostBtn}
+                  onClick={onClose}
+                  disabled={busy}
+                >
+                  {t("imageEditor.cancel")}
+                </button>
+                <button
+                  type="button"
+                  style={S.inputImageEditorConfirmBtn}
+                  onClick={() => onConfirm?.(draftImages)}
+                  disabled={busy || !draftImages.length}
+                >
+                  {busy ? t("common.processing") : t("imageEditor.confirm")}
+                </button>
+              </div>
+            </div>
+          </aside>
+
+          <div style={S.inputImageEditorMain}>
+            <div ref={viewportRef} style={S.inputImageEditorViewport}>
+              <canvas
+                ref={canvasRef}
+                style={{
+                  ...S.inputImageEditorCanvas,
+                  cursor: busy ? "wait" : "crosshair",
+                }}
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onPointerCancel={() => setInteraction(null)}
+              />
+            </div>
+
+            <div style={S.inputImageEditorThumbStrip}>
+              {draftImages.map((image, index) => (
+                <button
+                  key={`prompt-editor-thumb-${index}`}
+                  type="button"
+                  style={{
+                    ...S.inputImageEditorThumbBtn,
+                    ...(activeIndex === index ? S.inputImageEditorThumbBtnActive : null),
+                  }}
+                  onClick={() => setActiveIndex(index)}
+                  disabled={busy}
+                >
+                  <img src={image} alt={`Prompt ${index + 1}`} style={S.inputImageEditorThumbImg} />
+                  <span style={S.inputImageEditorThumbIndex}>{index + 1}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -5224,7 +6344,7 @@ function HelpPage() {
           fullWidth: true,
           lines: [
             "这个工具本身没有内置账号登录页面。",
-            "先去 DeerAPI 网页端登录，创建或复制你的 API Key；回到本工具后点击 `API` 填入密钥。",
+            "先去 DeerAPI 或百炼网页端创建并复制你的 API Key；回到本工具后点击 `API`，分别填入对应的密钥即可。",
             "如果你想保存本地历史和模板，再选择一个 `History Folder`；之后选择模式、勾选模型、填写提示词或上传图片，再点击 `开始任务` 即可开始。",
           ],
         },
@@ -5304,7 +6424,7 @@ function HelpPage() {
           fullWidth: true,
           lines: [
             "There is no built-in account login inside this app.",
-            "First sign in to DeerAPI on the web, create or copy your API key, open this app, click `API`, and paste the key.",
+            "Create or copy your API key from DeerAPI or Bailian, open this app, click `API`, and fill the matching key fields.",
             "Then choose a `History Folder` if you want local history and templates, select a mode, pick models, fill prompt or images, and click `Enqueue Task`.",
           ],
         },
@@ -6724,8 +7844,8 @@ export default function App() {
   const [uiLanguage, setUiLanguage] = useState(DEFAULT_UI_LANGUAGE);
   const [taskMode, setTaskMode] = useState(DEFAULT_TASK_MODE);
   const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_BASE_URL);
-  const [apiKey, setApiKey] = useState(DEFAULT_API_KEY);
-  const [draftApiKey, setDraftApiKey] = useState(DEFAULT_API_KEY);
+  const [apiKeys, setApiKeys] = useState(DEFAULT_API_KEYS);
+  const [draftApiKeys, setDraftApiKeys] = useState(DEFAULT_API_KEYS);
   const [apiKeySavedAt, setApiKeySavedAt] = useState(null);
   const [showApiModal, setShowApiModal] = useState(false);
   const [gptAssistPrompt, setGptAssistPrompt] = useState(DEFAULT_GPT_ASSIST_PROMPT);
@@ -6757,6 +7877,8 @@ export default function App() {
   const [uploadedPreview, setUploadedPreview] = useState(null);
   const [styleReferenceImages, setStyleReferenceImages] = useState([]);
   const [showInputImageModal, setShowInputImageModal] = useState(false);
+  const [showInputImageEditor, setShowInputImageEditor] = useState(false);
+  const [inputImageEditorIndex, setInputImageEditorIndex] = useState(0);
   const [showStyleReferenceModal, setShowStyleReferenceModal] = useState(false);
   const [selectedModels, setSelectedModels] = useState(DEFAULT_SELECTED_MODELS);
   const [modelCounts, setModelCounts] = useState(DEFAULT_MODEL_COUNTS);
@@ -6879,6 +8001,8 @@ export default function App() {
         }
         if (typeof saved.apiBaseUrl === "string" && saved.apiBaseUrl.trim()) {
           setApiBaseUrl(resolveApiBaseUrl(saved.apiBaseUrl));
+        } else {
+          setApiBaseUrl(DEFAULT_API_BASE_URL);
         }
         if (typeof saved.lastEditedCount === "number") {
           setLastEditedCount(Math.max(1, Math.min(8, Number(saved.lastEditedCount) || 1)));
@@ -6897,7 +8021,8 @@ export default function App() {
   }, []);
   useEffect(() => { window.__proxyUrl = proxyUrl; }, [proxyUrl]);
   useEffect(() => { window.__apiBaseUrl = apiBaseUrl; }, [apiBaseUrl]);
-  useEffect(() => { window.__apiKey = apiKey; }, [apiKey]);
+  useEffect(() => { window.__apiPlatform = DEFAULT_API_PLATFORM; }, []);
+  useEffect(() => { window.__apiKeys = apiKeys; }, [apiKeys]);
   useEffect(() => {
     if (typeof document !== "undefined") {
       document.documentElement.lang = uiLanguage === "zh" ? "zh-CN" : "en";
@@ -6931,10 +8056,11 @@ export default function App() {
   }, [selectedAtlasItems.length]);
 
   const handleSaveApiKey = useCallback(() => {
-    const nextKey = normalizeApiKey(draftApiKey);
-    setApiKey(nextKey);
+    const nextKeys = normalizeApiKeys(draftApiKeys);
+    setApiKeys(nextKeys);
+    setDraftApiKeys(nextKeys);
     setApiKeySavedAt(Date.now());
-  }, [draftApiKey]);
+  }, [draftApiKeys]);
 
   const handleSaveGptAssistPrompt = useCallback(() => {
     if (!historyDirHandle) {
@@ -7106,14 +8232,13 @@ export default function App() {
       if (taskMode === "compare") {
         const sourceKey = activePromptFieldRef.current === "b" ? "b" : "a";
         const sourceItem = targetItems.find((item) => item.key === sourceKey) || targetItems[0];
-        const sourceRewritten = await callTextAssistAPI(
+        const sourceRewritten = await callTextAssistWithFallback(
           proxyUrl,
           sourceItem.clearedPrompt,
           uploadedImage,
           gptAssistPrompt,
           {
-            apiBaseUrl,
-            apiKey,
+            apiKeys,
             sendPromptText: gptAssistSendPromptText,
             sendPromptImage: gptAssistSendPromptImage,
           }
@@ -7123,14 +8248,13 @@ export default function App() {
         rewritten.b = applyPlaceholderReplacements(items[1].clearedPrompt, syncedReplacements);
       } else {
         const item = targetItems[0];
-        rewritten[item.key] = await callTextAssistAPI(
+        rewritten[item.key] = await callTextAssistWithFallback(
           proxyUrl,
           item.clearedPrompt,
           uploadedImage,
           gptAssistPrompt,
           {
-            apiBaseUrl,
-            apiKey,
+            apiKeys,
             sendPromptText: gptAssistSendPromptText,
             sendPromptImage: gptAssistSendPromptImage,
           }
@@ -7156,7 +8280,7 @@ export default function App() {
     } finally {
       setGptAssistBusy(false);
     }
-  }, [gptAssistBusy, proxyUrl, taskMode, comparePrompts.a, comparePrompts.b, prompt, uploadedImage, gptAssistPrompt, gptAssistSendPromptImage, gptAssistSendPromptText, apiBaseUrl, apiKey, compareAEditor, compareBEditor, promptEditor, t]);
+  }, [gptAssistBusy, proxyUrl, taskMode, comparePrompts.a, comparePrompts.b, prompt, uploadedImage, gptAssistPrompt, gptAssistSendPromptImage, gptAssistSendPromptText, apiKeys, compareAEditor, compareBEditor, promptEditor, t]);
 
   const clearAllStyleThemes = useCallback(() => {
     setStyleThemes(Array.from({ length: STYLE_THEME_SLOTS }, () => ""));
@@ -7177,11 +8301,11 @@ export default function App() {
 
     setStyleThemeAssistBusy(true);
     try {
-      const generated = await callThemeAssistAPI(
+      const generated = await callThemeAssistWithFallback(
         proxyUrl,
         seed,
         styleThemeAssistPrompt,
-        { apiBaseUrl, apiKey, sendPromptText: gptAssistSendPromptText }
+        { apiKeys, sendPromptText: gptAssistSendPromptText }
       );
       if (!generated.length) {
         setHistoryFolderMsg(t("history.themeAssistInvalid"));
@@ -7202,7 +8326,7 @@ export default function App() {
     } finally {
       setStyleThemeAssistBusy(false);
     }
-  }, [styleThemeAssistBusy, taskMode, proxyUrl, styleThemeSeedInput, styleThemeAssistPrompt, gptAssistSendPromptText, apiBaseUrl, apiKey, t]);
+  }, [styleThemeAssistBusy, taskMode, proxyUrl, styleThemeSeedInput, styleThemeAssistPrompt, gptAssistSendPromptText, apiKeys, t]);
 
   const toggleModel = useCallback((id) => {
     setSelectedModels((prev) => {
@@ -7226,6 +8350,7 @@ export default function App() {
   useEffect(() => {
     if (taskMode === "style") return;
     setShowInputImageModal(false);
+    setShowInputImageEditor(false);
     setShowStyleReferenceModal(false);
   }, [taskMode]);
 
@@ -7275,6 +8400,13 @@ export default function App() {
     return [];
   }, [uploadedInputImages, uploadedImage]);
 
+  const openInputImageEditor = useCallback((index = 0) => {
+    if (!inputImageList.length) return;
+    const safeIndex = Math.max(0, Math.min(inputImageList.length - 1, Number(index) || 0));
+    setInputImageEditorIndex(safeIndex);
+    setShowInputImageEditor(true);
+  }, [inputImageList]);
+
   const styleImageList = useMemo(
     () =>
       (Array.isArray(styleReferenceImages) ? styleReferenceImages : [])
@@ -7316,6 +8448,17 @@ export default function App() {
     setUploadedPreview(next[0] || null);
     if (fileRef.current) fileRef.current.value = "";
   }, [uploadedInputImages]);
+
+  const confirmInputImageEditor = useCallback((nextImages) => {
+    const safeImages = (Array.isArray(nextImages) ? nextImages : [])
+      .filter((item) => typeof item === "string" && item.startsWith("data:image/"))
+      .slice(0, MAX_INPUT_IMAGES_PER_BATCH);
+    setUploadedInputImages(safeImages);
+    setUploadedImage(safeImages[0] || null);
+    setUploadedPreview(safeImages[0] || null);
+    setShowInputImageEditor(false);
+    if (fileRef.current) fileRef.current.value = "";
+  }, []);
 
   const appendStyleReferenceFiles = useCallback(async (files) => {
     const incoming = Array.isArray(files) ? files : [];
@@ -7464,10 +8607,10 @@ export default function App() {
     );
 
     try {
+      const requestConfig = getApiConfigForModel(model, targetTurn.apiKeys || apiKeys);
       const generated = await generateImage(targetTurn.proxyUrl || proxyUrl, model, promptText, targetTurn.referenceImage, {
         count: 1,
-        apiBaseUrl: targetTurn.apiBaseUrl || apiBaseUrl || DEFAULT_API_BASE_URL,
-        apiKey: targetTurn.apiKey || apiKey || DEFAULT_API_KEY,
+        ...requestConfig,
         aspectRatio: normalizeAspectRatio(targetTurn.aspectRatio ?? targetTurn.geminiAspectRatio ?? aspectRatio),
         imageInputs: turnImageInputs,
       });
@@ -7542,7 +8685,7 @@ export default function App() {
         return next;
       });
     }
-  }, [turns, proxyUrl, apiBaseUrl, apiKey, aspectRatio, t]);
+  }, [turns, proxyUrl, apiKeys, aspectRatio, t]);
 
   const retryImage = useCallback((payload) => runResultImageAction(payload, "replace"), [runResultImageAction]);
   const appendResultImage = useCallback((payload) => runResultImageAction(payload, "append"), [runResultImageAction]);
@@ -8326,9 +9469,9 @@ export default function App() {
       return false;
     }
     const apiConfig = await loadApiConfigFromLocalFolder(dirHandle);
-    const loadedApiKey = normalizeApiKey(apiConfig.apiKey);
-    setApiKey(loadedApiKey);
-    setDraftApiKey(loadedApiKey);
+    const loadedApiKeys = normalizeApiKeys(apiConfig);
+    setApiKeys(loadedApiKeys);
+    setDraftApiKeys(loadedApiKeys);
     setApiKeySavedAt(apiConfig.exists ? Date.now() : null);
     const loadedGptAssistConfig = await loadGptAssistFromLocalFolder(dirHandle);
     setGptAssistPrompt(loadedGptAssistConfig.prompt);
@@ -8449,7 +9592,7 @@ export default function App() {
       styleThemes: taskMode === "style" ? normalizeStyleThemes(styleThemes) : [],
       promptVariants: normalizedPromptVariants,
       apiBaseUrl: resolveApiBaseUrl(apiBaseUrl),
-      apiKey: normalizeApiKey(apiKey),
+      apiKeys: normalizeApiKeys(apiKeys),
       aspectRatio: normalizeAspectRatio(aspectRatio),
       referenceImage,
       styleReferenceImages: taskMode === "style" ? styleReferenceImages.slice(0, MAX_STYLE_REFERENCE_IMAGES) : [],
@@ -8484,7 +9627,7 @@ export default function App() {
     } else {
       promptEditor.setText((prev) => clearPlaceholderValues(prev), { record: false });
     }
-  }, [proxyUrl, selectedModels, modelCounts, taskMode, prompt, comparePrompts, styleThemes, styleReferenceImages, apiBaseUrl, apiKey, aspectRatio, uploadedInputImages, uploadedImage, compareAEditor, compareBEditor, promptEditor, t]);
+  }, [proxyUrl, selectedModels, modelCounts, taskMode, prompt, comparePrompts, styleThemes, styleReferenceImages, apiKeys, apiBaseUrl, aspectRatio, uploadedInputImages, uploadedImage, compareAEditor, compareBEditor, promptEditor, t]);
 
   const cancelModelTask = useCallback((turnId, modelId, promptKey = "single") => {
     const key = `${turnId}:${modelId}:${promptKey}`;
@@ -8600,6 +9743,12 @@ export default function App() {
         setLastEditedCount(Math.max(1, Math.min(8, Number(turn.modelCounts[firstSelectedModel]) || 1)));
       }
     }
+    if (turn.apiKeys && typeof turn.apiKeys === "object") {
+      const nextApiKeys = normalizeApiKeys(turn.apiKeys);
+      setApiKeys(nextApiKeys);
+      setDraftApiKeys(nextApiKeys);
+    }
+    setApiBaseUrl(resolveApiBaseUrl(turn.apiBaseUrl));
     setAspectRatio(normalizeAspectRatio(turn.aspectRatio ?? turn.geminiAspectRatio));
     if (turn.referenceImage) {
       setUploadedInputImages([turn.referenceImage]);
@@ -8622,7 +9771,6 @@ export default function App() {
     (async () => {
       setIsProcessing(true);
       if (typeof window !== "undefined") window.__apiBaseUrl = next.apiBaseUrl || DEFAULT_API_BASE_URL;
-      if (typeof window !== "undefined") window.__apiKey = next.apiKey || DEFAULT_API_KEY;
       setTurns((prev) => prev.map((t) => (t.id === next.id ? { ...t, status: "running", startedAt: Date.now() } : t)));
       const promptVariants = getTurnPromptVariants(next);
       const promptLookup = new Map(promptVariants.map((variant) => [variant.key, variant]));
@@ -8686,14 +9834,14 @@ export default function App() {
             const requestedCount = Math.max(1, Number(task.requestedCount || next.modelCounts?.[task.modelId] || 1));
             let partialImages = [];
             let lastNonAbortError = null;
+            const requestConfig = getApiConfigForModel(model, next.apiKeys || apiKeys);
 
             for (let index = 0; index < requestedCount; index += 1) {
               try {
                 const generated = await generateImage(next.proxyUrl, model, task.promptText, next.referenceImage, {
                   signal: controller.signal,
                   count: 1,
-                  apiBaseUrl: next.apiBaseUrl || DEFAULT_API_BASE_URL,
-                  apiKey: next.apiKey || DEFAULT_API_KEY,
+                  ...requestConfig,
                   aspectRatio: normalizeAspectRatio(next.aspectRatio ?? next.geminiAspectRatio),
                   imageInputs: turnImageInputs,
                 });
@@ -8740,7 +9888,7 @@ export default function App() {
       setTurns((prev) => prev.map((t) => (t.id === next.id ? { ...t, status: "done", endedAt: Date.now() } : t)));
       setIsProcessing(false);
     })();
-  }, [turns, isProcessing]);
+  }, [turns, isProcessing, apiKeys]);
 
   useEffect(() => {
     if (!historyDirHandle) return;
@@ -8817,10 +9965,10 @@ export default function App() {
       const canWrite = await ensureDirectoryPermission(historyDirHandle, true);
       if (!canWrite) return;
       try {
-        await saveApiConfigToLocalFolder(historyDirHandle, apiKey);
+        await saveApiConfigToLocalFolder(historyDirHandle, apiKeys);
       } catch {}
     })();
-  }, [historyDirHandle, apiKey]);
+  }, [historyDirHandle, apiKeys]);
 
   const visibleTurns = turns.filter((turn) => !hiddenTurnIds.includes(turn.id));
   const activeTurn =
@@ -8858,7 +10006,11 @@ export default function App() {
   const inputImageCount = inputImageList.length;
   const inputPrimaryPreview = inputImageList[0] || null;
   const canEditInputImages = inputImageCount > 0;
-  const isApiKeyDirty = normalizeApiKey(draftApiKey) !== normalizeApiKey(apiKey);
+  const normalizedApiKeys = normalizeApiKeys(apiKeys);
+  const normalizedDraftApiKeys = normalizeApiKeys(draftApiKeys);
+  const isApiKeyDirty =
+    normalizedDraftApiKeys.deerapi !== normalizedApiKeys.deerapi ||
+    normalizedDraftApiKeys.bailian !== normalizedApiKeys.bailian;
   const isGptAssistPromptDirty =
     normalizeGptAssistPrompt(draftGptAssistPrompt) !== normalizeGptAssistPrompt(gptAssistPrompt) ||
     normalizeStyleThemeAssistPrompt(draftStyleThemeAssistPrompt) !== normalizeStyleThemeAssistPrompt(styleThemeAssistPrompt) ||
@@ -8987,7 +10139,7 @@ export default function App() {
               type="button"
               style={{ ...S.apiSwitchBtn, ...(showApiModal ? S.apiSwitchBtnActive : null) }}
               onClick={() => {
-                setDraftApiKey(apiKey);
+                setDraftApiKeys(normalizeApiKeys(apiKeys));
                 setShowApiModal(true);
               }}
             >
@@ -9116,6 +10268,19 @@ export default function App() {
                             {t("common.edit")}
                           </button>
                         )}
+                        {canEditInputImages && (
+                          <button
+                            type="button"
+                            style={S.inputDrawBtn}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openInputImageEditor(0);
+                            }}
+                            title={t("imageEditor.title")}
+                          >
+                            ✎
+                          </button>
+                        )}
                         <div style={S.uploadPairBody}>
                           {inputPrimaryPreview ? (
                             <img src={inputPrimaryPreview} alt="Input" style={S.uploadPairMainThumb} />
@@ -9154,6 +10319,19 @@ export default function App() {
                           }}
                         >
                           {t("common.edit")}
+                        </button>
+                      )}
+                      {canEditInputImages && (
+                        <button
+                          type="button"
+                          style={S.inputDrawBtn}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openInputImageEditor(0);
+                          }}
+                          title={t("imageEditor.title")}
+                        >
+                          ✎
                         </button>
                       )}
                       <img src={inputPrimaryPreview} alt="Ref" style={S.uploadedThumb} />
@@ -9519,9 +10697,9 @@ export default function App() {
       <ApiKeyModal
         show={showApiModal}
         onClose={() => setShowApiModal(false)}
-        apiKey={apiKey}
-        draftApiKey={draftApiKey}
-        setDraftApiKey={setDraftApiKey}
+        apiKeys={apiKeys}
+        draftApiKeys={draftApiKeys}
+        setDraftApiKeys={setDraftApiKeys}
         onSave={handleSaveApiKey}
         saveStateText={apiKeySaveStateText}
       />
@@ -9568,6 +10746,13 @@ export default function App() {
         maxCount={MAX_INPUT_IMAGES_PER_BATCH}
         onUploadFiles={appendInputImageFiles}
         onRemoveAt={removeInputImageAt}
+      />
+      <PromptImageEditorModal
+        show={showInputImageEditor}
+        onClose={() => setShowInputImageEditor(false)}
+        images={inputImageList}
+        initialIndex={inputImageEditorIndex}
+        onConfirm={confirmInputImageEditor}
       />
       <InputImagesModal
         show={showStyleReferenceModal}
@@ -9703,14 +10888,15 @@ const S = {
   inputImagesEmpty: { minHeight: 50, borderRadius: 8, border: "1px dashed rgba(255,255,255,0.2)", color: "#71717a", fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,0.02)", width: "100%" },
   inputCountBadge: { position: "absolute", top: 8, right: 8, zIndex: 3, minWidth: 22, height: 22, padding: "0 6px", borderRadius: 11, border: `1px solid ${THEME_PRIMARY_BORDER}`, background: "rgba(8,47,73,0.88)", color: "#dbeafe", fontFamily: mono, fontSize: 11, display: "inline-flex", alignItems: "center", justifyContent: "center" },
   inputEditBtn: { position: "absolute", top: 8, left: 8, zIndex: 3, height: 22, padding: "0 8px", borderRadius: 11, border: "1px solid rgba(255,255,255,0.16)", background: "rgba(15,23,42,0.82)", color: "#e2e8f0", fontFamily: mono, fontSize: 11, cursor: "pointer" },
+  inputDrawBtn: { position: "absolute", left: 8, bottom: 8, zIndex: 3, width: 26, height: 26, borderRadius: 13, border: `1px solid ${THEME_PRIMARY_BORDER}`, background: "rgba(8,47,73,0.88)", color: THEME_PRIMARY_TEXT, fontFamily: mono, fontSize: 13, lineHeight: 1, cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 },
   modelsPanel: { border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10, background: "rgba(255,255,255,0.02)", display: "flex", flexDirection: "column", gap: 10, height: "100%" },
   modelsPanelStyle: { width: "100%", maxWidth: "100%" },
   modelsHeadRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
   syncBtn: { padding: "6px 10px", borderRadius: 7, border: `1px solid ${THEME_GOLD_BORDER}`, background: THEME_GOLD_SOFT, color: THEME_GOLD_TEXT, fontFamily: mono, fontSize: 11, cursor: "pointer" },
   modelTemplateGrid: { display: "grid", gridTemplateColumns: "minmax(0, 5fr) minmax(0, 3fr)", gap: 12, alignItems: "stretch" },
   modelTemplateGridStyle: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12, alignItems: "stretch" },
-  modelGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
-  modelGridStyle: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
+  modelGrid: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 },
+  modelGridStyle: { display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 },
   imageSizePanel: { border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "8px 10px", background: "rgba(255,255,255,0.015)", marginTop: "auto" },
   imageSizeGroup: { display: "grid", gap: 6, marginBottom: 8 },
   imageSizeGroupTitle: { fontSize: 11, color: "#8b8b93", fontFamily: mono },
@@ -9736,16 +10922,16 @@ const S = {
   templateItemTitle: { fontSize: 11, color: "inherit", fontFamily: mono, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1 },
   templateActions: { display: "inline-flex", alignItems: "center", justifyContent: "center" },
   templateEditBtn: { width: 24, height: 24, borderRadius: 6, border: "1px solid rgba(82,82,91,0.9)", background: "rgba(24,24,27,0.9)", color: "#a1a1aa", fontSize: 12, fontFamily: mono, cursor: "pointer", padding: 0, lineHeight: "24px", textAlign: "center", outline: "none" },
-  modelChipWrap: { border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, padding: 6, background: "rgba(255,255,255,0.02)" },
+  modelChipWrap: { border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, padding: 5, background: "rgba(255,255,255,0.02)" },
   modelRow: { display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "center" },
-  modelChip: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 8px", borderRadius: 7, border: "1px solid", color: "#e4e4e7", fontSize: 12, fontFamily: sans, transition: "all 0.15s", width: "100%", minHeight: 34 },
+  modelChip: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 7px", borderRadius: 7, border: "1px solid", color: "#e4e4e7", fontSize: 12, fontFamily: sans, transition: "all 0.15s", width: "100%", minHeight: 32 },
   dot: { width: 6, height: 6, borderRadius: 3, flexShrink: 0 },
-  chipName: { fontWeight: 500, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 90 },
-  chipNameStyleMode: { fontWeight: 500, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 162 },
+  chipName: { fontWeight: 500, fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 72 },
+  chipNameStyleMode: { fontWeight: 500, fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 72 },
   check: { marginLeft: "auto", color: "#10a37f", fontWeight: 700, fontSize: 14 },
   countRow: { display: "flex", alignItems: "center", gap: 4 },
   countLabel: { fontSize: 11, color: "#999", fontFamily: mono, width: 10, textAlign: "center" },
-  countSelect: { width: 58, height: 34, padding: "4px 6px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.14)", background: "rgba(255,255,255,0.04)", color: "#e4e4e7", fontFamily: mono, fontSize: 12, outline: "none" },
+  countSelect: { width: 50, height: 32, padding: "4px 5px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.14)", background: "rgba(255,255,255,0.04)", color: "#e4e4e7", fontFamily: mono, fontSize: 11, outline: "none" },
   genRow: { display: "flex", gap: 12, marginBottom: 32, alignItems: "center" },
   folderRow: { display: "flex", gap: 10, marginBottom: 10, alignItems: "center", flexWrap: "wrap" },
   atlasRow: { display: "flex", gap: 8, marginBottom: 10, alignItems: "center", flexWrap: "wrap" },
@@ -9848,6 +11034,37 @@ const S = {
   modalInputImageUploadPlus: { fontSize: 28, lineHeight: 1 },
   modalInputImageUploadText: { fontSize: 12, letterSpacing: 0.4, textTransform: "uppercase" },
   modalInputImagesActions: { marginTop: 10, display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" },
+  inputImageEditorModal: { width: "min(1180px, 96vw)", maxHeight: "92vh", overflow: "auto", background: "#161618", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 18, padding: 18, display: "grid", gap: 16 },
+  inputImageEditorHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 },
+  inputImageEditorHeaderHint: { marginTop: 6, fontSize: 12, color: "#9ca3af", lineHeight: 1.6, maxWidth: 560, fontFamily: mono },
+  inputImageEditorLayout: { display: "grid", gridTemplateColumns: "240px minmax(0, 1fr)", gap: 16, minHeight: 0 },
+  inputImageEditorSidebar: { minWidth: 0, display: "flex", flexDirection: "column", gap: 12, padding: 12, borderRadius: 14, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)" },
+  inputImageEditorMain: { minWidth: 0, display: "grid", gap: 12 },
+  inputImageEditorBlock: { display: "grid", gap: 8 },
+  inputImageEditorLabel: { fontSize: 11, color: "#a1a1aa", fontFamily: mono, letterSpacing: 1.2, textTransform: "uppercase" },
+  inputImageEditorToolGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
+  inputImageEditorToolBtn: { height: 34, borderRadius: 9, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.04)", color: "#d4d4d8", fontFamily: mono, fontSize: 12, cursor: "pointer" },
+  inputImageEditorToolBtnActive: { borderColor: THEME_PRIMARY_BORDER, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT },
+  inputImageEditorColorRow: { display: "flex", flexWrap: "wrap", gap: 8 },
+  inputImageEditorColorBtn: { width: 28, height: 28, borderRadius: 14, border: "1px solid rgba(255,255,255,0.14)", cursor: "pointer", boxShadow: "inset 0 0 0 1px rgba(2,6,23,0.2)" },
+  inputImageEditorColorBtnActive: { boxShadow: `0 0 0 2px ${THEME_PRIMARY}, inset 0 0 0 1px rgba(2,6,23,0.28)` },
+  inputImageEditorNavRow: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 },
+  inputImageEditorMiniBtn: { height: 32, borderRadius: 9, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.04)", color: "#d4d4d8", fontFamily: mono, fontSize: 12, cursor: "pointer" },
+  inputImageEditorMiniBtnDisabled: { opacity: 0.45, cursor: "not-allowed" },
+  inputImageEditorStatus: { minHeight: 18, fontSize: 12, color: THEME_PRIMARY_TEXT, fontFamily: mono, lineHeight: 1.5 },
+  inputImageEditorSubHint: { fontSize: 11, color: "#a1a1aa", fontFamily: mono, lineHeight: 1.5 },
+  inputImageEditorActionGrid: { display: "grid", gap: 8 },
+  inputImageEditorActionBtn: { height: 36, borderRadius: 9, border: `1px solid ${THEME_PRIMARY_BORDER}`, background: THEME_PRIMARY_SOFT, color: THEME_PRIMARY_TEXT, fontFamily: mono, fontSize: 12, cursor: "pointer" },
+  inputImageEditorGhostBtn: { height: 36, borderRadius: 9, border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.04)", color: "#d4d4d8", fontFamily: mono, fontSize: 12, cursor: "pointer" },
+  inputImageEditorConfirmBtn: { height: 38, borderRadius: 10, border: "none", background: "linear-gradient(135deg, #1a73e8, #10a37f)", color: "#fff", fontFamily: mono, fontSize: 12, fontWeight: 600, cursor: "pointer" },
+  inputImageEditorActionBtnDisabled: { opacity: 0.45, cursor: "not-allowed" },
+  inputImageEditorViewport: { position: "relative", minHeight: 520, height: "min(58vh, 560px)", borderRadius: 14, border: "1px solid rgba(255,255,255,0.08)", background: "#09090b", overflow: "hidden" },
+  inputImageEditorCanvas: { width: "100%", height: "100%", display: "block", touchAction: "none" },
+  inputImageEditorThumbStrip: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(84px, 1fr))", gap: 10 },
+  inputImageEditorThumbBtn: { position: "relative", borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.03)", padding: 0, cursor: "pointer", minHeight: 84 },
+  inputImageEditorThumbBtnActive: { borderColor: THEME_PRIMARY_BORDER, boxShadow: `0 0 0 1px ${THEME_PRIMARY_BORDER} inset` },
+  inputImageEditorThumbImg: { width: "100%", height: 84, objectFit: "cover", display: "block", background: "#0b0b0d" },
+  inputImageEditorThumbIndex: { position: "absolute", left: 6, bottom: 6, minWidth: 20, height: 20, padding: "0 6px", borderRadius: 10, background: "rgba(2,6,23,0.78)", color: "#f8fafc", fontSize: 11, fontFamily: mono, display: "inline-flex", alignItems: "center", justifyContent: "center" },
   selectionLimitModal: { width: "min(420px, 90vw)", borderRadius: 16, border: "1px solid rgba(255,255,255,0.12)", background: "#161618", padding: "24px 22px", boxShadow: "0 18px 60px rgba(0,0,0,0.35)" },
   selectionLimitTitle: { fontSize: 18, color: "#f8fafc", fontFamily: mono, marginBottom: 8 },
   selectionLimitText: { fontSize: 13, color: "#cbd5e1", lineHeight: 1.6 },

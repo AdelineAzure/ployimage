@@ -1,25 +1,28 @@
 // ============================================================
-// Cloudflare Worker — DeerAPI Multi-Model Image Gen Proxy
+// Cloudflare Worker — Multi-Platform Image Gen Proxy
 // ============================================================
 // DEPLOYMENT:
 //   1. Go to https://dash.cloudflare.com → Workers & Pages → Create
 //   2. Paste this code into the editor
 //   3. Go to Settings → Variables → Add:
-//      - Name: DEERAPI_KEY
-//      - Value: your DeerAPI key (sk-...)
+//      - Name: DEERAPI_KEY or DASHSCOPE_API_KEY
+//      - Value: your upstream API key
 //      - Check "Encrypt"
 //   4. Deploy
 //   5. Copy the worker URL (e.g. https://imgproxy.YOUR.workers.dev)
 //      and paste it into the app's Settings panel (⚙)
 // ============================================================
 //
-// This proxy supports DeerAPI image generation endpoints:
+// This proxy supports DeerAPI and Bailian endpoints:
 //   - /v1/chat/completions
+//   - /compatible-mode/v1/chat/completions
 //   - /v1/images/generations
+//   - /api/v1/services/aigc/multimodal-generation/generation
 //   - /v1beta/models/...:generateContent
 //   - /mj/...
 //
 // Frontend uses X-Target-Path to choose upstream API path.
+// Platform is inferred from X-Upstream-Base when X-Api-Platform is absent.
 // ============================================================
 
 export default {
@@ -82,16 +85,21 @@ export default {
 
       const body = method === "POST" ? await request.text() : undefined;
 
+      const apiPlatform = normalizeApiPlatform(
+        request.headers.get("X-Api-Platform") || inferApiPlatformFromBase(upstreamBase)
+      );
       const requestApiKey = normalizeApiKey(request.headers.get("X-Api-Key") || "");
-      const fallbackApiKey = normalizeApiKey(env.DEERAPI_KEY || "");
+      const fallbackApiKey = getFallbackApiKey(env, apiPlatform);
       const apiKey = requestApiKey || fallbackApiKey;
       if (!apiKey) {
-        return json({ error: "API key missing. Provide X-Api-Key or configure DEERAPI_KEY." }, 400);
+        const envName = apiPlatform === "bailian" ? "DASHSCOPE_API_KEY" : "DEERAPI_KEY";
+        return json({ error: `API key missing. Provide X-Api-Key or configure ${envName}.` }, 400);
       }
 
       const isGemini = targetPath.includes("/v1beta/");
-      const primaryAuth = isGemini ? apiKey : `Bearer ${apiKey}`;
-      const fallbackAuth = isGemini ? `Bearer ${apiKey}` : apiKey;
+      const prefersBearer = apiPlatform === "bailian" || !isGemini;
+      const primaryAuth = prefersBearer ? `Bearer ${apiKey}` : apiKey;
+      const fallbackAuth = prefersBearer ? apiKey : `Bearer ${apiKey}`;
       const baseHeaders = {
         "Content-Type": "application/json",
         "X-Api-Key": apiKey,
@@ -136,7 +144,7 @@ function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-Target-Path, X-Image-Url, X-Upstream-Base, X-Api-Key",
+    "Access-Control-Allow-Headers": "Content-Type, X-Target-Path, X-Image-Url, X-Upstream-Base, X-Api-Key, X-Api-Platform",
   };
 }
 
@@ -151,6 +159,21 @@ function normalizeApiKey(value) {
   next = next.replace(/^bearer\s+/i, "").trim();
   next = next.replace(/^["']+|["']+$/g, "").trim();
   return next;
+}
+
+function normalizeApiPlatform(value) {
+  return value === "bailian" ? "bailian" : "deerapi";
+}
+
+function inferApiPlatformFromBase(value) {
+  return /dashscope\.aliyuncs\.com/i.test(value || "") ? "bailian" : "deerapi";
+}
+
+function getFallbackApiKey(env, apiPlatform) {
+  if (apiPlatform === "bailian") {
+    return normalizeApiKey(env.DASHSCOPE_API_KEY || env.BAILIAN_API_KEY || "");
+  }
+  return normalizeApiKey(env.DEERAPI_KEY || "");
 }
 
 function resolveUpstreamBase(value) {
