@@ -9,7 +9,8 @@ const IMAGE_MODELS = [
   { id: "doubao-seedream-5-0-260128", name: "Seedream 5.0 Lite", shortName: "Seed 5", provider: "ByteDance", apiType: "images", badge: "NEW", platforms: ["deerapi"] },
   // Midjourney via /mj
   { id: "midjourney-imagine", name: "Midjourney Imagine", shortName: "Midjourney", provider: "Midjourney", apiType: "midjourney", badge: "BETA", platforms: ["deerapi"] },
-  // GPT Image 系列 — 文生图走 /v1/images/generations，带输入图时走 /v1/images/edits
+  // GPT Image 系列 — 文生图走 /v1/images/generations；带输入图优先走 JSON 兼容路径，
+  // gpt-image-1 / gpt-image-1-mini 才使用 /v1/images/edits (multipart)
   { id: "gpt-image-1.5", name: "GPT‑1.5 Image", shortName: "GPT-1.5", provider: "OpenAI", apiType: "images", badge: "HOT", platforms: ["deerapi"] },
   { id: "gpt-image-2", name: "GPT‑2 Image", shortName: "GPT-2", provider: "OpenAI", apiType: "images", badge: "NEW", platforms: ["deerapi"] },
   // Bailian Qwen Image 系列：走 /api/v1/services/aigc/multimodal-generation/generation
@@ -1063,7 +1064,11 @@ function normalizeModelId(id) {
 }
 
 function supportsOpenAiImageEdits(model) {
-  return model?.provider === "OpenAI" && /^gpt-image-/i.test(String(model?.id || ""));
+  // DeerAPI 的 /v1/images/edits（multipart）在 gpt-image-1 系列兼容性更稳定。
+  // gpt-image-1.5 / gpt-image-2 在部分通道会按 JSON 解析请求体，
+  // 对 multipart 报 "invalid character '-' in numeric literal"。
+  // 因此这里仅保留 gpt-image-1 / gpt-image-1-mini 走 edits。
+  return model?.provider === "OpenAI" && /^gpt-image-(?:1(?:-mini)?)(?:-|$)/i.test(String(model?.id || ""));
 }
 
 function isQwenImageModel(model) {
@@ -3993,6 +3998,7 @@ async function callImagesAPI(proxyUrl, model, prompt, imageBase64, options = {})
   const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
   const primaryImage = imageInputs[0] || "";
   const isSeedream = model.provider === "ByteDance";
+  const isOpenAiImageModel = model.provider === "OpenAI" && /^gpt-image-/i.test(String(model?.id || ""));
   if (supportsOpenAiImageEdits(model) && imageInputs.length) {
     return callOpenAiImageEditAPI(proxyUrl, model, prompt, imageInputs, options);
   }
@@ -4008,7 +4014,9 @@ async function callImagesAPI(proxyUrl, model, prompt, imageBase64, options = {})
     body.watermark = true;
     body.guidance_scale = 3;
   }
-  if (primaryImage && isSeedream) {
+  if (primaryImage && (isSeedream || isOpenAiImageModel)) {
+    // For gpt-image-1.5 / gpt-image-2 we keep image-conditioned generation on JSON path
+    // to avoid multipart parsing issues on some DeerAPI channels.
     body.image = primaryImage;
   }
 
