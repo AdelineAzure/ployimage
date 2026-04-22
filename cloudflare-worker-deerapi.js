@@ -17,6 +17,7 @@
 //   - /v1/chat/completions
 //   - /compatible-mode/v1/chat/completions
 //   - /v1/images/generations
+//   - /v1/images/edits
 //   - /api/v1/services/aigc/multimodal-generation/generation
 //   - /v1beta/models/...:generateContent
 //   - /mj/...
@@ -83,7 +84,8 @@ export default {
         return json({ error: "Method not allowed" }, 405);
       }
 
-      const body = method === "POST" ? await request.text() : undefined;
+      const incomingContentType = request.headers.get("Content-Type") || "";
+      const body = method === "POST" ? await request.arrayBuffer() : undefined;
 
       const apiPlatform = normalizeApiPlatform(
         request.headers.get("X-Api-Platform") || inferApiPlatformFromBase(upstreamBase)
@@ -101,7 +103,7 @@ export default {
       const primaryAuth = prefersBearer ? `Bearer ${apiKey}` : apiKey;
       const fallbackAuth = prefersBearer ? apiKey : `Bearer ${apiKey}`;
       const baseHeaders = {
-        "Content-Type": "application/json",
+        ...(incomingContentType ? { "Content-Type": incomingContentType } : {}),
         "X-Api-Key": apiKey,
         "X-Goog-Api-Key": apiKey,
       };

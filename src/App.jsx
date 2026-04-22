@@ -9,8 +9,9 @@ const IMAGE_MODELS = [
   { id: "doubao-seedream-5-0-260128", name: "Seedream 5.0 Lite", shortName: "Seed 5", provider: "ByteDance", apiType: "images", badge: "NEW", platforms: ["deerapi"] },
   // Midjourney via /mj
   { id: "midjourney-imagine", name: "Midjourney Imagine", shortName: "Midjourney", provider: "Midjourney", apiType: "midjourney", badge: "BETA", platforms: ["deerapi"] },
-  // GPT‑1.5 image — 依旧走 /v1/images/generations
+  // GPT Image 系列 — 文生图走 /v1/images/generations，带输入图时走 /v1/images/edits
   { id: "gpt-image-1.5", name: "GPT‑1.5 Image", shortName: "GPT-1.5", provider: "OpenAI", apiType: "images", badge: "HOT", platforms: ["deerapi"] },
+  { id: "gpt-image-2", name: "GPT‑2 Image", shortName: "GPT-2", provider: "OpenAI", apiType: "images", badge: "NEW", platforms: ["deerapi"] },
   // Bailian Qwen Image 系列：走 /api/v1/services/aigc/multimodal-generation/generation
   { id: "qwen-image-2.0", name: "qwen", shortName: "qwen", provider: "Alibaba", apiType: "bailian", badge: "NEW", platforms: ["bailian"] },
   { id: "qwen-image-2.0-pro", name: "qwen pro", shortName: "qwen pro", provider: "Alibaba", apiType: "bailian", badge: "PRO", platforms: ["bailian"] },
@@ -721,7 +722,8 @@ export default {
         return json({ error: "Method not allowed" }, 405);
       }
 
-      const body = method === "POST" ? await request.text() : undefined;
+      const incomingContentType = request.headers.get("Content-Type") || "";
+      const body = method === "POST" ? await request.arrayBuffer() : undefined;
       const apiPlatform = normalizeApiPlatform(
         request.headers.get("X-Api-Platform") || inferApiPlatformFromBase(upstreamBase)
       );
@@ -738,7 +740,7 @@ export default {
       const primaryAuth = prefersBearer ? \`Bearer \${apiKey}\` : apiKey;
       const fallbackAuth = prefersBearer ? apiKey : \`Bearer \${apiKey}\`;
       const baseHeaders = {
-        "Content-Type": "application/json",
+        ...(incomingContentType ? { "Content-Type": incomingContentType } : {}),
         "X-Api-Key": apiKey,
         "X-Goog-Api-Key": apiKey,
       };
@@ -1058,6 +1060,10 @@ function normalizeModelId(id) {
   if (typeof id !== "string") return id;
   if (NANO_PRO_LEGACY_MODEL_IDS.includes(id)) return NANO_PRO_OFFICIAL_MODEL_ID;
   return id;
+}
+
+function supportsOpenAiImageEdits(model) {
+  return model?.provider === "OpenAI" && /^gpt-image-/i.test(String(model?.id || ""));
 }
 
 function isQwenImageModel(model) {
@@ -1508,6 +1514,19 @@ function buildProxyHeaders(targetPath, apiBaseUrl, apiKey, extraHeaders = {}, ap
   return headers;
 }
 
+async function readProxyResponse(resp) {
+  const contentType = resp.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return resp.json();
+  }
+  const text = await resp.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
 async function postJsonWithRetry(proxyUrl, targetPath, body, options = {}) {
   const {
       signal,
@@ -1535,7 +1554,47 @@ async function postJsonWithRetry(proxyUrl, targetPath, body, options = {}) {
       continue;
     }
 
-    if (resp.ok) return resp.json();
+    if (resp.ok) return readProxyResponse(resp);
+
+    const text = (await resp.text()).slice(0, 600);
+    lastError = new Error(`API ${resp.status}: ${text}`);
+    const canRetry = shouldRetryApiFailure(resp.status, text);
+    if (!canRetry || attempt >= maxAttempts) break;
+    const jitter = Math.floor(Math.random() * 250);
+    await sleep(baseDelayMs * attempt + jitter, signal);
+  }
+
+  throw lastError || new Error("Request failed");
+}
+
+async function postFormDataWithRetry(proxyUrl, targetPath, formData, options = {}) {
+  const {
+    signal,
+    maxAttempts = 3,
+    baseDelayMs = 900,
+    apiPlatform = DEFAULT_API_PLATFORM,
+  } = options;
+
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let resp;
+    try {
+      resp = await fetch(proxyUrl, {
+        method: "POST",
+        headers: buildProxyHeaders(targetPath, options.apiBaseUrl, options.apiKey, {}, apiPlatform),
+        body: formData,
+        signal,
+      });
+    } catch (err) {
+      if (isAbortError(err)) throw err;
+      lastError = err;
+      if (attempt >= maxAttempts) break;
+      const jitter = Math.floor(Math.random() * 250);
+      await sleep(baseDelayMs * attempt + jitter, signal);
+      continue;
+    }
+
+    if (resp.ok) return readProxyResponse(resp);
 
     const text = (await resp.text()).slice(0, 600);
     lastError = new Error(`API ${resp.status}: ${text}`);
@@ -3015,7 +3074,7 @@ function dataUrlToBytes(dataUrl) {
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
   const ext = mime.includes("jpeg") ? "jpg" : mime.includes("webp") ? "webp" : mime.includes("gif") ? "gif" : "png";
-  return { bytes, ext };
+  return { bytes, ext, mime };
 }
 
 function extFromUrl(url) {
@@ -3819,7 +3878,113 @@ async function callChatAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
   return Array.from(new Set(images.map((value) => normalizeImageValue(value, apiBaseUrl)).filter(Boolean)));
 }
 
-// 2. OpenAI Images / Seedream format (gpt-image-1, gpt-image-1.5, seedream)
+function collectImagesApiResponseImages(data, apiBaseUrl) {
+  const images = [];
+  if (Array.isArray(data?.data)) {
+    data.data.forEach((item) => {
+      const normalized =
+        normalizeImageValue(item?.url, apiBaseUrl) ||
+        normalizeImageValue(item?.b64_json, apiBaseUrl) ||
+        normalizeImageValue(item?.image_base64, apiBaseUrl) ||
+        normalizeImageValue(item?.base64, apiBaseUrl);
+      if (normalized) images.push(normalized);
+    });
+  }
+  if (!images.length) {
+    const normalized = normalizeImageValue(data?.image_base64, apiBaseUrl) || normalizeImageValue(data?.url, apiBaseUrl);
+    if (normalized) images.push(normalized);
+  }
+  if (!images.length && Array.isArray(data?.images)) {
+    data.images.forEach((item) => {
+      const normalized =
+        normalizeImageValue(typeof item === "string" ? item : null, apiBaseUrl) ||
+        normalizeImageValue(item?.url, apiBaseUrl) ||
+        normalizeImageValue(item?.b64_json, apiBaseUrl) ||
+        normalizeImageValue(item?.image_base64, apiBaseUrl) ||
+        normalizeImageValue(item?.base64, apiBaseUrl);
+      if (normalized) images.push(normalized);
+    });
+  }
+  if (!images.length && Array.isArray(data?.result)) {
+    data.result.forEach((item) => {
+      const normalized =
+        normalizeImageValue(typeof item === "string" ? item : null, apiBaseUrl) ||
+        normalizeImageValue(item?.url, apiBaseUrl) ||
+        normalizeImageValue(item?.b64_json, apiBaseUrl) ||
+        normalizeImageValue(item?.image_base64, apiBaseUrl) ||
+        normalizeImageValue(item?.base64, apiBaseUrl);
+      if (normalized) images.push(normalized);
+    });
+  }
+  if (!images.length) {
+    extractImageCandidates(data, images, apiBaseUrl);
+  }
+  return Array.from(new Set(images.map((value) => normalizeImageValue(value, apiBaseUrl)).filter(Boolean)));
+}
+
+async function finalizeImagesApiResponse(proxyUrl, data, apiBaseUrl) {
+  const deduped = collectImagesApiResponseImages(data, apiBaseUrl);
+  const resolved = await Promise.all(deduped.map((u) => proxyFetchImageAsDataUrl(proxyUrl, u)));
+  return resolved
+    .map((v) => normalizeImageValue(v, apiBaseUrl))
+    .filter(Boolean)
+    .map((v) => buildWorkerImageProxyUrl(proxyUrl, v) || v);
+}
+
+async function resolveEditImageDataUrls(proxyUrl, imageInputs, apiBaseUrl) {
+  const resolved = await Promise.all(
+    (Array.isArray(imageInputs) ? imageInputs : []).map(async (image) => {
+      const normalized = normalizeImageValue(image, apiBaseUrl);
+      if (!normalized) return null;
+      if (normalized.startsWith("data:image/")) return normalized;
+      if (!/^https?:\/\//i.test(normalized)) return null;
+      const proxied = await proxyFetchImageAsDataUrl(proxyUrl, normalized);
+      const dataUrl = normalizeImageValue(proxied, apiBaseUrl);
+      return typeof dataUrl === "string" && dataUrl.startsWith("data:image/") ? dataUrl : null;
+    })
+  );
+  return Array.from(new Set(resolved.filter(Boolean)));
+}
+
+function appendImageToFormData(formData, fieldName, dataUrl, index = 0) {
+  const parsed = dataUrlToBytes(dataUrl);
+  if (!parsed) return false;
+  const blob = new Blob([parsed.bytes], { type: parsed.mime || "image/png" });
+  formData.append(fieldName, blob, `${fieldName}-${index + 1}.${parsed.ext || "png"}`);
+  return true;
+}
+
+async function callOpenAiImageEditAPI(proxyUrl, model, prompt, imageInputs, options = {}) {
+  const { signal, count = 1 } = options;
+  const apiPlatform = normalizeApiPlatform(options.apiPlatform);
+  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl, apiPlatform);
+  const apiKey = normalizeApiKey(options.apiKey);
+  const editableImages = await resolveEditImageDataUrls(proxyUrl, imageInputs, apiBaseUrl);
+  if (!editableImages.length) {
+    throw new Error("OpenAI 图像编辑需要至少 1 张可用输入图");
+  }
+
+  const formData = new FormData();
+  editableImages.forEach((image, index) => {
+    appendImageToFormData(formData, "image", image, index);
+  });
+  formData.append("model", model.id);
+  formData.append("prompt", prompt || "Generate a creative image");
+  formData.append("n", String(Math.max(1, Number(count) || 1)));
+
+  const data = await postFormDataWithRetry(proxyUrl, "/v1/images/edits", formData, {
+    signal,
+    maxAttempts: 4,
+    baseDelayMs: 1200,
+    apiBaseUrl,
+    apiKey,
+    apiPlatform,
+  });
+
+  return finalizeImagesApiResponse(proxyUrl, data, apiBaseUrl);
+}
+
+// 2. OpenAI Images / Seedream format (gpt-image-1, gpt-image-1.5, gpt-image-2, seedream)
 async function callImagesAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
   const { signal, count = 1 } = options;
   const apiPlatform = normalizeApiPlatform(options.apiPlatform);
@@ -3828,6 +3993,9 @@ async function callImagesAPI(proxyUrl, model, prompt, imageBase64, options = {})
   const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
   const primaryImage = imageInputs[0] || "";
   const isSeedream = model.provider === "ByteDance";
+  if (supportsOpenAiImageEdits(model) && imageInputs.length) {
+    return callOpenAiImageEditAPI(proxyUrl, model, prompt, imageInputs, options);
+  }
   const body = {
     model: model.id,
     prompt: prompt || "Generate a creative image",
@@ -3852,58 +4020,7 @@ async function callImagesAPI(proxyUrl, model, prompt, imageBase64, options = {})
     apiKey,
     apiPlatform,
   });
-
-  const images = [];
-  // OpenAI-style: { data: [ { b64_json, url } ] }
-  if (Array.isArray(data.data)) {
-    data.data.forEach((item) => {
-      const normalized =
-        normalizeImageValue(item?.url, apiBaseUrl) ||
-        normalizeImageValue(item?.b64_json, apiBaseUrl) ||
-        normalizeImageValue(item?.image_base64, apiBaseUrl) ||
-        normalizeImageValue(item?.base64, apiBaseUrl);
-      if (normalized) images.push(normalized);
-    });
-  }
-  // 某些实现可能直接返回 { image_base64: "...", url: "..." }
-  if (!images.length) {
-    const normalized = normalizeImageValue(data.image_base64, apiBaseUrl) || normalizeImageValue(data.url, apiBaseUrl);
-    if (normalized) images.push(normalized);
-  }
-  if (!images.length && Array.isArray(data.images)) {
-    data.images.forEach((item) => {
-      const normalized =
-        normalizeImageValue(typeof item === "string" ? item : null, apiBaseUrl) ||
-        normalizeImageValue(item?.url, apiBaseUrl) ||
-        normalizeImageValue(item?.b64_json, apiBaseUrl) ||
-        normalizeImageValue(item?.image_base64, apiBaseUrl) ||
-        normalizeImageValue(item?.base64, apiBaseUrl);
-      if (normalized) images.push(normalized);
-    });
-  }
-  if (!images.length && Array.isArray(data.result)) {
-    data.result.forEach((item) => {
-      const normalized =
-        normalizeImageValue(typeof item === "string" ? item : null, apiBaseUrl) ||
-        normalizeImageValue(item?.url, apiBaseUrl) ||
-        normalizeImageValue(item?.b64_json, apiBaseUrl) ||
-        normalizeImageValue(item?.image_base64, apiBaseUrl) ||
-        normalizeImageValue(item?.base64, apiBaseUrl);
-      if (normalized) images.push(normalized);
-    });
-  }
-  if (!images.length) {
-    extractImageCandidates(data, images, apiBaseUrl);
-  }
-
-  const deduped = Array.from(new Set(images));
-  const resolved = await Promise.all(deduped.map((u) => proxyFetchImageAsDataUrl(proxyUrl, u)));
-  const finalImages = resolved
-    .map((v) => normalizeImageValue(v, apiBaseUrl))
-    .filter(Boolean)
-    .map((v) => buildWorkerImageProxyUrl(proxyUrl, v) || v);
-
-  return finalImages;
+  return finalizeImagesApiResponse(proxyUrl, data, apiBaseUrl);
 }
 
 async function callBailianImageAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
@@ -6404,7 +6521,7 @@ function HelpPage() {
           lines: [
             "输入图支持一次多选上传。",
             "主输入框点击后会直接上传，`编辑` 会打开管理弹窗用于删除或新增图片。",
-            "对于支持图像编辑的模型（如 Qwen 图像模型），上传输入图后会自动走图生或编辑；不上传则继续走文生图。",
+            "对于支持图像编辑的模型（如 Qwen、GPT Image 1.5 / 2），上传输入图后会自动走图生或编辑；不上传则继续走文生图。",
             "在 `当前任务` 和 `历史记录` 中，点击输入图上的放大镜，可以在原位置展开大图。先点一下大图，再用滚轮缩放、拖拽平移，点击右上角缩小按钮即可恢复缩略图。",
             "在 `风格` 里，参考图使用独立的编辑弹窗。",
           ],
@@ -6485,7 +6602,7 @@ function HelpPage() {
           lines: [
             "Input images support multi-select uploads.",
             "The main input box uploads directly, while `Edit` opens a manager to add or remove images.",
-            "For models that support image editing, such as Qwen image models, uploading an input image automatically switches the request to image-to-image or edit mode; without an upload it stays text-to-image.",
+            "For models that support image editing, such as Qwen and GPT Image 1.5 / 2, uploading an input image automatically switches the request to image-to-image or edit mode; without an upload it stays text-to-image.",
             "In `Current Dialog` and `History Dialogs`, click the magnifier on the input image to expand it in place. Click the enlarged image first, then use the wheel to zoom, drag to pan, and click the corner collapse button to restore the thumbnail.",
             "In `Style`, reference images open their own editor modal.",
           ],
