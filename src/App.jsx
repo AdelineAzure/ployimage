@@ -9777,12 +9777,12 @@ export default function App() {
       delete controllersRef.current[key];
     }
     setTurns((prev) =>
-      prev.map((t) =>
-        t.id !== turnId
-          ? t
+      prev.map((turnItem) =>
+        turnItem.id !== turnId
+          ? turnItem
           : {
-              ...t,
-              results: t.results.map((r) =>
+              ...turnItem,
+              results: (Array.isArray(turnItem.results) ? turnItem.results : []).map((r) =>
                 isSameResultTask(r, modelId, promptKey) && r.status === "loading"
                   ? { ...r, status: "cancelled", error: t("status.cancelledByUser") }
                   : r
