@@ -2293,15 +2293,57 @@ function getNormalizedAspectRatio(width, height) {
   return Math.max(safeWidth / safeHeight, safeHeight / safeWidth);
 }
 
+const SPLIT_PACK_EMPTY_RATIO_THRESHOLD = 0.6;
+const SPLIT_PACK_MIN_FINAL_AREA_REDUCTION = 0.18;
+const SPLIT_PACK_MIN_EMPTY_RATIO_REDUCTION = 0.16;
+
+function getSplitClusterMemberBoxArea(items = []) {
+  return (Array.isArray(items) ? items : []).reduce((sum, item) => {
+    const bounds = getSplitItemBounds(item);
+    return sum + Math.max(1, bounds.width * bounds.height);
+  }, 0);
+}
+
+function getStandardAspectArea(width, height) {
+  const target = getStandardAspectCanvasSize(width, height);
+  return Math.max(1, target.width * target.height);
+}
+
+function getSparseSplitClusterPackMetrics(cluster) {
+  const items = Array.isArray(cluster?.items) ? cluster.items : [];
+  const feature = cluster?.feature || {};
+  const originalArea = getStandardAspectArea(feature.width, feature.height);
+  const memberBoxArea = Math.max(1, getSplitClusterMemberBoxArea(items));
+  const emptyRatio = clampUnit(1 - memberBoxArea / originalArea);
+  const packedLayout = buildPackedSplitLayout(items);
+  const packedArea = getStandardAspectArea(packedLayout.width, packedLayout.height);
+  const packedEmptyRatio = clampUnit(1 - memberBoxArea / packedArea);
+  return {
+    emptyRatio,
+    finalAreaReduction: clampUnit(1 - packedArea / originalArea),
+    emptyRatioReduction: Math.max(0, emptyRatio - packedEmptyRatio),
+  };
+}
+
 function shouldPackSplitCluster(cluster) {
   const count = Array.isArray(cluster?.items) ? cluster.items.length : 0;
-  if (count < 3) return false;
+  if (count < 2) return false;
   const feature = cluster?.feature || {};
   const normalizedAspect = getNormalizedAspectRatio(feature.width, feature.height);
   const wideOrTall = normalizedAspect > 16 / 9;
   const extremelyWideOrTall = normalizedAspect > 5;
   if (count >= 6 && wideOrTall && !cluster.protected) return true;
   if (count >= 3 && extremelyWideOrTall) return true;
+  const sparseMetrics = getSparseSplitClusterPackMetrics(cluster);
+  if (
+    sparseMetrics.emptyRatio >= SPLIT_PACK_EMPTY_RATIO_THRESHOLD &&
+    (
+      sparseMetrics.finalAreaReduction >= SPLIT_PACK_MIN_FINAL_AREA_REDUCTION ||
+      sparseMetrics.emptyRatioReduction >= SPLIT_PACK_MIN_EMPTY_RATIO_REDUCTION
+    )
+  ) {
+    return true;
+  }
   return false;
 }
 
