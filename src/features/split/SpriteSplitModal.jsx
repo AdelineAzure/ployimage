@@ -47,6 +47,7 @@ function formatSplitDuration(ms) {
 export function SpriteSplitModal({
   show,
   onClose,
+  embedded = false,
   sourceImage,
   processImage,
   clusterProcessImage = "",
@@ -138,9 +139,11 @@ export function SpriteSplitModal({
     : [
         { title: t("split.process"), src: processImage, alt: t("split.process") },
       ];
-  return (
-    <div style={S.modalOverlay} onClick={onClose}>
-      <div style={S.splitModal} onClick={(event) => event.stopPropagation()}>
+  const content = (
+      <div
+        style={{ ...S.splitModal, ...(embedded ? S.splitPagePanel : null) }}
+        onClick={embedded ? undefined : (event) => event.stopPropagation()}
+      >
         <div style={S.splitModalHeader}>
           <div style={S.splitModalTitleRow}>
             <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>{t("split.title")}</h2>
@@ -171,7 +174,7 @@ export function SpriteSplitModal({
           </div>
           <div style={S.splitHeaderRight}>
             <div style={S.splitTimingText}>{timingText}</div>
-            <button onClick={onClose} style={S.closeBtn}>✕</button>
+            {!embedded && <button onClick={onClose} style={S.closeBtn}>✕</button>}
           </div>
         </div>
         <div style={S.splitMainGrid}>
@@ -529,6 +532,10 @@ export function SpriteSplitModal({
           }}
         />
       </div>
+  );
+  return embedded ? content : (
+    <div style={S.modalOverlay} onClick={onClose}>
+      {content}
     </div>
   );
 }

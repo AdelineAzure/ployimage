@@ -268,6 +268,7 @@ export const S = {
   atlasModalPreview: { marginTop: 16, borderRadius: 12, overflow: "hidden", border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.03)" },
   atlasModalPreviewImg: { width: "100%", display: "block", objectFit: "contain", background: "#0b0b0d" },
   splitModal: { width: "min(1220px, 96vw)", maxHeight: "90vh", overflow: "auto", background: "#161618", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 16, padding: 18, display: "grid", gap: 12 },
+  splitPagePanel: { width: "100%", maxHeight: "none", overflow: "visible", boxSizing: "border-box" },
   splitModalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 },
   splitModalTitleRow: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", minWidth: 0 },
   splitHeaderRight: { display: "flex", alignItems: "center", gap: 10, flexShrink: 0 },

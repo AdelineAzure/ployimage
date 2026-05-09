@@ -1433,7 +1433,7 @@ export default function App() {
         index: 1,
       },
       {
-        openModal: true,
+        openModal: activePage !== "split",
         renderMode: splitRenderMode,
         shapeMode: splitShapeMode,
         groupMode: splitGroupMode,
@@ -1442,7 +1442,7 @@ export default function App() {
         resetUndo: true,
       }
     );
-  }, [runSplitForImage, splitRenderMode, splitShapeMode, splitGroupMode, splitEnhanceEnabled, splitUseRemovedSource]);
+  }, [activePage, runSplitForImage, splitRenderMode, splitShapeMode, splitGroupMode, splitEnhanceEnabled, splitUseRemovedSource]);
 
   const toggleSplitSourceMode = useCallback((useRemovedSource) => {
     const nextUseRemoved = useRemovedSource === true;
@@ -2524,6 +2524,43 @@ export default function App() {
     };
   }, [folderSupported, handlePickHistoryFolder, historyDirHandle]);
 
+  const splitConsoleProps = {
+    sourceImage: splitContext.originalImage || splitContext.sourceImage,
+    processImage: splitContext.processImage,
+    clusterProcessImage: splitContext.clusterProcessImage,
+    absorbedProcessImage: splitContext.absorbedProcessImage,
+    modelName: splitContext.modelName,
+    promptText: splitContext.promptText,
+    splitItems: splitContext.items,
+    baseItemCount: Array.isArray(splitContext.baseItems) && splitContext.baseItems.length ? splitContext.baseItems.length : splitContext.items.length,
+    splitOnRemoved: splitUseRemovedSource,
+    selectedItemIds: splitSelectedItemIds,
+    enhanceEnabled: splitEnhanceEnabled,
+    renderMode: splitRenderMode,
+    shapeMode: splitShapeMode,
+    groupMode: splitGroupMode,
+    canUndo: splitUndoStack.length > 0,
+    busy: splitBusy,
+    enhancing: splitEnhancing,
+    exporting: splitExporting,
+    timing: splitTiming,
+    statusText: splitStatusText,
+    statusTone: splitStatusTone,
+    onToggleSplitSource: toggleSplitSourceMode,
+    onResplit: reSplitCurrentImage,
+    onSetRenderMode: setSplitRenderModeMode,
+    onSetShapeMode: setSplitShapeModeMode,
+    onSetGroupMode: setSplitGroupModeMode,
+    onSetEnhanceEnabled: setSplitEnhanceMode,
+    onToggleSelectItem: toggleSplitItemSelected,
+    onMergeSelectedItems: mergeSelectedSplitItems,
+    onDeleteItem: deleteSplitItem,
+    onUndoDelete: undoDeleteSplitItem,
+    onExport: exportSplitItems,
+    onPreview: openPreviewImage,
+    onUploadImageDataUrl: uploadSplitImageFromModal,
+  };
+
   return (
     <I18nContext.Provider value={{ uiLanguage, t }}>
     <div style={{ ...S.root, fontWeight: uiLanguage === "zh" ? 360 : undefined }}>
@@ -2567,6 +2604,13 @@ export default function App() {
               }}
             >
               {t("nav.style")}
+            </button>
+            <button
+              type="button"
+              style={{ ...S.modeTab, ...(activePage === "split" ? S.modeTabActive : null) }}
+              onClick={() => setActivePage("split")}
+            >
+              {t("nav.split")}
             </button>
             <button
               type="button"
@@ -2616,7 +2660,13 @@ export default function App() {
         </div>
       </header>
 
-      <main style={activePage === "canvas" ? { ...S.main, maxWidth: "min(1760px, calc(100vw - 28px))", padding: "18px 14px 44px" } : S.main}>
+      <main style={
+        activePage === "canvas"
+          ? { ...S.main, maxWidth: "min(1760px, calc(100vw - 28px))", padding: "18px 14px 44px" }
+          : activePage === "split"
+            ? { ...S.main, maxWidth: "min(1280px, calc(100vw - 28px))", padding: "18px 14px 44px" }
+            : S.main
+      }>
         <div style={activePage === "help" ? undefined : { display: "none" }}>
           <HelpPage />
         </div>
@@ -2637,6 +2687,14 @@ export default function App() {
             proxyUrl={proxyUrl}
             aspectRatio={aspectRatio}
             onOpenSplitNode={openSplitModalForCanvasNode}
+          />
+        </div>
+        <div style={activePage === "split" ? undefined : { display: "none" }}>
+          <SpriteSplitModal
+            show={activePage === "split"}
+            embedded
+            onClose={() => setActivePage("workspace")}
+            {...splitConsoleProps}
           />
         </div>
         <div style={activePage === "workspace" ? undefined : { display: "none" }}>
@@ -3265,46 +3323,13 @@ export default function App() {
         onPreview={openPreviewImage}
       />
       <SpriteSplitModal
-        show={showSplitModal}
+        show={showSplitModal && activePage !== "split"}
         onClose={() => {
           setShowSplitModal(false);
           setSplitStatusText("");
           setSplitStatusTone("info");
         }}
-        sourceImage={splitContext.originalImage || splitContext.sourceImage}
-        processImage={splitContext.processImage}
-        clusterProcessImage={splitContext.clusterProcessImage}
-        absorbedProcessImage={splitContext.absorbedProcessImage}
-        modelName={splitContext.modelName}
-        promptText={splitContext.promptText}
-        splitItems={splitContext.items}
-        baseItemCount={Array.isArray(splitContext.baseItems) && splitContext.baseItems.length ? splitContext.baseItems.length : splitContext.items.length}
-        splitOnRemoved={splitUseRemovedSource}
-        selectedItemIds={splitSelectedItemIds}
-        enhanceEnabled={splitEnhanceEnabled}
-        renderMode={splitRenderMode}
-        shapeMode={splitShapeMode}
-        groupMode={splitGroupMode}
-        canUndo={splitUndoStack.length > 0}
-        busy={splitBusy}
-        enhancing={splitEnhancing}
-        exporting={splitExporting}
-        timing={splitTiming}
-        statusText={splitStatusText}
-        statusTone={splitStatusTone}
-        onToggleSplitSource={toggleSplitSourceMode}
-        onResplit={reSplitCurrentImage}
-        onSetRenderMode={setSplitRenderModeMode}
-        onSetShapeMode={setSplitShapeModeMode}
-        onSetGroupMode={setSplitGroupModeMode}
-        onSetEnhanceEnabled={setSplitEnhanceMode}
-        onToggleSelectItem={toggleSplitItemSelected}
-        onMergeSelectedItems={mergeSelectedSplitItems}
-        onDeleteItem={deleteSplitItem}
-        onUndoDelete={undoDeleteSplitItem}
-        onExport={exportSplitItems}
-        onPreview={openPreviewImage}
-        onUploadImageDataUrl={uploadSplitImageFromModal}
+        {...splitConsoleProps}
       />
       <ImagePreviewModal src={previewImage} onClose={() => setPreviewImage(null)} />
 
