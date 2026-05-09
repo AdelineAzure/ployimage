@@ -30,6 +30,7 @@ export function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placehol
   const internalValueRef = useRef(typeof value === "string" ? value : "");
   const activeChipRef = useRef(null);
   const selectionSnapshotRef = useRef(null);
+  const composingRef = useRef(false);
   const zeroWidth = "\u200b";
 
   const setChipEditingState = useCallback((chip, editing) => {
@@ -324,7 +325,12 @@ export function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placehol
     }
     if (options.selectAll) {
       requestAnimationFrame(() => {
-        restoreSelectionSnapshot({ start: 0, end: internalValueRef.current.length });
+        const selection = window.getSelection();
+        if (!selection || !rootRef.current) return;
+        const range = document.createRange();
+        range.selectNodeContents(rootRef.current);
+        selection.removeAllRanges();
+        selection.addRange(range);
       });
       return;
     }
@@ -420,6 +426,17 @@ export function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placehol
     const selection = window.getSelection();
     const range = selection && selection.rangeCount ? selection.getRangeAt(0) : null;
 
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "a") {
+      if (!root || !selection) return;
+      event.preventDefault();
+      deactivateAllChips();
+      const nextRange = document.createRange();
+      nextRange.selectNodeContents(root);
+      selection?.removeAllRanges();
+      selection?.addRange(nextRange);
+      return;
+    }
+
     if (root && range && selection && selection.isCollapsed) {
       const startNode = range.startContainer.nodeType === Node.ELEMENT_NODE
         ? range.startContainer
@@ -459,14 +476,14 @@ export function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placehol
     }
 
     onKeyDown?.(event);
-  }, [findChipBeforeCaret, moveCaretInside, onKeyDown, syncValueFromDom, zeroWidth]);
+  }, [deactivateAllChips, findChipBeforeCaret, moveCaretInside, onKeyDown, syncValueFromDom, zeroWidth]);
 
   useEffect(() => {
+    const normalized = typeof value === "string" ? value : "";
     if (selfUpdateRef.current) {
       selfUpdateRef.current = false;
-      return;
+      if (normalized === internalValueRef.current) return;
     }
-    const normalized = typeof value === "string" ? value : "";
     if (normalized === internalValueRef.current) return;
     const snapshot = captureSelectionSnapshot();
     internalValueRef.current = normalized;
@@ -521,7 +538,17 @@ export function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placehol
     };
   }, [editorRef, focusEditor, insertPlaceholderAtCaret]);
 
-  const handleInput = useCallback(() => {
+  const handleInput = useCallback((event) => {
+    if (composingRef.current || event?.nativeEvent?.isComposing) return;
+    syncValueFromDom();
+  }, [syncValueFromDom]);
+
+  const handleCompositionStart = useCallback(() => {
+    composingRef.current = true;
+  }, []);
+
+  const handleCompositionEnd = useCallback(() => {
+    composingRef.current = false;
     syncValueFromDom();
   }, [syncValueFromDom]);
 
@@ -565,6 +592,8 @@ export function TokenPromptInput({ value, onChange, onKeyDown, onFocus, placehol
       contentEditable
       suppressContentEditableWarning
       onInput={handleInput}
+      onCompositionStart={handleCompositionStart}
+      onCompositionEnd={handleCompositionEnd}
       onPaste={handlePaste}
       onCopy={handleCopy}
       onCut={handleCut}
