@@ -19,6 +19,8 @@
 //   - /v1/images/generations
 //   - /v1/images/edits
 //   - /api/v1/services/aigc/multimodal-generation/generation
+//   - /api/v1/services/aigc/image2image/image-synthesis
+//   - /api/v1/tasks/{task_id}
 //   - /v1beta/models/...:generateContent
 //   - /mj/...
 //
@@ -75,16 +77,18 @@ export default {
       if (!upstreamBase) {
         return json({ error: "Invalid X-Upstream-Base" }, 400);
       }
-      // Midjourney task polling uses GET (e.g. /mj/task/{id}/fetch).
-      // Most other DeerAPI generation endpoints use POST.
+      // Async task polling uses GET (e.g. DashScope /api/v1/tasks/{id}).
+      // Most other generation endpoints use POST.
       const isAllowedGetPath =
         /^\/mj\/task\/[^/]+\/fetch(?:\?.*)?$/.test(targetPath) ||
-        /^\/replicate\/v1\/predictions\/[^/]+(?:\?.*)?$/.test(targetPath);
+        /^\/replicate\/v1\/predictions\/[^/]+(?:\?.*)?$/.test(targetPath) ||
+        /^\/api\/v1\/tasks\/[^/?]+(?:\?.*)?$/.test(targetPath);
       if (method !== "POST" && !(method === "GET" && isAllowedGetPath)) {
         return json({ error: "Method not allowed" }, 405);
       }
 
       const incomingContentType = request.headers.get("Content-Type") || "";
+      const dashScopeAsync = request.headers.get("X-DashScope-Async") || "";
       const body = method === "POST" ? await request.arrayBuffer() : undefined;
 
       const apiPlatform = normalizeApiPlatform(
@@ -104,6 +108,7 @@ export default {
       const fallbackAuth = prefersBearer ? apiKey : `Bearer ${apiKey}`;
       const baseHeaders = {
         ...(incomingContentType ? { "Content-Type": incomingContentType } : {}),
+        ...(dashScopeAsync ? { "X-DashScope-Async": dashScopeAsync } : {}),
         "X-Api-Key": apiKey,
         "X-Goog-Api-Key": apiKey,
       };
@@ -146,7 +151,7 @@ function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-Target-Path, X-Image-Url, X-Upstream-Base, X-Api-Key, X-Api-Platform",
+    "Access-Control-Allow-Headers": "Content-Type, X-Target-Path, X-Image-Url, X-Upstream-Base, X-Api-Key, X-Api-Platform, X-DashScope-Async",
   };
 }
 

@@ -674,6 +674,7 @@ export async function postJsonWithRetry(proxyUrl, targetPath, body, options = {}
       maxAttempts = 3,
       baseDelayMs = 900,
       apiPlatform = DEFAULT_API_PLATFORM,
+      extraHeaders = {},
   } = options;
 
   let lastError = null;
@@ -682,7 +683,7 @@ export async function postJsonWithRetry(proxyUrl, targetPath, body, options = {}
     try {
       resp = await fetch(proxyUrl, {
         method: "POST",
-        headers: buildProxyHeaders(targetPath, options.apiBaseUrl, options.apiKey, { "Content-Type": "application/json" }, apiPlatform),
+        headers: buildProxyHeaders(targetPath, options.apiBaseUrl, options.apiKey, { ...extraHeaders, "Content-Type": "application/json" }, apiPlatform),
         body: JSON.stringify(body),
         signal,
       });
@@ -2636,7 +2637,7 @@ export async function buildClusterProcessPreview(sourceImage, baseProcessImage, 
   const scaleY = height / sourceHeight;
   const strokeWidth = Math.max(2, Math.min(8, Math.round(Math.min(width, height) / 170) || 2));
   ctx.save();
-  ctx.strokeStyle = "rgba(34,197,94,0.98)";
+  ctx.strokeStyle = options.strokeStyle || "rgba(34,197,94,0.98)";
   ctx.lineWidth = strokeWidth;
   ctx.lineJoin = "round";
   ctx.shadowColor = "rgba(2,6,23,0.9)";
@@ -3365,6 +3366,155 @@ export async function saveTurnToLocalFolder(rootHandle, turn) {
   await writeTextFile(turnDir, "prompt.json", JSON.stringify(manifest, null, 2));
 }
 
+const SPLIT_HISTORY_FOLDER_NAME = "split-history";
+
+async function writeDataUrlImageFile(dirHandle, fileNameBase, dataUrl) {
+  const data = typeof dataUrl === "string" ? dataUrlToBytes(dataUrl) : null;
+  if (!data) return "";
+  const fileName = `${fileNameBase}.${data.ext}`;
+  await writeBinaryFile(dirHandle, fileName, data.bytes);
+  return fileName;
+}
+
+async function readSplitHistoryImageFile(dirHandle, fileName) {
+  if (typeof fileName !== "string" || !fileName) return "";
+  try {
+    const handle = await dirHandle.getFileHandle(fileName);
+    const file = await handle.getFile();
+    const dataUrl = await fileToDataUrlFromFile(file);
+    return typeof dataUrl === "string" ? dataUrl : "";
+  } catch {
+    return "";
+  }
+}
+
+async function writeSplitHistoryItemGroup(dirHandle, prefix, items = []) {
+  const sourceItems = Array.isArray(items) ? items : [];
+  const manifestItems = [];
+  for (let index = 0; index < Math.min(sourceItems.length, MAX_SPLIT_EXPORT_ITEMS); index += 1) {
+    const item = sourceItems[index];
+    const file = await writeDataUrlImageFile(dirHandle, `${prefix}_${String(index + 1).padStart(3, "0")}`, item?.image || item?.edgeImage || "");
+    if (!file) continue;
+    manifestItems.push({
+      index: index + 1,
+      file,
+      x: Number(item?.x) || 0,
+      y: Number(item?.y) || 0,
+      width: Number(item?.width) || 0,
+      height: Number(item?.height) || 0,
+      area: Number(item?.area) || 0,
+      clusterCount: Number(item?.clusterCount) || 1,
+      clusterMemberIndexes: Array.isArray(item?.clusterMemberIndexes) ? item.clusterMemberIndexes : [],
+      outputAspectRatio: typeof item?.outputAspectRatio === "string" ? item.outputAspectRatio : "",
+      layoutMode: typeof item?.layoutMode === "string" ? item.layoutMode : "",
+    });
+  }
+  return manifestItems;
+}
+
+async function readSplitHistoryItemGroup(dirHandle, items = []) {
+  const output = [];
+  const metaItems = Array.isArray(items) ? items : [];
+  for (const item of metaItems) {
+    const image = await readSplitHistoryImageFile(dirHandle, item.file);
+    if (!image) continue;
+    output.push({
+      ...item,
+      image,
+    });
+  }
+  return output;
+}
+
+export async function saveSplitHistoryToLocalFolder(rootHandle, record = {}) {
+  const createdAt = Number(record.createdAt) || Date.now();
+  const stem = safeName(record.fileStem || "image");
+  const folderName = record.folderName || `split-${stem}-${createdAt}`;
+  const splitRoot = await rootHandle.getDirectoryHandle(SPLIT_HISTORY_FOLDER_NAME, { create: true });
+  const splitDir = await splitRoot.getDirectoryHandle(folderName, { create: true });
+  const sourceFile = await writeDataUrlImageFile(splitDir, "original", record.originalImage || record.sourceImage || "");
+  const processFile = await writeDataUrlImageFile(splitDir, "process", record.processImage || "");
+  const clusterProcessFile = await writeDataUrlImageFile(splitDir, "cluster_process", record.clusterProcessImage || "");
+  const absorbedProcessFile = await writeDataUrlImageFile(splitDir, "absorbed_process", record.absorbedProcessImage || "");
+  const sourceItems = Array.isArray(record.items) ? record.items : [];
+  const sourceSplitItems = Array.isArray(record.splitItems) ? record.splitItems : sourceItems;
+  const sourceClusterItems = Array.isArray(record.clusterItems) ? record.clusterItems : sourceItems;
+  const sourceUpscaledItems = Array.isArray(record.upscaledItems) ? record.upscaledItems : [];
+  const manifestItems = await writeSplitHistoryItemGroup(splitDir, "subject", sourceItems);
+  const splitItems = await writeSplitHistoryItemGroup(splitDir, "split", sourceSplitItems);
+  const clusterItems = await writeSplitHistoryItemGroup(splitDir, "cluster", sourceClusterItems);
+  const upscaledItems = [];
+  for (let index = 0; index < Math.min(sourceUpscaledItems.length, MAX_SPLIT_EXPORT_ITEMS); index += 1) {
+    const item = sourceUpscaledItems[index];
+    const beforeFile = await writeDataUrlImageFile(splitDir, `upscale_before_${String(index + 1).padStart(3, "0")}`, item?.beforeImage || item?.before || "");
+    const afterFile = await writeDataUrlImageFile(splitDir, `upscale_after_${String(index + 1).padStart(3, "0")}`, item?.afterImage || item?.after || "");
+    if (!beforeFile && !afterFile) continue;
+    upscaledItems.push({
+      index: index + 1,
+      beforeFile,
+      afterFile,
+      width: Number(item?.width) || 0,
+      height: Number(item?.height) || 0,
+    });
+  }
+  const manifest = {
+    version: 1,
+    id: record.id || folderName,
+    createdAt,
+    fileStem: record.fileStem || stem,
+    modelName: record.modelName || "",
+    promptText: record.promptText || "",
+    groupMode: record.groupMode || DEFAULT_SPLIT_GROUP_MODE,
+    splitSource: record.splitSource || "original",
+    renderMode: record.renderMode || DEFAULT_SPLIT_RENDER_MODE,
+    shapeMode: record.shapeMode || DEFAULT_SPLIT_SHAPE_MODE,
+    backgroundColor: record.backgroundColor || DEFAULT_SPLIT_BG_COLOR,
+    enhanced: record.enhanced !== false,
+    timing: record.timing || {},
+    source: {
+      width: Number(record.width) || 0,
+      height: Number(record.height) || 0,
+      file: sourceFile,
+    },
+    processFile,
+    clusterProcessFile,
+    absorbedProcessFile,
+    itemCount: manifestItems.length,
+    items: manifestItems,
+    splitItems,
+    clusterItems,
+    upscaledItems,
+  };
+  await writeTextFile(splitDir, "manifest.json", JSON.stringify(manifest, null, 2));
+  return {
+    ...record,
+    ...manifest,
+    folderName,
+    folderSyncedAt: Date.now(),
+    originalImage: record.originalImage || record.sourceImage || "",
+    processImage: record.processImage || "",
+    clusterProcessImage: record.clusterProcessImage || "",
+    absorbedProcessImage: record.absorbedProcessImage || "",
+    items: manifestItems.map((item, index) => ({
+      ...item,
+      image: sourceItems[index]?.image || "",
+    })),
+    splitItems: splitItems.map((item, index) => ({
+      ...item,
+      image: sourceSplitItems[index]?.image || sourceSplitItems[index]?.edgeImage || "",
+    })),
+    clusterItems: clusterItems.map((item, index) => ({
+      ...item,
+      image: sourceClusterItems[index]?.image || "",
+    })),
+    upscaledItems: upscaledItems.map((item, index) => ({
+      ...item,
+      beforeImage: sourceUpscaledItems[index]?.beforeImage || sourceUpscaledItems[index]?.before || "",
+      afterImage: sourceUpscaledItems[index]?.afterImage || sourceUpscaledItems[index]?.after || "",
+    })),
+  };
+}
+
 export async function fileToDataUrlFromFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -3372,6 +3522,183 @@ export async function fileToDataUrlFromFile(file) {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+export async function loadSplitHistoryFromLocalFolder(rootHandle) {
+  const records = [];
+  let splitRoot = null;
+  try {
+    splitRoot = await rootHandle.getDirectoryHandle(SPLIT_HISTORY_FOLDER_NAME);
+  } catch {
+    return [];
+  }
+  for await (const [entryName, entryHandle] of splitRoot.entries()) {
+    if (entryHandle.kind !== "directory") continue;
+    try {
+      const manifestHandle = await entryHandle.getFileHandle("manifest.json");
+      const manifestFile = await manifestHandle.getFile();
+      const meta = JSON.parse(await manifestFile.text());
+      const items = await readSplitHistoryItemGroup(entryHandle, meta.items);
+      const splitItems = await readSplitHistoryItemGroup(entryHandle, meta.splitItems || meta.items);
+      const clusterItems = await readSplitHistoryItemGroup(entryHandle, meta.clusterItems || meta.items);
+      const upscaledItems = [];
+      const metaUpscaledItems = Array.isArray(meta.upscaledItems) ? meta.upscaledItems : [];
+      for (const item of metaUpscaledItems) {
+        const beforeImage = await readSplitHistoryImageFile(entryHandle, item.beforeFile);
+        const afterImage = await readSplitHistoryImageFile(entryHandle, item.afterFile);
+        if (!beforeImage && !afterImage) continue;
+        upscaledItems.push({
+          ...item,
+          beforeImage,
+          afterImage,
+        });
+      }
+      const originalImage = await readSplitHistoryImageFile(entryHandle, meta?.source?.file);
+      const processImage = await readSplitHistoryImageFile(entryHandle, meta.processFile);
+      const clusterProcessImage = await readSplitHistoryImageFile(entryHandle, meta.clusterProcessFile);
+      const absorbedProcessImage = await readSplitHistoryImageFile(entryHandle, meta.absorbedProcessFile);
+      records.push({
+        id: meta.id || entryName,
+        folderName: entryName,
+        createdAt: Number(meta.createdAt) || 0,
+        fileStem: meta.fileStem || entryName,
+        modelName: meta.modelName || "",
+        promptText: meta.promptText || "",
+        groupMode: normalizeSplitGroupMode(meta.groupMode),
+        splitSource: meta.splitSource || "original",
+        renderMode: normalizeSplitRenderMode(meta.renderMode),
+        shapeMode: normalizeSplitShapeMode(meta.shapeMode),
+        backgroundColor: meta.backgroundColor || DEFAULT_SPLIT_BG_COLOR,
+        enhanced: meta.enhanced !== false,
+        timing: meta.timing || {},
+        width: Number(meta?.source?.width) || 0,
+        height: Number(meta?.source?.height) || 0,
+        originalImage,
+        processImage,
+        clusterProcessImage,
+        absorbedProcessImage,
+        itemCount: Number(meta.itemCount) || items.length,
+        items,
+        splitItems,
+        clusterItems,
+        upscaledItems,
+        folderSyncedAt: Date.now(),
+      });
+    } catch {
+      // Ignore malformed split history entries.
+    }
+  }
+  return records.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+}
+
+async function prepareWan21BaseImage(sourceDataUrl) {
+  const image = await loadImageElement(sourceDataUrl);
+  const sourceWidth = Math.max(1, image.naturalWidth || image.width || 1);
+  const sourceHeight = Math.max(1, image.naturalHeight || image.height || 1);
+  const minSide = Math.min(sourceWidth, sourceHeight);
+  const maxSide = Math.max(sourceWidth, sourceHeight);
+  let scale = minSide < 512 ? 512 / minSide : 1;
+  if (maxSide * scale > 4096) scale = 4096 / maxSide;
+  const drawWidth = Math.max(1, Math.min(4096, Math.round(sourceWidth * scale)));
+  const drawHeight = Math.max(1, Math.min(4096, Math.round(sourceHeight * scale)));
+  const targetWidth = Math.max(512, drawWidth);
+  const targetHeight = Math.max(512, drawHeight);
+  if (targetWidth === sourceWidth && targetHeight === sourceHeight && drawWidth === sourceWidth && drawHeight === sourceHeight) {
+    return {
+      dataUrl: sourceDataUrl,
+      width: sourceWidth,
+      height: sourceHeight,
+    };
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    return {
+      dataUrl: sourceDataUrl,
+      width: sourceWidth,
+      height: sourceHeight,
+    };
+  }
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(image, Math.floor((targetWidth - drawWidth) / 2), Math.floor((targetHeight - drawHeight) / 2), drawWidth, drawHeight);
+  return {
+    dataUrl: canvas.toDataURL("image/png"),
+    width: targetWidth,
+    height: targetHeight,
+  };
+}
+
+export async function callWan21ImageSuperResolution(proxyUrl, imageDataUrl, options = {}) {
+  const { signal } = options;
+  const apiPlatform = "bailian";
+  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl, apiPlatform);
+  const apiKey = normalizeApiKey(options.apiKey);
+  const prepared = await prepareWan21BaseImage(imageDataUrl);
+  const longSide = Math.max(prepared.width, prepared.height);
+  const upscaleFactor = Math.max(1, Math.min(4, Number(options.upscaleFactor) || Math.ceil(1024 / Math.max(1, longSide))));
+  const body = {
+    model: "wanx2.1-imageedit",
+    input: {
+      function: "super_resolution",
+      prompt: "图像超分。",
+      base_image_url: prepared.dataUrl,
+    },
+    parameters: {
+      upscale_factor: upscaleFactor,
+      n: 1,
+      watermark: false,
+    },
+  };
+  const submitData = await postJsonWithRetry(proxyUrl, "/api/v1/services/aigc/image2image/image-synthesis", body, {
+    signal,
+    maxAttempts: 2,
+    baseDelayMs: 1200,
+    apiBaseUrl,
+    apiKey,
+    apiPlatform,
+    extraHeaders: { "X-DashScope-Async": "enable" },
+  });
+  const taskId = submitData?.output?.task_id;
+  if (!taskId) {
+    const message = submitData?.message || submitData?.output?.message || "百炼超分任务创建失败";
+    throw new Error(message);
+  }
+  let lastData = null;
+  for (let attempt = 0; attempt < 28; attempt += 1) {
+    await sleep(attempt < 2 ? 1200 : 1800, signal);
+    const resp = await fetch(proxyUrl, {
+      method: "GET",
+      headers: buildProxyHeaders(`/api/v1/tasks/${encodeURIComponent(taskId)}`, apiBaseUrl, apiKey, {}, apiPlatform),
+      signal,
+    });
+    lastData = await readProxyResponse(resp);
+    if (!resp.ok) {
+      throw new Error(`API ${resp.status}: ${JSON.stringify(lastData).slice(0, 300)}`);
+    }
+    const status = String(lastData?.output?.task_status || "").toUpperCase();
+    if (status === "SUCCEEDED") {
+      const images = [];
+      const results = Array.isArray(lastData?.output?.results) ? lastData.output.results : [];
+      results.forEach((item) => {
+        const normalized = normalizeImageValue(item?.url || item?.image || item?.image_url || "", apiBaseUrl);
+        if (normalized) images.push(normalized);
+      });
+      if (!images.length) extractImageCandidates(lastData, images, apiBaseUrl);
+      const first = images[0] ? await proxyFetchImageAsDataUrl(proxyUrl, images[0]) : "";
+      const normalized = normalizeImageValue(first, apiBaseUrl) || normalizeImageValue(images[0], apiBaseUrl);
+      if (!normalized) throw new Error("百炼超分未返回可用图片");
+      return buildWorkerImageProxyUrl(proxyUrl, normalized) || normalized;
+    }
+    if (status === "FAILED" || status === "CANCELED" || status === "UNKNOWN") {
+      const code = lastData?.output?.code || "";
+      const message = lastData?.output?.message || `百炼超分任务失败: ${status}`;
+      throw new Error(code ? `${code}: ${message}` : message);
+    }
+  }
+  throw new Error(`百炼超分任务未完成: ${lastData?.output?.task_status || "timeout"}`);
 }
 
 export async function loadTurnsFromLocalFolder(rootHandle) {

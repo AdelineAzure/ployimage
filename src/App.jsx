@@ -213,7 +213,10 @@ const {
   writeTextFile,
   writeBinaryFile,
   saveTurnToLocalFolder,
+  saveSplitHistoryToLocalFolder,
   fileToDataUrlFromFile,
+  loadSplitHistoryFromLocalFolder,
+  callWan21ImageSuperResolution,
   loadTurnsFromLocalFolder,
   loadTemplatesFromLocalFolder,
   saveTemplatesToLocalFolder,
@@ -324,13 +327,16 @@ export default function App() {
   const [splitUseRemovedSource, setSplitUseRemovedSource] = useState(false);
   const [splitRenderMode, setSplitRenderMode] = useState(DEFAULT_SPLIT_RENDER_MODE);
   const [splitShapeMode, setSplitShapeMode] = useState(DEFAULT_SPLIT_SHAPE_MODE);
-  const [splitGroupMode, setSplitGroupMode] = useState(DEFAULT_SPLIT_GROUP_MODE);
+  const [splitGroupMode, setSplitGroupMode] = useState("cluster");
   const [splitBackgroundColor, setSplitBackgroundColor] = useState(DEFAULT_SPLIT_BG_COLOR);
   const [splitSelectedItemIds, setSplitSelectedItemIds] = useState(new Set());
   const [splitUndoStack, setSplitUndoStack] = useState([]);
   const [splitStatusText, setSplitStatusText] = useState("");
   const [splitStatusTone, setSplitStatusTone] = useState("info");
   const [splitTiming, setSplitTiming] = useState({ splitMs: null, clusterMs: null });
+  const [splitHistoryRecords, setSplitHistoryRecords] = useState([]);
+  const [splitHistorySaving, setSplitHistorySaving] = useState(false);
+  const [splitHistoryUpscalingIds, setSplitHistoryUpscalingIds] = useState(new Set());
   const [splitContext, setSplitContext] = useState({
     key: "",
     image: "",
@@ -368,6 +374,9 @@ export default function App() {
   const seqRef = useRef(1);
   const isPickingHistoryFolderRef = useRef(false);
   const hasAutoPromptedHistoryFolderRef = useRef(false);
+  const splitHistoryAutoSavedNonceRef = useRef(0);
+  const splitHistoryAutoSavingNonceRef = useRef(0);
+  const [splitHistoryAutoSaveNonce, setSplitHistoryAutoSaveNonce] = useState(0);
   const t = useCallback((key, params) => translateUiText(uiLanguage, key, params), [uiLanguage]);
 
   const { isProcessing, cancelModelTask, abortTurnTasks } = useTaskQueue({
@@ -1257,6 +1266,7 @@ export default function App() {
         setSplitStatusTone("info");
         setSplitStatusText(t("split.noSubjects"));
       }
+      setSplitHistoryAutoSaveNonce((prev) => prev + 1);
     } catch (err) {
       setSplitStatusTone("error");
       setSplitStatusText(
@@ -1318,6 +1328,7 @@ export default function App() {
           nextAbsorbedProcessImage = await buildClusterProcessPreview(sourceImage, processBaseImage, absorbedStageItems, {
             width: splitContext.width,
             height: splitContext.height,
+            strokeStyle: "rgba(250,204,21,0.98)",
           });
           nextProcessImage = nextAbsorbedProcessImage || nextClusterProcessImage;
         } else {
@@ -1522,6 +1533,7 @@ export default function App() {
           ? t("split.clustered", { count: nextItems.length, sourceCount: baseItems.length })
           : t("split.count", { count: nextItems.length })
       );
+      setSplitHistoryAutoSaveNonce((prev) => prev + 1);
     } catch (err) {
       setSplitStatusTone("error");
       setSplitStatusText(
@@ -1916,6 +1928,202 @@ export default function App() {
     }
   }, [splitContext, splitUseRemovedSource, splitGroupMode, splitRenderMode, splitShapeMode, splitBackgroundColor, splitEnhanceEnabled, t]);
 
+  const buildCurrentSplitHistoryRecord = useCallback((createdAt = Date.now()) => {
+    const items = Array.isArray(splitContext.items) ? splitContext.items : [];
+    if (!items.length) return null;
+    return {
+      id: `split-history-${createdAt}`,
+      createdAt,
+      fileStem: safeName(splitContext.fileStem || "image"),
+      modelName: splitContext.modelName || "",
+      promptText: splitContext.promptText || "",
+      originalImage: splitContext.originalImage || splitContext.sourceImage || "",
+      sourceImage: splitContext.sourceImage || "",
+      processImage: splitContext.processBaseImage || splitContext.processImage || "",
+      clusterProcessImage: splitContext.clusterProcessImage || "",
+      absorbedProcessImage: splitContext.absorbedProcessImage || "",
+      width: splitContext.width || 0,
+      height: splitContext.height || 0,
+      items: items.slice(0, MAX_SPLIT_EXPORT_ITEMS),
+      splitItems: (Array.isArray(splitContext.baseItems) && splitContext.baseItems.length
+        ? splitContext.baseItems.map((item, index) => ({
+            ...item,
+            index: index + 1,
+            image: item.image || item.edgeImage || item.transparentImage || item.rectImage || "",
+          }))
+        : items
+      ).slice(0, MAX_SPLIT_EXPORT_ITEMS),
+      clusterItems: items.slice(0, MAX_SPLIT_EXPORT_ITEMS),
+      groupMode: splitGroupMode,
+      splitSource: splitUseRemovedSource ? "removed-background" : "original",
+      renderMode: splitRenderMode,
+      shapeMode: splitShapeMode,
+      backgroundColor: splitBackgroundColor,
+      enhanced: splitEnhanceEnabled,
+      timing: splitTiming,
+    };
+  }, [
+    splitBackgroundColor,
+    splitContext,
+    splitEnhanceEnabled,
+    splitGroupMode,
+    splitRenderMode,
+    splitShapeMode,
+    splitTiming,
+    splitUseRemovedSource,
+  ]);
+
+  const persistSplitHistoryRecord = useCallback(async (record, options = {}) => {
+    const silent = options?.silent === true;
+    const items = Array.isArray(record?.items) ? record.items : [];
+    if (!items.length) {
+      if (!silent) {
+        setSplitStatusTone("error");
+        setSplitStatusText(t("split.exportNoItems"));
+      }
+      return null;
+    }
+    if (!historyDirHandle) {
+      if (!silent) {
+        setSplitStatusTone("error");
+        setSplitStatusText(t("split.historyFolderRequired"));
+      }
+      return null;
+    }
+    setSplitHistorySaving(true);
+    setSplitStatusTone("info");
+    setSplitStatusText(t("split.historySaving"));
+    try {
+      const canWrite = await ensureDirectoryPermission(historyDirHandle, true);
+      if (!canWrite) {
+        throw new Error(t("split.historyWriteDenied"));
+      }
+      const saved = await saveSplitHistoryToLocalFolder(historyDirHandle, record);
+      setSplitHistoryRecords((prev) => [saved, ...prev.filter((item) => item.id !== saved.id)].slice(0, 30));
+      const successText = t("split.historySaved", { folder: saved.folderName, count: saved.items.length });
+      setSplitStatusTone("info");
+      setSplitStatusText(successText);
+      setHistoryFolderMsg(successText);
+      return saved;
+    } catch (err) {
+      setSplitStatusTone("error");
+      setSplitStatusText(
+        t("split.historySaveFailed", {
+          error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t),
+        })
+      );
+      return null;
+    } finally {
+      setSplitHistorySaving(false);
+    }
+  }, [historyDirHandle, t]);
+
+  useEffect(() => {
+    const nonce = Number(splitHistoryAutoSaveNonce) || 0;
+    if (!nonce || splitHistoryAutoSavedNonceRef.current === nonce) return undefined;
+    if (splitHistoryAutoSavingNonceRef.current === nonce) return undefined;
+    if (!historyDirHandle || splitBusy || splitEnhancing || splitExporting || splitHistorySaving) return undefined;
+    const record = buildCurrentSplitHistoryRecord(Date.now());
+    if (!record) return undefined;
+    const hasProcessPreview = splitGroupMode === "cluster"
+      ? !!record.processImage && !!record.clusterProcessImage && !!record.absorbedProcessImage
+      : !!record.processImage;
+    if (!hasProcessPreview) return undefined;
+    splitHistoryAutoSavingNonceRef.current = nonce;
+    (async () => {
+      await persistSplitHistoryRecord(record, { silent: true });
+      splitHistoryAutoSavedNonceRef.current = nonce;
+      if (splitHistoryAutoSavingNonceRef.current === nonce) {
+        splitHistoryAutoSavingNonceRef.current = 0;
+      }
+    })();
+    return undefined;
+  }, [
+    buildCurrentSplitHistoryRecord,
+    historyDirHandle,
+    persistSplitHistoryRecord,
+    splitBusy,
+    splitEnhancing,
+    splitExporting,
+    splitGroupMode,
+    splitHistoryAutoSaveNonce,
+    splitHistorySaving,
+  ]);
+
+  const upscaleSplitHistoryRecord = useCallback(async (record) => {
+    const recordId = record?.id || record?.folderName || "";
+    if (!recordId) return;
+    const sourceItems = Array.isArray(record?.clusterItems) && record.clusterItems.length
+      ? record.clusterItems
+      : Array.isArray(record?.items)
+        ? record.items
+        : [];
+    if (!sourceItems.length) return;
+    const bailianKey = normalizeApiKeys(apiKeys).bailian;
+    if (!bailianKey) {
+      setSplitStatusTone("error");
+      setSplitStatusText(t("split.upscaleNoKey"));
+      return;
+    }
+    setSplitHistoryUpscalingIds((prev) => {
+      const next = new Set(prev);
+      next.add(recordId);
+      return next;
+    });
+    setSplitStatusTone("info");
+    setSplitStatusText(t("split.upscaling"));
+    try {
+      const upscaledItems = [];
+      for (let index = 0; index < sourceItems.length; index += 1) {
+        const item = sourceItems[index];
+        if (!item?.image) continue;
+        const afterImage = await callWan21ImageSuperResolution(proxyUrl, item.image, {
+          apiBaseUrl: DEFAULT_API_BASE_URLS.bailian,
+          apiKey: bailianKey,
+        });
+        upscaledItems.push({
+          index: index + 1,
+          beforeImage: item.image,
+          afterImage,
+        });
+      }
+      let nextRecord = {
+        ...record,
+        upscaledItems,
+        upscaledAt: Date.now(),
+      };
+      if (historyDirHandle) {
+        try {
+          const canWrite = await ensureDirectoryPermission(historyDirHandle, true);
+          if (canWrite) {
+            nextRecord = await saveSplitHistoryToLocalFolder(historyDirHandle, nextRecord);
+          }
+        } catch {
+          // Keep the in-memory upscale result even if folder sync fails.
+        }
+      }
+      setSplitHistoryRecords((prev) => prev.map((item) => ((item.id || item.folderName) === recordId ? nextRecord : item)));
+      setSplitStatusTone("info");
+      setSplitStatusText(t("split.upscaled", { count: upscaledItems.length }));
+    } catch (err) {
+      const rawMessage = err?.message || t("common.unknownError");
+      const localizedMessage = localizeRuntimeMessage(rawMessage, t);
+      const isProxyNetworkError = /failed to fetch|networkerror|load failed/i.test(String(rawMessage));
+      setSplitStatusTone("error");
+      setSplitStatusText(
+        t("split.upscaleFailed", {
+          error: isProxyNetworkError ? `${localizedMessage} ${t("split.upscaleProxyHint")}` : localizedMessage,
+        })
+      );
+    } finally {
+      setSplitHistoryUpscalingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(recordId);
+        return next;
+      });
+    }
+  }, [apiKeys, historyDirHandle, proxyUrl, t]);
+
   const clearAllSelections = useCallback(() => {
     if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
@@ -2107,8 +2315,10 @@ export default function App() {
       setActiveStyleTemplateId(fallbackStyleTemplates[0]?.id || null);
     }
     const loadedTurns = await loadTurnsFromLocalFolder(dirHandle);
+    const loadedSplitHistory = await loadSplitHistoryFromLocalFolder(dirHandle);
     setSelectedAtlasItems([]);
     setAtlasThumbnail(null);
+    setSplitHistoryRecords(loadedSplitHistory);
     const nextTurns = [...loadedTurns].sort((a, b) => b.seq - a.seq);
     setTurns(nextTurns);
     setHiddenTurnIds([]);
@@ -2546,6 +2756,9 @@ export default function App() {
     timing: splitTiming,
     statusText: splitStatusText,
     statusTone: splitStatusTone,
+    historyRecords: splitHistoryRecords,
+    historyDirName,
+    historyUpscalingIds: splitHistoryUpscalingIds,
     onToggleSplitSource: toggleSplitSourceMode,
     onResplit: reSplitCurrentImage,
     onSetRenderMode: setSplitRenderModeMode,
@@ -2559,6 +2772,8 @@ export default function App() {
     onExport: exportSplitItems,
     onPreview: openPreviewImage,
     onUploadImageDataUrl: uploadSplitImageFromModal,
+    onPickHistoryFolder: () => handlePickHistoryFolder({ source: "manual" }),
+    onUpscaleHistory: upscaleSplitHistoryRecord,
   };
 
   return (
@@ -2608,7 +2823,10 @@ export default function App() {
             <button
               type="button"
               style={{ ...S.modeTab, ...(activePage === "split" ? S.modeTabActive : null) }}
-              onClick={() => setActivePage("split")}
+              onClick={() => {
+                setSplitGroupMode("cluster");
+                setActivePage("split");
+              }}
             >
               {t("nav.split")}
             </button>
