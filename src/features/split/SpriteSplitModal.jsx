@@ -479,6 +479,7 @@ export function SpriteSplitModal({
             const splitRecordItems = Array.isArray(record.splitItems) && record.splitItems.length ? record.splitItems : record.items || [];
             const clusterRecordItems = Array.isArray(record.clusterItems) && record.clusterItems.length ? record.clusterItems : record.items || [];
             const upscaledItems = Array.isArray(record.upscaledItems) ? record.upscaledItems : [];
+            const upscaleError = typeof record.upscaleError === "string" ? record.upscaleError.trim() : "";
             const isUpscaling = upscalingSet.has(recordId);
             const recordItems = viewMode === "split" ? splitRecordItems : clusterRecordItems;
             const displayCount = viewMode === "enhance" ? (upscaledItems.length || clusterRecordItems.length) : recordItems.length;
@@ -570,6 +571,11 @@ export function SpriteSplitModal({
                             </button>
                           </div>
                         ))}
+                      </div>
+                    ) : upscaleError ? (
+                      <div style={S.splitHistoryErrorBox}>
+                        <div>{t("split.upscaleFailed", { error: upscaleError })}</div>
+                        <div style={S.splitHistoryErrorHint}>{t("split.upscaleRetryHint")}</div>
                       </div>
                     ) : (
                       <div style={S.turnStyleImageEmpty}>{isUpscaling ? t("split.upscaling") : t("split.upscalePending")}</div>

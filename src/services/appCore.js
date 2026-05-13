@@ -3471,6 +3471,8 @@ export async function saveSplitHistoryToLocalFolder(rootHandle, record = {}) {
     backgroundColor: record.backgroundColor || DEFAULT_SPLIT_BG_COLOR,
     enhanced: record.enhanced !== false,
     timing: record.timing || {},
+    upscaleError: typeof record.upscaleError === "string" ? record.upscaleError : "",
+    upscaleErrorAt: Number(record.upscaleErrorAt) || 0,
     source: {
       width: Number(record.width) || 0,
       height: Number(record.height) || 0,
@@ -3512,6 +3514,8 @@ export async function saveSplitHistoryToLocalFolder(rootHandle, record = {}) {
       beforeImage: sourceUpscaledItems[index]?.beforeImage || sourceUpscaledItems[index]?.before || "",
       afterImage: sourceUpscaledItems[index]?.afterImage || sourceUpscaledItems[index]?.after || "",
     })),
+    upscaleError: typeof record.upscaleError === "string" ? record.upscaleError : "",
+    upscaleErrorAt: Number(record.upscaleErrorAt) || 0,
   };
 }
 
@@ -3582,6 +3586,8 @@ export async function loadSplitHistoryFromLocalFolder(rootHandle) {
         splitItems,
         clusterItems,
         upscaledItems,
+        upscaleError: typeof meta.upscaleError === "string" ? meta.upscaleError : "",
+        upscaleErrorAt: Number(meta.upscaleErrorAt) || 0,
         folderSyncedAt: Date.now(),
       });
     } catch {

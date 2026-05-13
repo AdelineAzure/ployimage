@@ -2053,6 +2053,9 @@ export default function App() {
   const upscaleSplitHistoryRecord = useCallback(async (record) => {
     const recordId = record?.id || record?.folderName || "";
     if (!recordId) return;
+    const updateRecord = (patch = {}) => {
+      setSplitHistoryRecords((prev) => prev.map((item) => ((item.id || item.folderName) === recordId ? { ...item, ...patch } : item)));
+    };
     const sourceItems = Array.isArray(record?.clusterItems) && record.clusterItems.length
       ? record.clusterItems
       : Array.isArray(record?.items)
@@ -2061,14 +2064,23 @@ export default function App() {
     if (!sourceItems.length) return;
     const bailianKey = normalizeApiKeys(apiKeys).bailian;
     if (!bailianKey) {
+      const message = t("split.upscaleNoKey");
+      updateRecord({
+        upscaleError: message,
+        upscaleErrorAt: Date.now(),
+      });
       setSplitStatusTone("error");
-      setSplitStatusText(t("split.upscaleNoKey"));
+      setSplitStatusText(message);
       return;
     }
     setSplitHistoryUpscalingIds((prev) => {
       const next = new Set(prev);
       next.add(recordId);
       return next;
+    });
+    updateRecord({
+      upscaleError: "",
+      upscaleErrorAt: 0,
     });
     setSplitStatusTone("info");
     setSplitStatusText(t("split.upscaling"));
@@ -2091,6 +2103,8 @@ export default function App() {
         ...record,
         upscaledItems,
         upscaledAt: Date.now(),
+        upscaleError: "",
+        upscaleErrorAt: 0,
       };
       if (historyDirHandle) {
         try {
@@ -2109,10 +2123,28 @@ export default function App() {
       const rawMessage = err?.message || t("common.unknownError");
       const localizedMessage = localizeRuntimeMessage(rawMessage, t);
       const isProxyNetworkError = /failed to fetch|networkerror|load failed/i.test(String(rawMessage));
+      const errorText = isProxyNetworkError ? `${localizedMessage} ${t("split.upscaleProxyHint")}` : localizedMessage;
+      let nextRecord = {
+        ...record,
+        upscaledItems: [],
+        upscaleError: errorText,
+        upscaleErrorAt: Date.now(),
+      };
+      if (historyDirHandle) {
+        try {
+          const canWrite = await ensureDirectoryPermission(historyDirHandle, true);
+          if (canWrite) {
+            nextRecord = await saveSplitHistoryToLocalFolder(historyDirHandle, nextRecord);
+          }
+        } catch {
+          // Keep the visible per-record error even if folder sync fails.
+        }
+      }
+      setSplitHistoryRecords((prev) => prev.map((item) => ((item.id || item.folderName) === recordId ? nextRecord : item)));
       setSplitStatusTone("error");
       setSplitStatusText(
         t("split.upscaleFailed", {
-          error: isProxyNetworkError ? `${localizedMessage} ${t("split.upscaleProxyHint")}` : localizedMessage,
+          error: errorText,
         })
       );
     } finally {

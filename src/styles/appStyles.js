@@ -290,6 +290,8 @@ export const S = {
   splitHistoryCompareGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10, alignContent: "start" },
   splitHistoryCompareCard: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(0,0,0,0.18)", padding: 8 },
   splitHistoryComparePane: { border: "1px solid rgba(255,255,255,0.08)", background: "rgba(2,6,23,0.42)", borderRadius: 8, padding: 6, display: "grid", gap: 5, cursor: "zoom-in", textAlign: "left", minWidth: 0 },
+  splitHistoryErrorBox: { borderRadius: 8, border: "1px dashed rgba(248,113,113,0.45)", background: "rgba(127,29,29,0.18)", color: "#fecaca", fontFamily: mono, fontSize: 12, padding: "16px 14px", lineHeight: 1.65, wordBreak: "break-word", textAlign: "center" },
+  splitHistoryErrorHint: { marginTop: 6, color: "#fca5a5", fontSize: 11 },
   splitModalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 },
   splitModalTitleRow: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", minWidth: 0 },
   splitHeaderRight: { display: "flex", alignItems: "center", gap: 10, flexShrink: 0 },
