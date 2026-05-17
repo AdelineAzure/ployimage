@@ -69,7 +69,17 @@ export default {
 
       // Worker preview health check
       if (method === "GET" && url.pathname === "/" && !request.headers.get("X-Target-Path")) {
-        return json({ ok: true, service: "deerapi-proxy", defaultUpstream: DEFAULT_UPSTREAM_BASE });
+        return json({
+          ok: true,
+          service: "deerapi-proxy",
+          version: WORKER_VERSION,
+          features: [
+            "dashscope-image2image",
+            "dashscope-async-header",
+            "dashscope-task-polling",
+          ],
+          defaultUpstream: DEFAULT_UPSTREAM_BASE,
+        });
       }
 
       const targetPath = request.headers.get("X-Target-Path") || "/v1/chat/completions";
@@ -156,6 +166,7 @@ function corsHeaders() {
 }
 
 const DEFAULT_UPSTREAM_BASE = "https://api.deerapi.com";
+const WORKER_VERSION = "2026-05-13-wan21-upscale";
 
 function normalizeApiKey(value) {
   if (typeof value !== "string") return "";
