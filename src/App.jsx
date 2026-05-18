@@ -18,6 +18,7 @@ import { PromptTextWithChips, TokenPromptInput } from "./features/workspace/prom
 
 const {
   IMAGE_MODELS,
+  IMAGE_MODEL_ROWS,
   PROVIDER_COLORS,
   LOCAL_STATE_KEY,
   DEFAULT_PROXY_URL,
@@ -3189,17 +3190,24 @@ export default function App() {
                 </button>
               </div>
               <div style={taskMode === "style" ? S.modelGridStyle : S.modelGrid}>
-                {IMAGE_MODELS.map((m) => (
-                  <ModelChip
-                    key={m.id}
-                    model={m}
-                    selected={selectedModels.includes(m.id)}
-                    onToggle={toggleModel}
-                    disabled={taskMode === "style" ? selectedModels.length >= 1 : selectedModels.length >= 6}
-                    count={modelCounts[m.id] || 1}
-                    onCountChange={setModelCount}
-                    styleMode={taskMode === "style"}
-                  />
+                {IMAGE_MODEL_ROWS.map((row, rowIndex) => (
+                  <div
+                    key={`model-row-${rowIndex + 1}`}
+                    style={{ ...S.modelGridRow, gridTemplateColumns: `repeat(${row.length}, minmax(0, 1fr))` }}
+                  >
+                    {row.map((m) => (
+                      <ModelChip
+                        key={m.id}
+                        model={m}
+                        selected={selectedModels.includes(m.id)}
+                        onToggle={toggleModel}
+                        disabled={taskMode === "style" ? selectedModels.length >= 1 : selectedModels.length >= 6}
+                        count={modelCounts[m.id] || 1}
+                        onCountChange={setModelCount}
+                        styleMode={taskMode === "style"}
+                      />
+                    ))}
+                  </div>
                 ))}
               </div>
               <div style={S.imageSizePanel}>

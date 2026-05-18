@@ -1,27 +1,44 @@
 // ─── Model Registry ───
 // Each model has its own apiType defining which upstream endpoint/format to use.
-export const IMAGE_MODELS = [
+const SEEDREAM_MODELS = [
   // Seedream — /v1/images/generations (豆包生图)
   { id: "doubao-seedream-4-0-250828", name: "Seedream 4.0", shortName: "Seed 4.0", provider: "ByteDance", apiType: "images", platforms: ["deerapi"] },
   { id: "doubao-seedream-4-5-251128", name: "Seedream 4.5", shortName: "Seed 4.5", provider: "ByteDance", apiType: "images", badge: "NEW", platforms: ["deerapi"] },
   { id: "doubao-seedream-5-0-260128", name: "Seedream 5.0 Lite", shortName: "Seed 5", provider: "ByteDance", apiType: "images", badge: "NEW", platforms: ["deerapi"] },
+];
+
+const NANO_MODELS = [
+  // NanoBanana 系列：本质调用 Gemini 图像模型
+  { id: "gemini-2.5-flash-image", name: "NanoBanana", shortName: "Nano", provider: "Google", apiType: "gemini", badge: "HOT", platforms: ["deerapi"] },
+  { id: "gemini-3.1-flash-image-preview", name: "NanoBanana 2", shortName: "Nano 2", provider: "Google", apiType: "gemini", badge: "NEW", platforms: ["deerapi"] },
+  { id: "gemini-3-pro-image", name: "NanoBanana Pro", shortName: "Nano Pro", provider: "Google", apiType: "gemini", badge: "PRO", platforms: ["deerapi"] },
+];
+
+const MID_GPT_MODELS = [
   // Midjourney via /mj
   { id: "midjourney-imagine", name: "Midjourney Imagine", shortName: "Midjourney", provider: "Midjourney", apiType: "midjourney", badge: "BETA", platforms: ["deerapi"] },
   // GPT Image 系列 — 文生图走 /v1/images/generations；带输入图优先走 JSON 兼容路径，
   // gpt-image-1 / gpt-image-1-mini 才使用 /v1/images/edits (multipart)
   { id: "gpt-image-1.5", name: "GPT‑1.5 Image", shortName: "GPT-1.5", provider: "OpenAI", apiType: "images", badge: "HOT", platforms: ["deerapi"] },
   { id: "gpt-image-2", name: "GPT‑2 Image", shortName: "GPT-2", provider: "OpenAI", apiType: "images", badge: "NEW", platforms: ["deerapi"] },
-  // Bailian Qwen Image 系列：走 /api/v1/services/aigc/multimodal-generation/generation
-  { id: "qwen-image-2.0", name: "qwen", shortName: "qwen", provider: "Alibaba", apiType: "bailian", badge: "NEW", platforms: ["bailian"] },
-  { id: "qwen-image-2.0-pro", name: "qwen pro", shortName: "qwen pro", provider: "Alibaba", apiType: "bailian", badge: "PRO", platforms: ["bailian"] },
-  // NanoBanana 系列：本质调用 Gemini 图像模型
-  { id: "gemini-2.5-flash-image", name: "NanoBanana", shortName: "Nano", provider: "Google", apiType: "gemini", badge: "HOT", platforms: ["deerapi"] },
-  { id: "gemini-3.1-flash-image-preview", name: "NanoBanana 2", shortName: "Nano 2", provider: "Google", apiType: "gemini", badge: "NEW", platforms: ["deerapi"] },
-  { id: "gemini-3-pro-image", name: "NanoBanana Pro", shortName: "Nano Pro", provider: "Google", apiType: "gemini", badge: "PRO", platforms: ["deerapi"] },
+];
+
+const WAN_QWEN_MODELS = [
   // Bailian Wan 2.7 系列
   { id: "wan2.7-image", name: "wan", shortName: "wan", provider: "Alibaba", apiType: "bailian", badge: "NEW", platforms: ["bailian"] },
   { id: "wan2.7-image-pro", name: "wanpro", shortName: "wanpro", provider: "Alibaba", apiType: "bailian", badge: "PRO", platforms: ["bailian"] },
+  // Bailian Qwen Image 系列：走 /api/v1/services/aigc/multimodal-generation/generation
+  { id: "qwen-image-2.0", name: "qwen", shortName: "qwen", provider: "Alibaba", apiType: "bailian", badge: "NEW", platforms: ["bailian"] },
+  { id: "qwen-image-2.0-pro", name: "qwen pro", shortName: "qwen pro", provider: "Alibaba", apiType: "bailian", badge: "PRO", platforms: ["bailian"] },
 ];
+
+export const IMAGE_MODEL_ROWS = [
+  SEEDREAM_MODELS,
+  NANO_MODELS,
+  MID_GPT_MODELS,
+  WAN_QWEN_MODELS,
+];
+export const IMAGE_MODELS = IMAGE_MODEL_ROWS.flat();
 
 export const PROVIDER_COLORS = {
   OpenAI: { bg: "#10a37f", text: "#fff" },
@@ -75,7 +92,7 @@ export const DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE = true;
 export const DEFAULT_STYLE_THEME_ASSIST_PROMPT =
   "你是主题联想助手。用户会给你一个主题词，请输出12个可用于视觉创作的相关元素，要求具体、可见、彼此有区分。只输出JSON：{\"themes\":[\"...\", \"...\"]}，数组长度必须为12。";
 export const PROMPT_EDITOR_MIN_HEIGHT = 104;
-export const MAX_TEMPLATES = 8;
+export const MAX_TEMPLATES = 12;
 export const MAX_STYLE_TEMPLATES = 2;
 export const STYLE_THEME_SLOTS = 12;
 export const MAX_STYLE_REFERENCE_IMAGES = 4;
