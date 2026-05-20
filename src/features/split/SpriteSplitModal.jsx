@@ -354,6 +354,59 @@ export function SpriteSplitModal({
           </button>
         </div>
       </div>
+      {renderProcessPane(true)}
+    </div>
+  );
+  const renderProcessPane = (pageMode = false) => (
+    <div style={pageMode ? S.splitPageProcessPanel : S.splitPane}>
+      <div style={S.splitPaneTitle}>{isClusterMode ? t("split.clusterProcess") : t("split.process")}</div>
+      <div style={pageMode ? S.splitPageProcessStack : S.splitProcessStack}>
+        {processViews.map((view, viewIndex) => (
+          <div key={`${view.title}-${viewIndex}`} style={S.splitProcessBlock}>
+            {isClusterMode && <div style={S.splitProcessSubTitle}>{view.title}</div>}
+            <div style={pageMode ? S.splitPageProcessWrap : S.splitOriginalWrap}>
+              {view.src ? (
+                inlineZoomProcessIndex === viewIndex ? (
+                  <InlineZoomViewer
+                    src={view.src}
+                    onCollapse={() => setInlineZoomProcessIndex(null)}
+                    containerStyle={S.splitPaneInlineZoomViewer}
+                    collapseButtonStyle={S.splitPaneInlineZoomCollapseBtn}
+                    modelName={modelName}
+                    promptText={promptText}
+                  />
+                ) : (
+                  <div style={S.splitImageWrap}>
+                    <PreviewMetaBar modelName={modelName} promptText={promptText} />
+                    <img
+                      src={view.src}
+                      alt={view.alt}
+                      style={S.splitOriginalImg}
+                      onClick={() => setInlineZoomProcessIndex(viewIndex)}
+                    />
+                    <button
+                      type="button"
+                      style={{
+                        ...S.splitImageZoomBtn,
+                        ...(inlineZoomProcessIndex === viewIndex ? S.splitImageZoomBtnActive : null),
+                      }}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setInlineZoomProcessIndex((prev) => (prev === viewIndex ? null : viewIndex));
+                      }}
+                      title={t("viewer.inlineViewer")}
+                    >
+                      🔍
+                    </button>
+                  </div>
+                )
+              ) : (
+                <div style={S.turnStyleImageEmpty}>{busy ? t("split.detecting") : "-"}</div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
   const renderResultsPanel = (pageMode = false) => (
@@ -888,56 +941,7 @@ export function SpriteSplitModal({
                 </div>
               </div>
             </div>
-            <div style={S.splitPane}>
-              <div style={S.splitPaneTitle}>{isClusterMode ? t("split.clusterProcess") : t("split.process")}</div>
-              <div style={S.splitProcessStack}>
-                {processViews.map((view, viewIndex) => (
-                  <div key={`${view.title}-${viewIndex}`} style={S.splitProcessBlock}>
-                    {isClusterMode && <div style={S.splitProcessSubTitle}>{view.title}</div>}
-                    <div style={S.splitOriginalWrap}>
-                      {view.src ? (
-                        inlineZoomProcessIndex === viewIndex ? (
-                          <InlineZoomViewer
-                            src={view.src}
-                            onCollapse={() => setInlineZoomProcessIndex(null)}
-                            containerStyle={S.splitPaneInlineZoomViewer}
-                            collapseButtonStyle={S.splitPaneInlineZoomCollapseBtn}
-                            modelName={modelName}
-                            promptText={promptText}
-                          />
-                        ) : (
-                          <div style={S.splitImageWrap}>
-                            <PreviewMetaBar modelName={modelName} promptText={promptText} />
-                            <img
-                              src={view.src}
-                              alt={view.alt}
-                              style={S.splitOriginalImg}
-                              onClick={() => setInlineZoomProcessIndex(viewIndex)}
-                            />
-                            <button
-                              type="button"
-                              style={{
-                                ...S.splitImageZoomBtn,
-                                ...(inlineZoomProcessIndex === viewIndex ? S.splitImageZoomBtnActive : null),
-                              }}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setInlineZoomProcessIndex((prev) => (prev === viewIndex ? null : viewIndex));
-                              }}
-                              title={t("viewer.inlineViewer")}
-                            >
-                              🔍
-                            </button>
-                          </div>
-                        )
-                      ) : (
-                        <div style={S.turnStyleImageEmpty}>{busy ? t("split.detecting") : "-"}</div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            {renderProcessPane(false)}
           </section>
           <section style={S.splitRightCol}>
             <div style={S.splitRightTop}>

@@ -1374,6 +1374,96 @@ export async function enhanceSplitImageDataUrl(sourceDataUrl, options = {}) {
   };
 }
 
+function dilateMaskSquare(mask, width, height, radius = 1) {
+  const total = width * height;
+  const r = Math.max(0, Math.floor(Number(radius) || 0));
+  if (!mask || total <= 0 || r <= 0) return mask;
+  const horizontal = new Uint8Array(total);
+  const output = new Uint8Array(total);
+
+  for (let y = 0; y < height; y += 1) {
+    const row = y * width;
+    let count = 0;
+    for (let x = 0; x <= r && x < width; x += 1) {
+      if (mask[row + x]) count += 1;
+    }
+    for (let x = 0; x < width; x += 1) {
+      horizontal[row + x] = count > 0 ? 1 : 0;
+      const removeX = x - r;
+      if (removeX >= 0 && mask[row + removeX]) count -= 1;
+      const addX = x + r + 1;
+      if (addX < width && mask[row + addX]) count += 1;
+    }
+  }
+
+  for (let x = 0; x < width; x += 1) {
+    let count = 0;
+    for (let y = 0; y <= r && y < height; y += 1) {
+      if (horizontal[y * width + x]) count += 1;
+    }
+    for (let y = 0; y < height; y += 1) {
+      output[y * width + x] = count > 0 ? 1 : 0;
+      const removeY = y - r;
+      if (removeY >= 0 && horizontal[removeY * width + x]) count -= 1;
+      const addY = y + r + 1;
+      if (addY < height && horizontal[addY * width + x]) count += 1;
+    }
+  }
+
+  return output;
+}
+
+function erodeMaskSquare(mask, width, height, radius = 1) {
+  const total = width * height;
+  const r = Math.max(0, Math.floor(Number(radius) || 0));
+  if (!mask || total <= 0 || r <= 0) return mask;
+  const horizontal = new Uint8Array(total);
+  const output = new Uint8Array(total);
+  const windowSize = r * 2 + 1;
+
+  for (let y = 0; y < height; y += 1) {
+    const row = y * width;
+    let count = 0;
+    for (let x = 0; x <= r && x < width; x += 1) {
+      if (mask[row + x]) count += 1;
+    }
+    for (let x = 0; x < width; x += 1) {
+      horizontal[row + x] = x - r >= 0 && x + r < width && count === windowSize ? 1 : 0;
+      const removeX = x - r;
+      if (removeX >= 0 && mask[row + removeX]) count -= 1;
+      const addX = x + r + 1;
+      if (addX < width && mask[row + addX]) count += 1;
+    }
+  }
+
+  for (let x = 0; x < width; x += 1) {
+    let count = 0;
+    for (let y = 0; y <= r && y < height; y += 1) {
+      if (horizontal[y * width + x]) count += 1;
+    }
+    for (let y = 0; y < height; y += 1) {
+      output[y * width + x] = y - r >= 0 && y + r < height && count === windowSize ? 1 : 0;
+      const removeY = y - r;
+      if (removeY >= 0 && horizontal[removeY * width + x]) count -= 1;
+      const addY = y + r + 1;
+      if (addY < height && horizontal[addY * width + x]) count += 1;
+    }
+  }
+
+  return output;
+}
+
+export function addForegroundGapTolerance(mask, width, height) {
+  if (!mask || width <= 2 || height <= 2) return mask;
+  const shortSide = Math.min(width, height);
+  const radius = Math.max(1, Math.min(4, Math.round(shortSide * 0.0035)));
+  const closed = erodeMaskSquare(dilateMaskSquare(mask, width, height, radius), width, height, radius);
+  for (let i = 0; i < mask.length; i += 1) {
+    if (mask[i]) closed[i] = 1;
+  }
+  return closed;
+}
+
 export function buildForegroundMask(imageData, width, height) {
   const total = width * height;
   const data = imageData?.data;
@@ -1467,7 +1557,7 @@ export function buildForegroundMask(imageData, width, height) {
     const alpha = data[i * 4 + 3];
     if (!bgConnected[i] && alpha > 20) mask[i] = 1;
   }
-  return refineForegroundMask(mask, width, height);
+  return refineForegroundMask(addForegroundGapTolerance(mask, width, height), width, height);
 }
 
 export function collectSubjectBounds(mask, width, height) {
