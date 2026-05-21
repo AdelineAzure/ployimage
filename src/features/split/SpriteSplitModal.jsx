@@ -528,14 +528,23 @@ export function SpriteSplitModal({
         <div style={S.splitHistoryList}>
           {safeHistoryRecords.map((record) => {
             const recordId = record.id || record.folderName || `split-history-${record.createdAt || record.fileStem || "record"}`;
-            const viewMode = historyViewModes[recordId] || "cluster";
             const splitRecordItems = Array.isArray(record.splitItems) && record.splitItems.length ? record.splitItems : record.items || [];
-            const clusterRecordItems = Array.isArray(record.clusterItems) && record.clusterItems.length ? record.clusterItems : record.items || [];
+            const clusterRecordItems = Array.isArray(record.clusterItems) && record.clusterItems.length ? record.clusterItems : [];
+            const defaultViewMode = clusterRecordItems.length ? "cluster" : "split";
+            const requestedViewMode = historyViewModes[recordId] || defaultViewMode;
+            const viewMode = requestedViewMode === "cluster" && !clusterRecordItems.length ? "split" : requestedViewMode;
             const upscaledItems = Array.isArray(record.upscaledItems) ? record.upscaledItems : [];
             const upscaleError = typeof record.upscaleError === "string" ? record.upscaleError.trim() : "";
             const isUpscaling = upscalingSet.has(recordId);
             const recordItems = viewMode === "split" ? splitRecordItems : clusterRecordItems;
-            const displayCount = viewMode === "enhance" ? (upscaledItems.length || clusterRecordItems.length) : recordItems.length;
+            const upscaleSourceCount = clusterRecordItems.length || splitRecordItems.length;
+            const displayCount = viewMode === "enhance" ? (upscaledItems.length || upscaleSourceCount) : recordItems.length;
+            const totalCount = viewMode === "enhance" ? upscaleSourceCount : recordItems.length;
+            const titleText = viewMode === "split"
+              ? t("split.modeStandard")
+              : viewMode === "enhance"
+                ? t("split.upscale")
+                : t("split.modeCluster");
             const setRecordViewMode = (mode) => {
               setHistoryViewModes((prev) => ({ ...prev, [recordId]: mode }));
               if (mode === "enhance" && !upscaledItems.length && !isUpscaling) {
@@ -546,9 +555,9 @@ export function SpriteSplitModal({
               <article key={recordId} style={S.splitHistoryRecord}>
                 <div style={S.splitHistoryRecordHead}>
                   <div style={S.splitHistoryRecordTitle}>
-                    {record.groupMode === "cluster" ? t("split.modeCluster") : t("split.modeStandard")}
+                    {titleText}
                     <span style={S.splitPaneCount}>
-                      {formatHistoryTime(record.createdAt)} · {displayCount} / {record.itemCount || displayCount}
+                      {formatHistoryTime(record.createdAt)} · {displayCount} / {totalCount || displayCount}
                     </span>
                   </div>
                   <div style={S.splitHistoryMeta}>
@@ -587,6 +596,7 @@ export function SpriteSplitModal({
                       type="button"
                       style={{ ...S.splitToggleBtn, ...(viewMode === "cluster" ? S.splitToggleBtnActive : null) }}
                       onClick={() => setRecordViewMode("cluster")}
+                      disabled={!clusterRecordItems.length}
                     >
                       {t("split.modeCluster")}
                     </button>
@@ -594,7 +604,7 @@ export function SpriteSplitModal({
                       type="button"
                       style={{ ...S.splitToggleBtn, ...(viewMode === "enhance" ? S.splitToggleBtnActive : null) }}
                       onClick={() => setRecordViewMode("enhance")}
-                      disabled={isUpscaling}
+                      disabled={isUpscaling || !upscaleSourceCount}
                     >
                       {isUpscaling ? t("split.upscaling") : t("split.upscale")}
                     </button>

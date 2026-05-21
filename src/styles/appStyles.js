@@ -290,7 +290,7 @@ export const S = {
   splitHistoryProcessBtn: { width: "100%", border: "1px solid rgba(255,255,255,0.08)", background: "rgba(2,6,23,0.42)", borderRadius: 8, padding: 6, display: "grid", gridTemplateRows: "auto minmax(320px, 1fr)", gap: 5, cursor: "zoom-in", textAlign: "left", minHeight: 350, minWidth: 0 },
   splitHistoryProcessLabel: { color: "#94a3b8", fontFamily: mono, fontSize: 10 },
   splitHistoryProcessImg: { width: "100%", height: 320, objectFit: "contain", display: "block", background: "#0b0b0d", borderRadius: 6 },
-  splitHistoryGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(112px, 1fr))", gap: 10, alignContent: "start" },
+  splitHistoryGrid: { display: "grid", gridTemplateColumns: "repeat(10, minmax(0, 1fr))", gap: 10, alignContent: "start" },
   splitHistoryCompareGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10, alignContent: "start" },
   splitHistoryCompareCard: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(0,0,0,0.18)", padding: 8 },
   splitHistoryComparePane: { border: "1px solid rgba(255,255,255,0.08)", background: "rgba(2,6,23,0.42)", borderRadius: 8, padding: 6, display: "grid", gap: 5, cursor: "zoom-in", textAlign: "left", minWidth: 0 },

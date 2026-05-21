@@ -246,6 +246,110 @@ const {
   generateImage,
 } = AppCore;
 
+function hashSplitHistorySource(value = "") {
+  const text = typeof value === "string" ? value : "";
+  if (!text) return "";
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function getSplitHistorySourceHash(record = {}) {
+  return record.sourceHash || hashSplitHistorySource(record.originalImage || record.sourceImage || "");
+}
+
+function getSplitHistoryMergeKey(record = {}) {
+  const sourceHash = getSplitHistorySourceHash(record);
+  if (sourceHash) return `hash:${sourceHash}`;
+  const sourceKey = typeof record.sourceKey === "string" ? record.sourceKey.trim() : "";
+  if (sourceKey) return `key:${sourceKey}`;
+  const stem = typeof record.fileStem === "string" ? record.fileStem.trim() : "";
+  const width = Number(record.width) || 0;
+  const height = Number(record.height) || 0;
+  return stem && width && height ? `meta:${stem}:${width}x${height}` : "";
+}
+
+function mergeSplitHistoryRecords(existing = {}, incoming = {}) {
+  const incomingMode = normalizeSplitGroupMode(incoming.groupMode);
+  const existingSplitItems = Array.isArray(existing.splitItems) ? existing.splitItems : [];
+  const existingClusterItems = Array.isArray(existing.clusterItems) ? existing.clusterItems : [];
+  const incomingItems = Array.isArray(incoming.items) ? incoming.items : [];
+  const incomingSplitItems = Array.isArray(incoming.splitItems) && incoming.splitItems.length
+    ? incoming.splitItems
+    : incomingMode === "standard"
+      ? incomingItems
+      : [];
+  const incomingClusterItems = Array.isArray(incoming.clusterItems) && incoming.clusterItems.length
+    ? incoming.clusterItems
+    : incomingMode === "cluster"
+      ? incomingItems
+      : [];
+  const splitItems = incomingSplitItems.length ? incomingSplitItems : existingSplitItems;
+  const clusterItems = incomingClusterItems.length ? incomingClusterItems : existingClusterItems;
+  const activeItems = incomingMode === "cluster"
+    ? (clusterItems.length ? clusterItems : splitItems)
+    : (splitItems.length ? splitItems : clusterItems);
+
+  return {
+    ...existing,
+    ...incoming,
+    id: existing.id || incoming.id,
+    folderName: existing.folderName || incoming.folderName,
+    createdAt: Number(existing.createdAt) || Number(incoming.createdAt) || Date.now(),
+    sourceKey: incoming.sourceKey || existing.sourceKey || "",
+    sourceHash: getSplitHistorySourceHash(incoming) || getSplitHistorySourceHash(existing),
+    processImage: incoming.processImage || existing.processImage || "",
+    clusterProcessImage: incoming.clusterProcessImage || existing.clusterProcessImage || "",
+    absorbedProcessImage: incoming.absorbedProcessImage || existing.absorbedProcessImage || "",
+    splitItems,
+    clusterItems,
+    items: activeItems,
+    itemCount: activeItems.length || Number(incoming.itemCount) || Number(existing.itemCount) || 0,
+    groupMode: clusterItems.length ? "cluster" : incomingMode,
+    timing: {
+      ...(existing.timing || {}),
+      ...(incoming.timing || {}),
+    },
+    upscaledItems: Array.isArray(incoming.upscaledItems) && incoming.upscaledItems.length
+      ? incoming.upscaledItems
+      : Array.isArray(existing.upscaledItems)
+        ? existing.upscaledItems
+        : [],
+    upscaleError: typeof incoming.upscaleError === "string" && incoming.upscaleError
+      ? incoming.upscaleError
+      : typeof existing.upscaleError === "string"
+        ? existing.upscaleError
+        : "",
+    upscaleErrorAt: Number(incoming.upscaleErrorAt) || Number(existing.upscaleErrorAt) || 0,
+  };
+}
+
+function upsertSplitHistoryRecord(records = [], saved = {}) {
+  const savedKey = getSplitHistoryMergeKey(saved);
+  const rest = [];
+  let merged = saved;
+  (Array.isArray(records) ? records : []).forEach((record) => {
+    const sameSource = savedKey && getSplitHistoryMergeKey(record) === savedKey;
+    const sameId = (record.id || record.folderName) === (saved.id || saved.folderName);
+    if (sameSource || sameId) {
+      merged = mergeSplitHistoryRecords(record, merged);
+      return;
+    }
+    rest.push(record);
+  });
+  return [merged, ...rest].slice(0, 30);
+}
+
+function consolidateSplitHistoryRecords(records = []) {
+  return (Array.isArray(records) ? records : []).reduce(
+    (next, record) => upsertSplitHistoryRecord(next, record),
+    []
+  );
+}
+
 // ─── Components ───
 // ─── Main App ───
 export default function App() {
@@ -1932,13 +2036,29 @@ export default function App() {
   const buildCurrentSplitHistoryRecord = useCallback((createdAt = Date.now()) => {
     const items = Array.isArray(splitContext.items) ? splitContext.items : [];
     if (!items.length) return null;
+    const originalImage = splitContext.originalImage || splitContext.sourceImage || "";
+    const splitItems = (Array.isArray(splitContext.baseItems) && splitContext.baseItems.length
+      ? splitContext.baseItems.map((item, index) => ({
+          ...item,
+          index: index + 1,
+          image: item.image || item.edgeImage || item.transparentImage || item.rectImage || "",
+        }))
+      : splitGroupMode === "standard"
+        ? items
+        : []
+    ).slice(0, MAX_SPLIT_EXPORT_ITEMS);
+    const clusterItems = splitGroupMode === "cluster"
+      ? items.slice(0, MAX_SPLIT_EXPORT_ITEMS)
+      : [];
     return {
       id: `split-history-${createdAt}`,
       createdAt,
+      sourceKey: splitContext.key || "",
+      sourceHash: hashSplitHistorySource(originalImage || splitContext.image || ""),
       fileStem: safeName(splitContext.fileStem || "image"),
       modelName: splitContext.modelName || "",
       promptText: splitContext.promptText || "",
-      originalImage: splitContext.originalImage || splitContext.sourceImage || "",
+      originalImage,
       sourceImage: splitContext.sourceImage || "",
       processImage: splitContext.processBaseImage || splitContext.processImage || "",
       clusterProcessImage: splitContext.clusterProcessImage || "",
@@ -1946,15 +2066,8 @@ export default function App() {
       width: splitContext.width || 0,
       height: splitContext.height || 0,
       items: items.slice(0, MAX_SPLIT_EXPORT_ITEMS),
-      splitItems: (Array.isArray(splitContext.baseItems) && splitContext.baseItems.length
-        ? splitContext.baseItems.map((item, index) => ({
-            ...item,
-            index: index + 1,
-            image: item.image || item.edgeImage || item.transparentImage || item.rectImage || "",
-          }))
-        : items
-      ).slice(0, MAX_SPLIT_EXPORT_ITEMS),
-      clusterItems: items.slice(0, MAX_SPLIT_EXPORT_ITEMS),
+      splitItems,
+      clusterItems,
       groupMode: splitGroupMode,
       splitSource: splitUseRemovedSource ? "removed-background" : "original",
       renderMode: splitRenderMode,
@@ -1999,8 +2112,11 @@ export default function App() {
       if (!canWrite) {
         throw new Error(t("split.historyWriteDenied"));
       }
-      const saved = await saveSplitHistoryToLocalFolder(historyDirHandle, record);
-      setSplitHistoryRecords((prev) => [saved, ...prev.filter((item) => item.id !== saved.id)].slice(0, 30));
+      const recordKey = getSplitHistoryMergeKey(record);
+      const existing = splitHistoryRecords.find((item) => recordKey && getSplitHistoryMergeKey(item) === recordKey);
+      const saveRecord = existing ? mergeSplitHistoryRecords(existing, record) : record;
+      const saved = await saveSplitHistoryToLocalFolder(historyDirHandle, saveRecord);
+      setSplitHistoryRecords((prev) => upsertSplitHistoryRecord(prev, saved));
       const successText = t("split.historySaved", { folder: saved.folderName, count: saved.items.length });
       setSplitStatusTone("info");
       setSplitStatusText(successText);
@@ -2017,7 +2133,7 @@ export default function App() {
     } finally {
       setSplitHistorySaving(false);
     }
-  }, [historyDirHandle, t]);
+  }, [historyDirHandle, splitHistoryRecords, t]);
 
   useEffect(() => {
     const nonce = Number(splitHistoryAutoSaveNonce) || 0;
@@ -2351,7 +2467,7 @@ export default function App() {
     const loadedSplitHistory = await loadSplitHistoryFromLocalFolder(dirHandle);
     setSelectedAtlasItems([]);
     setAtlasThumbnail(null);
-    setSplitHistoryRecords(loadedSplitHistory);
+    setSplitHistoryRecords(consolidateSplitHistoryRecords(loadedSplitHistory));
     const nextTurns = [...loadedTurns].sort((a, b) => b.seq - a.seq);
     setTurns(nextTurns);
     setHiddenTurnIds([]);
