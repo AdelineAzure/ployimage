@@ -429,6 +429,7 @@ export default function App() {
   const [splitExporting, setSplitExporting] = useState(false);
   const [splitEnhancing, setSplitEnhancing] = useState(false);
   const [splitEnhanceEnabled, setSplitEnhanceEnabled] = useState(true);
+  const [splitForegroundProtectEnabled, setSplitForegroundProtectEnabled] = useState(false);
   const [splitUseRemovedSource, setSplitUseRemovedSource] = useState(false);
   const [splitRenderMode, setSplitRenderMode] = useState(DEFAULT_SPLIT_RENDER_MODE);
   const [splitShapeMode, setSplitShapeMode] = useState(DEFAULT_SPLIT_SHAPE_MODE);
@@ -1243,6 +1244,7 @@ export default function App() {
     const defaultShapeMode = normalizeSplitShapeMode(options.shapeMode);
     const defaultGroupMode = normalizeSplitGroupMode(options.groupMode);
     const defaultEnhance = options.enhance !== false;
+    const defaultForegroundProtect = options.foregroundProtect === true;
     const defaultUseRemoved = options.useRemovedSource === true;
     const resetUndo = options.resetUndo !== false;
     const imageKey = payload?.key || `split-${Date.now()}`;
@@ -1253,6 +1255,7 @@ export default function App() {
     setSplitShapeMode(defaultShapeMode);
     setSplitGroupMode(defaultGroupMode);
     setSplitEnhanceEnabled(defaultEnhance);
+    setSplitForegroundProtectEnabled(defaultForegroundProtect);
     setSplitUseRemovedSource(defaultUseRemoved);
     setSplitBusy(true);
     setSplitExporting(false);
@@ -1294,10 +1297,11 @@ export default function App() {
         throw new Error(t("errors.failedToFetch"));
       }
       const splitStartedAt = Date.now();
-      const originalSplit = await splitImageBySubjects(normalized);
+      const splitOptions = { foregroundProtect: defaultForegroundProtect };
+      const originalSplit = await splitImageBySubjects(normalized, splitOptions);
       let splitResult = originalSplit;
       if (defaultUseRemoved) {
-        splitResult = await splitImageBySubjects(originalSplit.removedImage);
+        splitResult = await splitImageBySubjects(originalSplit.removedImage, splitOptions);
       }
       const splitMs = Date.now() - splitStartedAt;
       const splitTarget = defaultUseRemoved ? originalSplit.removedImage : normalized;
@@ -1486,10 +1490,11 @@ export default function App() {
       shapeMode: DEFAULT_SPLIT_SHAPE_MODE,
       groupMode: splitGroupMode,
       enhance: true,
+      foregroundProtect: splitForegroundProtectEnabled,
       useRemovedSource: false,
       resetUndo: true,
     });
-  }, [runSplitForImage, splitGroupMode]);
+  }, [runSplitForImage, splitForegroundProtectEnabled, splitGroupMode]);
 
   const openSplitModalForCanvasNode = useCallback((node) => {
     if (!node?.image) return;
@@ -1523,11 +1528,12 @@ export default function App() {
         shapeMode: splitShapeMode,
         groupMode: splitGroupMode,
         enhance: splitEnhanceEnabled,
+        foregroundProtect: splitForegroundProtectEnabled,
         useRemovedSource: splitUseRemovedSource,
         resetUndo: true,
       }
     );
-  }, [splitContext, runSplitForImage, splitRenderMode, splitShapeMode, splitGroupMode, splitEnhanceEnabled, splitUseRemovedSource]);
+  }, [splitContext, runSplitForImage, splitRenderMode, splitShapeMode, splitGroupMode, splitEnhanceEnabled, splitForegroundProtectEnabled, splitUseRemovedSource]);
 
   const uploadSplitImageFromModal = useCallback(async (imageDataUrl, file) => {
     if (typeof imageDataUrl !== "string" || !imageDataUrl.startsWith("data:image/")) return;
@@ -1554,11 +1560,12 @@ export default function App() {
         shapeMode: splitShapeMode,
         groupMode: splitGroupMode,
         enhance: splitEnhanceEnabled,
+        foregroundProtect: splitForegroundProtectEnabled,
         useRemovedSource: splitUseRemovedSource,
         resetUndo: true,
       }
     );
-  }, [activePage, runSplitForImage, splitRenderMode, splitShapeMode, splitGroupMode, splitEnhanceEnabled, splitUseRemovedSource]);
+  }, [activePage, runSplitForImage, splitRenderMode, splitShapeMode, splitGroupMode, splitEnhanceEnabled, splitForegroundProtectEnabled, splitUseRemovedSource]);
 
   const toggleSplitSourceMode = useCallback((useRemovedSource) => {
     const nextUseRemoved = useRemovedSource === true;
@@ -1577,11 +1584,37 @@ export default function App() {
         shapeMode: splitShapeMode,
         groupMode: splitGroupMode,
         enhance: splitEnhanceEnabled,
+        foregroundProtect: splitForegroundProtectEnabled,
         useRemovedSource: nextUseRemoved,
         resetUndo: true,
       }
     );
-  }, [splitUseRemovedSource, splitContext, runSplitForImage, splitRenderMode, splitShapeMode, splitGroupMode, splitEnhanceEnabled]);
+  }, [splitUseRemovedSource, splitContext, runSplitForImage, splitRenderMode, splitShapeMode, splitGroupMode, splitEnhanceEnabled, splitForegroundProtectEnabled]);
+
+  const setSplitForegroundProtectMode = useCallback((enabled) => {
+    const nextEnabled = enabled === true;
+    if (nextEnabled === splitForegroundProtectEnabled) return;
+    const source = splitContext.originalImage || splitContext.sourceImage || splitContext.image;
+    setSplitForegroundProtectEnabled(nextEnabled);
+    if (!source) return;
+    runSplitForImage(
+      {
+        ...splitContext,
+        image: splitContext.originalImage || source,
+        key: splitContext.key || `split-${Date.now()}`,
+      },
+      {
+        openModal: false,
+        renderMode: splitRenderMode,
+        shapeMode: splitShapeMode,
+        groupMode: splitGroupMode,
+        enhance: splitEnhanceEnabled,
+        foregroundProtect: nextEnabled,
+        useRemovedSource: splitUseRemovedSource,
+        resetUndo: true,
+      }
+    );
+  }, [splitForegroundProtectEnabled, splitContext, runSplitForImage, splitRenderMode, splitShapeMode, splitGroupMode, splitEnhanceEnabled, splitUseRemovedSource]);
 
   const setSplitGroupModeMode = useCallback(async (mode) => {
     const nextMode = normalizeSplitGroupMode(mode);
@@ -2007,6 +2040,7 @@ export default function App() {
             groupMode: splitGroupMode,
             renderMode: splitRenderMode,
             shapeMode: splitShapeMode,
+            foregroundProtect: splitForegroundProtectEnabled,
             backgroundColor: splitBackgroundColor,
             enhanced: splitEnhanceEnabled,
             itemCount: manifestItems.length,
@@ -2031,7 +2065,7 @@ export default function App() {
     } finally {
       setSplitExporting(false);
     }
-  }, [splitContext, splitUseRemovedSource, splitGroupMode, splitRenderMode, splitShapeMode, splitBackgroundColor, splitEnhanceEnabled, t]);
+  }, [splitContext, splitUseRemovedSource, splitGroupMode, splitRenderMode, splitShapeMode, splitForegroundProtectEnabled, splitBackgroundColor, splitEnhanceEnabled, t]);
 
   const buildCurrentSplitHistoryRecord = useCallback((createdAt = Date.now()) => {
     const items = Array.isArray(splitContext.items) ? splitContext.items : [];
@@ -2072,6 +2106,7 @@ export default function App() {
       splitSource: splitUseRemovedSource ? "removed-background" : "original",
       renderMode: splitRenderMode,
       shapeMode: splitShapeMode,
+      foregroundProtect: splitForegroundProtectEnabled,
       backgroundColor: splitBackgroundColor,
       enhanced: splitEnhanceEnabled,
       timing: splitTiming,
@@ -2080,6 +2115,7 @@ export default function App() {
     splitBackgroundColor,
     splitContext,
     splitEnhanceEnabled,
+    splitForegroundProtectEnabled,
     splitGroupMode,
     splitRenderMode,
     splitShapeMode,
@@ -2895,6 +2931,7 @@ export default function App() {
     splitOnRemoved: splitUseRemovedSource,
     selectedItemIds: splitSelectedItemIds,
     enhanceEnabled: splitEnhanceEnabled,
+    foregroundProtectEnabled: splitForegroundProtectEnabled,
     renderMode: splitRenderMode,
     shapeMode: splitShapeMode,
     groupMode: splitGroupMode,
@@ -2914,6 +2951,7 @@ export default function App() {
     onSetShapeMode: setSplitShapeModeMode,
     onSetGroupMode: setSplitGroupModeMode,
     onSetEnhanceEnabled: setSplitEnhanceMode,
+    onSetForegroundProtectEnabled: setSplitForegroundProtectMode,
     onToggleSelectItem: toggleSplitItemSelected,
     onMergeSelectedItems: mergeSelectedSplitItems,
     onDeleteItem: deleteSplitItem,

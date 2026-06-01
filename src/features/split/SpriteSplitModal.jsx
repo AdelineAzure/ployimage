@@ -59,6 +59,7 @@ export function SpriteSplitModal({
   splitOnRemoved = false,
   selectedItemIds,
   enhanceEnabled = true,
+  foregroundProtectEnabled = false,
   renderMode = DEFAULT_SPLIT_RENDER_MODE,
   shapeMode = DEFAULT_SPLIT_SHAPE_MODE,
   groupMode = DEFAULT_SPLIT_GROUP_MODE,
@@ -78,6 +79,7 @@ export function SpriteSplitModal({
   onSetRenderMode,
   onSetShapeMode,
   onSetEnhanceEnabled,
+  onSetForegroundProtectEnabled,
   onToggleSelectItem,
   onMergeSelectedItems,
   onDeleteItem,
@@ -351,6 +353,30 @@ export function SpriteSplitModal({
             onClick={() => onSetEnhanceEnabled?.(false)}
           >
             {t("split.qualityOriginal")}
+          </button>
+        </div>
+        <div style={S.splitToggleGroup}>
+          <button
+            type="button"
+            style={{
+              ...S.splitToggleBtn,
+              ...(foregroundProtectEnabled ? S.splitToggleBtnActive : null),
+            }}
+            disabled={busy || exporting || enhancing}
+            onClick={() => onSetForegroundProtectEnabled?.(true)}
+          >
+            {t("split.foregroundProtectOn")}
+          </button>
+          <button
+            type="button"
+            style={{
+              ...S.splitToggleBtn,
+              ...(!foregroundProtectEnabled ? S.splitToggleBtnActive : null),
+            }}
+            disabled={busy || exporting || enhancing}
+            onClick={() => onSetForegroundProtectEnabled?.(false)}
+          >
+            {t("split.foregroundProtectOff")}
           </button>
         </div>
       </div>
@@ -947,6 +973,34 @@ export function SpriteSplitModal({
                     }}
                   >
                     {t("split.qualityOriginal")}
+                  </button>
+                </div>
+                <div style={S.splitToggleGroup}>
+                  <button
+                    type="button"
+                    style={{
+                      ...S.splitToggleBtn,
+                      ...(foregroundProtectEnabled ? S.splitToggleBtnActive : null),
+                    }}
+                    disabled={busy || exporting || enhancing}
+                    onClick={() => {
+                      onSetForegroundProtectEnabled?.(true);
+                    }}
+                  >
+                    {t("split.foregroundProtectOn")}
+                  </button>
+                  <button
+                    type="button"
+                    style={{
+                      ...S.splitToggleBtn,
+                      ...(!foregroundProtectEnabled ? S.splitToggleBtnActive : null),
+                    }}
+                    disabled={busy || exporting || enhancing}
+                    onClick={() => {
+                      onSetForegroundProtectEnabled?.(false);
+                    }}
+                  >
+                    {t("split.foregroundProtectOff")}
                   </button>
                 </div>
               </div>

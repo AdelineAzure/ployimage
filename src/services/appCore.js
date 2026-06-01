@@ -1464,7 +1464,136 @@ export function addForegroundGapTolerance(mask, width, height) {
   return closed;
 }
 
-export function buildForegroundMask(imageData, width, height) {
+function countForegroundWindow(mask, width, height, cx, cy, radius) {
+  const r = Math.max(0, Math.floor(Number(radius) || 0));
+  let count = 0;
+  for (let y = Math.max(0, cy - r); y <= Math.min(height - 1, cy + r); y += 1) {
+    const row = y * width;
+    for (let x = Math.max(0, cx - r); x <= Math.min(width - 1, cx + r); x += 1) {
+      if (mask[row + x]) count += 1;
+    }
+  }
+  return count;
+}
+
+function findForegroundSupportDistance(mask, width, height, x, y, dx, dy, maxDistance, supportRadius, minSupport) {
+  for (let distance = 1; distance <= maxDistance; distance += 1) {
+    const nx = x + dx * distance;
+    const ny = y + dy * distance;
+    if (nx < 0 || ny < 0 || nx >= width || ny >= height) return 0;
+    if (!mask[ny * width + nx]) continue;
+    const support = countForegroundWindow(mask, width, height, nx, ny, supportRadius);
+    if (support >= minSupport) return distance;
+  }
+  return 0;
+}
+
+function addForegroundClampProtection(mask, imageData, width, height) {
+  const data = imageData?.data;
+  const total = width * height;
+  if (!mask || !data || total <= 0 || width <= 2 || height <= 2) return mask;
+  const shortSide = Math.min(width, height);
+  const maxDistance = Math.max(8, Math.min(36, Math.round(shortSide * 0.032)));
+  const supportRadius = Math.max(1, Math.min(3, Math.round(shortSide * 0.0025)));
+  const supportWindowArea = (supportRadius * 2 + 1) * (supportRadius * 2 + 1);
+  const minSupport = Math.max(2, Math.ceil(supportWindowArea * 0.18));
+  const densityRadius = Math.max(3, Math.min(8, Math.round(shortSide * 0.006)));
+  const densityWindowArea = (densityRadius * 2 + 1) * (densityRadius * 2 + 1);
+  const minLocalForeground = Math.max(5, Math.ceil(densityWindowArea * 0.1));
+  const bottomGuardY = height - Math.max(24, Math.round(shortSide * 0.12));
+  const candidate = new Uint8Array(total);
+  const directionPairs = [
+    [1, 0],
+    [0, 1],
+    [1, 1],
+    [1, -1],
+  ];
+
+  for (let y = 1; y < height - 1; y += 1) {
+    const row = y * width;
+    const nearBottom = y >= bottomGuardY;
+    for (let x = 1; x < width - 1; x += 1) {
+      const idx = row + x;
+      if (mask[idx] || data[idx * 4 + 3] <= 20) continue;
+      const localForeground = countForegroundWindow(mask, width, height, x, y, densityRadius);
+      if (localForeground < minLocalForeground) continue;
+
+      for (let i = 0; i < directionPairs.length; i += 1) {
+        const [dx, dy] = directionPairs[i];
+        if (nearBottom && dy === 0) continue;
+        const forward = findForegroundSupportDistance(mask, width, height, x, y, dx, dy, maxDistance, supportRadius, minSupport);
+        if (!forward) continue;
+        const backward = findForegroundSupportDistance(mask, width, height, x, y, -dx, -dy, maxDistance, supportRadius, minSupport);
+        if (!backward) continue;
+        if (forward + backward <= maxDistance) {
+          candidate[idx] = 1;
+          break;
+        }
+      }
+    }
+  }
+
+  const visited = new Uint8Array(total);
+  const queue = new Int32Array(Math.max(1, total));
+  const output = new Uint8Array(mask);
+  const maxComponentArea = Math.max(24, Math.floor(total * 0.0035));
+  const maxNarrowSide = Math.max(6, Math.round(maxDistance * 1.25));
+  const maxCompactSide = Math.max(12, Math.round(maxDistance * 2));
+
+  for (let start = 0; start < total; start += 1) {
+    if (!candidate[start] || visited[start]) continue;
+    let head = 0;
+    let tail = 0;
+    let area = 0;
+    let minX = width;
+    let minY = height;
+    let maxX = 0;
+    let maxY = 0;
+    const pixels = [];
+    queue[tail] = start;
+    tail += 1;
+    visited[start] = 1;
+    while (head < tail) {
+      const idx = queue[head];
+      head += 1;
+      pixels.push(idx);
+      area += 1;
+      const x = idx % width;
+      const y = Math.floor(idx / width);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      for (let ny = y - 1; ny <= y + 1; ny += 1) {
+        for (let nx = x - 1; nx <= x + 1; nx += 1) {
+          if (nx === x && ny === y) continue;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const next = ny * width + nx;
+          if (!candidate[next] || visited[next]) continue;
+          visited[next] = 1;
+          queue[tail] = next;
+          tail += 1;
+        }
+      }
+    }
+
+    const compWidth = maxX - minX + 1;
+    const compHeight = maxY - minY + 1;
+    const narrowEnough = Math.min(compWidth, compHeight) <= maxNarrowSide;
+    const compactEnough = compWidth <= maxCompactSide && compHeight <= maxCompactSide;
+    const bottomShadowLike =
+      maxY >= bottomGuardY &&
+      compWidth > compHeight * 2.2 &&
+      compWidth > maxDistance * 1.5;
+    if (area <= maxComponentArea && !bottomShadowLike && (narrowEnough || compactEnough)) {
+      for (let i = 0; i < pixels.length; i += 1) output[pixels[i]] = 1;
+    }
+  }
+
+  return output;
+}
+
+export function buildForegroundMask(imageData, width, height, options = {}) {
   const total = width * height;
   const data = imageData?.data;
   const mask = new Uint8Array(total);
@@ -1557,7 +1686,10 @@ export function buildForegroundMask(imageData, width, height) {
     const alpha = data[i * 4 + 3];
     if (!bgConnected[i] && alpha > 20) mask[i] = 1;
   }
-  return refineForegroundMask(addForegroundGapTolerance(mask, width, height), width, height);
+  const protectedMask = options.foregroundProtect === true
+    ? addForegroundClampProtection(mask, imageData, width, height)
+    : mask;
+  return refineForegroundMask(addForegroundGapTolerance(protectedMask, width, height), width, height);
 }
 
 export function collectSubjectBounds(mask, width, height) {
@@ -2746,7 +2878,7 @@ export async function buildClusterProcessPreview(sourceImage, baseProcessImage, 
   return canvas.toDataURL("image/png");
 }
 
-export async function splitImageBySubjects(source) {
+export async function splitImageBySubjects(source, options = {}) {
   const normalized = normalizeImageValue(source);
   if (!normalized) throw new Error("Invalid image source");
   const image = await loadImageElement(normalized);
@@ -2759,7 +2891,9 @@ export async function splitImageBySubjects(source) {
   if (!ctx) throw new Error("Canvas context unavailable");
   ctx.drawImage(image, 0, 0, width, height);
   const imageData = ctx.getImageData(0, 0, width, height);
-  const mask = buildForegroundMask(imageData, width, height);
+  const mask = buildForegroundMask(imageData, width, height, {
+    foregroundProtect: options.foregroundProtect === true,
+  });
   const processImage = buildSplitProcessPreview(imageData, mask, width, height);
   const boxes = collectSubjectBounds(mask, width, height);
   const bgPalette = collectBorderPalette(imageData, width, height);
@@ -3560,6 +3694,7 @@ export async function saveSplitHistoryToLocalFolder(rootHandle, record = {}) {
     splitSource: record.splitSource || "original",
     renderMode: record.renderMode || DEFAULT_SPLIT_RENDER_MODE,
     shapeMode: record.shapeMode || DEFAULT_SPLIT_SHAPE_MODE,
+    foregroundProtect: record.foregroundProtect === true,
     backgroundColor: record.backgroundColor || DEFAULT_SPLIT_BG_COLOR,
     enhanced: record.enhanced !== false,
     timing: record.timing || {},
@@ -3666,6 +3801,7 @@ export async function loadSplitHistoryFromLocalFolder(rootHandle) {
         splitSource: meta.splitSource || "original",
         renderMode: normalizeSplitRenderMode(meta.renderMode),
         shapeMode: normalizeSplitShapeMode(meta.shapeMode),
+        foregroundProtect: meta.foregroundProtect === true,
         backgroundColor: meta.backgroundColor || DEFAULT_SPLIT_BG_COLOR,
         enhanced: meta.enhanced !== false,
         timing: meta.timing || {},
