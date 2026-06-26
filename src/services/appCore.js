@@ -97,7 +97,10 @@ export function normalizeApiBaseUrl(value) {
 }
 
 export function normalizeApiPlatform(value) {
-  return value === "bailian" ? "bailian" : DEFAULT_API_PLATFORM;
+  if (value === "bailian") return "bailian";
+  if (value === "deerapi") return "deerapi";
+  if (value === "comet") return "comet";
+  return DEFAULT_API_PLATFORM;
 }
 
 export function getDefaultApiBaseUrl(apiPlatform = DEFAULT_API_PLATFORM) {
@@ -122,6 +125,7 @@ export function normalizeApiKey(value) {
 export function normalizeApiKeys(value) {
   const source = value && typeof value === "object" ? value : {};
   return {
+    comet: normalizeApiKey(source.comet || source.cometKey || source.cometapiKey || source.COMETAPI_KEY || ""),
     deerapi: normalizeApiKey(source.deerapi || source.deerApiKey || source.deerapiKey || source.DEERAPI_KEY || ""),
     bailian: normalizeApiKey(source.bailian || source.bailianKey || source.dashscopeKey || source.DASHSCOPE_API_KEY || ""),
   };
@@ -135,10 +139,11 @@ export function getApiKeyForPlatform(apiKeys, apiPlatform = DEFAULT_API_PLATFORM
 
 export function getAssistPlatformOrder(apiKeys) {
   const normalizedKeys = normalizeApiKeys(apiKeys);
-  if (normalizedKeys.deerapi && normalizedKeys.bailian) return ["deerapi", "bailian"];
-  if (normalizedKeys.deerapi) return ["deerapi", "bailian"];
-  if (normalizedKeys.bailian) return ["bailian", "deerapi"];
-  return ["deerapi", "bailian"];
+  const base = ["comet", "deerapi", "bailian"];
+  // Lead with whichever platforms actually have a saved key, keeping comet first by default.
+  const withKey = base.filter((platform) => normalizedKeys[platform]);
+  const withoutKey = base.filter((platform) => !normalizedKeys[platform]);
+  return [...withKey, ...withoutKey];
 }
 
 export function resolveTextAssistTargetPath(apiPlatform = DEFAULT_API_PLATFORM) {
@@ -197,6 +202,16 @@ export function normalizeModelId(id) {
   if (typeof id !== "string") return id;
   if (NANO_PRO_LEGACY_MODEL_IDS.includes(id)) return NANO_PRO_OFFICIAL_MODEL_ID;
   return id;
+}
+
+// gpt-image 仅支持有限档位：1024x1024 / 1536x1024(横) / 1024x1536(竖) / auto。
+// auto 透传给上游，让模型按输入图比例自适应；其余按方向归到最接近的一档。
+export function mapAspectRatioToOpenAiImageSize(aspectRatio = DEFAULT_ASPECT_RATIO) {
+  const ratio = normalizeAspectRatio(aspectRatio);
+  if (ratio === "auto") return "auto";
+  const [w, h] = ratio.split(":").map((n) => Number(n) || 0);
+  if (!w || !h || w === h) return "1024x1024";
+  return w > h ? "1536x1024" : "1024x1536";
 }
 
 export function supportsOpenAiImageEdits(model) {
@@ -959,6 +974,218 @@ export function getMinPaletteDistanceSq(r, g, b, palette = []) {
   return Number.isFinite(min) ? min : 0;
 }
 
+function colorDistanceSqFromOffsets(data, a, b) {
+  const dr = data[a] - data[b];
+  const dg = data[a + 1] - data[b + 1];
+  const db = data[a + 2] - data[b + 2];
+  return dr * dr + dg * dg + db * db;
+}
+
+function getPixelLuma(data, idx) {
+  const offset = idx * 4;
+  return data[offset] * 0.299 + data[offset + 1] * 0.587 + data[offset + 2] * 0.114;
+}
+
+function getPixelChroma(data, idx) {
+  const offset = idx * 4;
+  const r = data[offset];
+  const g = data[offset + 1];
+  const b = data[offset + 2];
+  return Math.max(r, g, b) - Math.min(r, g, b);
+}
+
+function collectBorderBackgroundStats(imageData, width, height, bgPalette) {
+  const data = imageData?.data;
+  if (!data || width <= 0 || height <= 0) {
+    return {
+      median: 0,
+      p70: 0,
+      p85: 0,
+      stepP85: 0,
+      lumaMedian: 0,
+      chromaMedian: 0,
+    };
+  }
+  const distances = [];
+  const localSteps = [];
+  const lumas = [];
+  const chromas = [];
+  const stepX = Math.max(1, Math.floor(width / 64));
+  const stepY = Math.max(1, Math.floor(height / 64));
+  const collect = (x, y, ix, iy) => {
+    const idx = y * width + x;
+    const offset = idx * 4;
+    const alpha = data[offset + 3];
+    if (alpha <= 20) return;
+    distances.push(Math.sqrt(getMinPaletteDistanceSq(data[offset], data[offset + 1], data[offset + 2], bgPalette)));
+    lumas.push(getPixelLuma(data, idx));
+    chromas.push(getPixelChroma(data, idx));
+    const nx = Math.max(0, Math.min(width - 1, x + ix));
+    const ny = Math.max(0, Math.min(height - 1, y + iy));
+    if (nx !== x || ny !== y) {
+      localSteps.push(Math.sqrt(colorDistanceSqFromOffsets(data, offset, (ny * width + nx) * 4)));
+    }
+  };
+  for (let x = 0; x < width; x += stepX) {
+    collect(x, 0, 0, 1);
+    collect(x, height - 1, 0, -1);
+  }
+  for (let y = 1; y < height - 1; y += stepY) {
+    collect(0, y, 1, 0);
+    collect(width - 1, y, -1, 0);
+  }
+  return {
+    median: getMedianNumber(distances),
+    p70: getPercentileNumber(distances, 0.7),
+    p85: getPercentileNumber(distances, 0.85),
+    stepP85: getPercentileNumber(localSteps, 0.85),
+    lumaMedian: getMedianNumber(lumas),
+    chromaMedian: getMedianNumber(chromas),
+  };
+}
+
+function buildColorEdgeMap(imageData, width, height) {
+  const data = imageData?.data;
+  const total = width * height;
+  const edge = new Uint8Array(Math.max(0, total));
+  if (!data || width <= 0 || height <= 0) return edge;
+  for (let y = 0; y < height; y += 1) {
+    const y0 = Math.max(0, y - 1);
+    const y1 = Math.min(height - 1, y + 1);
+    for (let x = 0; x < width; x += 1) {
+      const x0 = Math.max(0, x - 1);
+      const x1 = Math.min(width - 1, x + 1);
+      const left = (y * width + x0) * 4;
+      const right = (y * width + x1) * 4;
+      const up = (y0 * width + x) * 4;
+      const down = (y1 * width + x) * 4;
+      const dx = Math.sqrt(colorDistanceSqFromOffsets(data, left, right));
+      const dy = Math.sqrt(colorDistanceSqFromOffsets(data, up, down));
+      edge[y * width + x] = clampByte(Math.max(dx, dy));
+    }
+  }
+  return edge;
+}
+
+function collectBorderMapPercentile(map, width, height, ratio = 0.85) {
+  if (!map || width <= 0 || height <= 0) return 0;
+  const values = [];
+  const stepX = Math.max(1, Math.floor(width / 64));
+  const stepY = Math.max(1, Math.floor(height / 64));
+  for (let x = 0; x < width; x += stepX) {
+    values.push(map[x]);
+    values.push(map[(height - 1) * width + x]);
+  }
+  for (let y = 1; y < height - 1; y += stepY) {
+    values.push(map[y * width]);
+    values.push(map[y * width + width - 1]);
+  }
+  return getPercentileNumber(values, ratio);
+}
+
+function buildAdaptiveBackgroundRemovalMask(imageData, width, height, bgPalette, bgStats, bgThreshold) {
+  const data = imageData?.data;
+  const total = width * height;
+  const mask = new Uint8Array(Math.max(0, total));
+  if (!data || total <= 0) return mask;
+
+  const edgeMap = buildColorEdgeMap(imageData, width, height);
+  const borderEdgeP85 = collectBorderMapPercentile(edgeMap, width, height, 0.85);
+  const softBgThreshold = Math.max(28, Math.min(104, Math.max(bgThreshold + 14, bgStats.p85 + 12, bgStats.median + 24)));
+  const hardBgThreshold = Math.max(56, Math.min(158, Math.max(softBgThreshold + 32, bgThreshold + 48)));
+  const smoothStepLimit = Math.max(12, Math.min(38, bgStats.stepP85 + 16));
+  const textureStepLimit = Math.max(smoothStepLimit + 4, Math.min(58, bgStats.stepP85 + 28));
+  const edgeBlockThreshold = Math.max(18, Math.min(62, borderEdgeP85 + 18));
+  const bgDistance = new Uint16Array(total);
+
+  for (let i = 0; i < total; i += 1) {
+    const idx = i * 4;
+    if (data[idx + 3] <= 20) {
+      bgDistance[i] = 0;
+      continue;
+    }
+    bgDistance[i] = Math.min(65535, Math.round(Math.sqrt(getMinPaletteDistanceSq(data[idx], data[idx + 1], data[idx + 2], bgPalette))));
+  }
+
+  const bgConnected = new Uint8Array(total);
+  const queue = new Int32Array(Math.max(1, total));
+  let head = 0;
+  let tail = 0;
+  const seedLimit = Math.min(176, hardBgThreshold + 18);
+  const pushSeed = (x, y) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const idx = y * width + x;
+    if (bgConnected[idx]) return;
+    const alpha = data[idx * 4 + 3];
+    if (alpha > 20 && bgDistance[idx] > seedLimit) return;
+    bgConnected[idx] = 1;
+    queue[tail] = idx;
+    tail += 1;
+  };
+  for (let x = 0; x < width; x += 1) {
+    pushSeed(x, 0);
+    pushSeed(x, height - 1);
+  }
+  for (let y = 1; y < height - 1; y += 1) {
+    pushSeed(0, y);
+    pushSeed(width - 1, y);
+  }
+
+  const canJoinBackground = (from, next) => {
+    const nextOffset = next * 4;
+    const alpha = data[nextOffset + 3];
+    if (alpha <= 20) return true;
+    const nextDist = bgDistance[next];
+    if (nextDist <= bgThreshold) return true;
+    const step = Math.sqrt(colorDistanceSqFromOffsets(data, from * 4, nextOffset));
+    const edge = edgeMap[next];
+    const fromDist = bgDistance[from];
+    const lumaDiff = Math.abs(getPixelLuma(data, next) - bgStats.lumaMedian);
+    const chromaDiff = Math.abs(getPixelChroma(data, next) - bgStats.chromaMedian);
+    const toneLooksForeground = lumaDiff > 46 || chromaDiff > 38 || nextDist > softBgThreshold;
+    const backgroundTone =
+      chromaDiff <= 30 &&
+      nextDist <= hardBgThreshold &&
+      step <= textureStepLimit + 18 &&
+      edge <= edgeBlockThreshold + 22;
+
+    if (backgroundTone) return true;
+    if (edge >= edgeBlockThreshold && nextDist > bgThreshold * 0.9 && nextDist > fromDist + 18) return false;
+    if (edge >= edgeBlockThreshold + 10 && toneLooksForeground && step > smoothStepLimit) return false;
+    if (nextDist <= softBgThreshold && step <= textureStepLimit) return true;
+    if (nextDist <= hardBgThreshold && step <= smoothStepLimit && !toneLooksForeground) return true;
+    if (nextDist <= hardBgThreshold && step <= textureStepLimit && fromDist <= hardBgThreshold) return true;
+    return false;
+  };
+
+  const pushNeighbor = (from, x, y) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const next = y * width + x;
+    if (bgConnected[next]) return;
+    if (!canJoinBackground(from, next)) return;
+    bgConnected[next] = 1;
+    queue[tail] = next;
+    tail += 1;
+  };
+
+  while (head < tail) {
+    const idx = queue[head];
+    head += 1;
+    const x = idx % width;
+    const y = Math.floor(idx / width);
+    pushNeighbor(idx, x - 1, y);
+    pushNeighbor(idx, x + 1, y);
+    pushNeighbor(idx, x, y - 1);
+    pushNeighbor(idx, x, y + 1);
+  }
+
+  for (let i = 0; i < total; i += 1) {
+    const alpha = data[i * 4 + 3];
+    if (!bgConnected[i] && alpha > 20) mask[i] = 1;
+  }
+  return mask;
+}
+
 export function refineForegroundMask(mask, width, height) {
   if (!mask || width <= 2 || height <= 2) return mask;
   const total = width * height;
@@ -1012,8 +1239,7 @@ export function refineForegroundMask(mask, width, height) {
     return out;
   };
 
-  const opened = dilate(erode(mask));
-  const closed = erode(dilate(opened));
+  const closed = erode(dilate(mask));
 
   const queue = new Int32Array(Math.max(1, total));
   const visited = new Uint8Array(total);
@@ -1464,136 +1690,7 @@ export function addForegroundGapTolerance(mask, width, height) {
   return closed;
 }
 
-function countForegroundWindow(mask, width, height, cx, cy, radius) {
-  const r = Math.max(0, Math.floor(Number(radius) || 0));
-  let count = 0;
-  for (let y = Math.max(0, cy - r); y <= Math.min(height - 1, cy + r); y += 1) {
-    const row = y * width;
-    for (let x = Math.max(0, cx - r); x <= Math.min(width - 1, cx + r); x += 1) {
-      if (mask[row + x]) count += 1;
-    }
-  }
-  return count;
-}
-
-function findForegroundSupportDistance(mask, width, height, x, y, dx, dy, maxDistance, supportRadius, minSupport) {
-  for (let distance = 1; distance <= maxDistance; distance += 1) {
-    const nx = x + dx * distance;
-    const ny = y + dy * distance;
-    if (nx < 0 || ny < 0 || nx >= width || ny >= height) return 0;
-    if (!mask[ny * width + nx]) continue;
-    const support = countForegroundWindow(mask, width, height, nx, ny, supportRadius);
-    if (support >= minSupport) return distance;
-  }
-  return 0;
-}
-
-function addForegroundClampProtection(mask, imageData, width, height) {
-  const data = imageData?.data;
-  const total = width * height;
-  if (!mask || !data || total <= 0 || width <= 2 || height <= 2) return mask;
-  const shortSide = Math.min(width, height);
-  const maxDistance = Math.max(8, Math.min(36, Math.round(shortSide * 0.032)));
-  const supportRadius = Math.max(1, Math.min(3, Math.round(shortSide * 0.0025)));
-  const supportWindowArea = (supportRadius * 2 + 1) * (supportRadius * 2 + 1);
-  const minSupport = Math.max(2, Math.ceil(supportWindowArea * 0.18));
-  const densityRadius = Math.max(3, Math.min(8, Math.round(shortSide * 0.006)));
-  const densityWindowArea = (densityRadius * 2 + 1) * (densityRadius * 2 + 1);
-  const minLocalForeground = Math.max(5, Math.ceil(densityWindowArea * 0.1));
-  const bottomGuardY = height - Math.max(24, Math.round(shortSide * 0.12));
-  const candidate = new Uint8Array(total);
-  const directionPairs = [
-    [1, 0],
-    [0, 1],
-    [1, 1],
-    [1, -1],
-  ];
-
-  for (let y = 1; y < height - 1; y += 1) {
-    const row = y * width;
-    const nearBottom = y >= bottomGuardY;
-    for (let x = 1; x < width - 1; x += 1) {
-      const idx = row + x;
-      if (mask[idx] || data[idx * 4 + 3] <= 20) continue;
-      const localForeground = countForegroundWindow(mask, width, height, x, y, densityRadius);
-      if (localForeground < minLocalForeground) continue;
-
-      for (let i = 0; i < directionPairs.length; i += 1) {
-        const [dx, dy] = directionPairs[i];
-        if (nearBottom && dy === 0) continue;
-        const forward = findForegroundSupportDistance(mask, width, height, x, y, dx, dy, maxDistance, supportRadius, minSupport);
-        if (!forward) continue;
-        const backward = findForegroundSupportDistance(mask, width, height, x, y, -dx, -dy, maxDistance, supportRadius, minSupport);
-        if (!backward) continue;
-        if (forward + backward <= maxDistance) {
-          candidate[idx] = 1;
-          break;
-        }
-      }
-    }
-  }
-
-  const visited = new Uint8Array(total);
-  const queue = new Int32Array(Math.max(1, total));
-  const output = new Uint8Array(mask);
-  const maxComponentArea = Math.max(24, Math.floor(total * 0.0035));
-  const maxNarrowSide = Math.max(6, Math.round(maxDistance * 1.25));
-  const maxCompactSide = Math.max(12, Math.round(maxDistance * 2));
-
-  for (let start = 0; start < total; start += 1) {
-    if (!candidate[start] || visited[start]) continue;
-    let head = 0;
-    let tail = 0;
-    let area = 0;
-    let minX = width;
-    let minY = height;
-    let maxX = 0;
-    let maxY = 0;
-    const pixels = [];
-    queue[tail] = start;
-    tail += 1;
-    visited[start] = 1;
-    while (head < tail) {
-      const idx = queue[head];
-      head += 1;
-      pixels.push(idx);
-      area += 1;
-      const x = idx % width;
-      const y = Math.floor(idx / width);
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-      for (let ny = y - 1; ny <= y + 1; ny += 1) {
-        for (let nx = x - 1; nx <= x + 1; nx += 1) {
-          if (nx === x && ny === y) continue;
-          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-          const next = ny * width + nx;
-          if (!candidate[next] || visited[next]) continue;
-          visited[next] = 1;
-          queue[tail] = next;
-          tail += 1;
-        }
-      }
-    }
-
-    const compWidth = maxX - minX + 1;
-    const compHeight = maxY - minY + 1;
-    const narrowEnough = Math.min(compWidth, compHeight) <= maxNarrowSide;
-    const compactEnough = compWidth <= maxCompactSide && compHeight <= maxCompactSide;
-    const bottomShadowLike =
-      maxY >= bottomGuardY &&
-      compWidth > compHeight * 2.2 &&
-      compWidth > maxDistance * 1.5;
-    if (area <= maxComponentArea && !bottomShadowLike && (narrowEnough || compactEnough)) {
-      for (let i = 0; i < pixels.length; i += 1) output[pixels[i]] = 1;
-    }
-  }
-
-  return output;
-}
-
-export function buildForegroundMask(imageData, width, height, options = {}) {
+export function buildForegroundMask(imageData, width, height) {
   const total = width * height;
   const data = imageData?.data;
   const mask = new Uint8Array(total);
@@ -1617,79 +1714,10 @@ export function buildForegroundMask(imageData, width, height, options = {}) {
   }
 
   const bgPalette = collectBorderPalette(imageData, width, height);
-  const borderDistances = [];
-  const stepX = Math.max(1, Math.floor(width / 64));
-  const stepY = Math.max(1, Math.floor(height / 64));
-  const collectBorderDistance = (x, y) => {
-    const idx = (y * width + x) * 4;
-    const alpha = data[idx + 3];
-    if (alpha <= 20) return;
-    const distSq = getMinPaletteDistanceSq(data[idx], data[idx + 1], data[idx + 2], bgPalette);
-    borderDistances.push(Math.sqrt(distSq));
-  };
-  for (let x = 0; x < width; x += stepX) {
-    collectBorderDistance(x, 0);
-    collectBorderDistance(x, height - 1);
-  }
-  for (let y = 1; y < height - 1; y += stepY) {
-    collectBorderDistance(0, y);
-    collectBorderDistance(width - 1, y);
-  }
-  const borderP70 = getPercentileNumber(borderDistances, 0.7);
-  const borderP85 = getPercentileNumber(borderDistances, 0.85);
-  const borderMedian = getMedianNumber(borderDistances);
-  const bgThreshold = Math.max(14, Math.min(86, Math.max(borderP70 + 8, borderP85 + 2, borderMedian + 12)));
-  const bgThresholdSq = bgThreshold * bgThreshold;
-  const bgLike = new Uint8Array(total);
-  for (let i = 0; i < total; i += 1) {
-    const idx = i * 4;
-    const alpha = data[idx + 3];
-    if (alpha <= 20) {
-      bgLike[i] = 1;
-      continue;
-    }
-    const distSq = getMinPaletteDistanceSq(data[idx], data[idx + 1], data[idx + 2], bgPalette);
-    bgLike[i] = distSq <= bgThresholdSq ? 1 : 0;
-  }
-
-  const bgConnected = new Uint8Array(total);
-  const queue = new Int32Array(Math.max(1, total));
-  let head = 0;
-  let tail = 0;
-  const push = (x, y) => {
-    if (x < 0 || y < 0 || x >= width || y >= height) return;
-    const idx = y * width + x;
-    if (!bgLike[idx] || bgConnected[idx]) return;
-    bgConnected[idx] = 1;
-    queue[tail] = idx;
-    tail += 1;
-  };
-  for (let x = 0; x < width; x += 1) {
-    push(x, 0);
-    push(x, height - 1);
-  }
-  for (let y = 1; y < height - 1; y += 1) {
-    push(0, y);
-    push(width - 1, y);
-  }
-  while (head < tail) {
-    const idx = queue[head];
-    head += 1;
-    const x = idx % width;
-    const y = Math.floor(idx / width);
-    push(x - 1, y);
-    push(x + 1, y);
-    push(x, y - 1);
-    push(x, y + 1);
-  }
-  for (let i = 0; i < total; i += 1) {
-    const alpha = data[i * 4 + 3];
-    if (!bgConnected[i] && alpha > 20) mask[i] = 1;
-  }
-  const protectedMask = options.foregroundProtect === true
-    ? addForegroundClampProtection(mask, imageData, width, height)
-    : mask;
-  return refineForegroundMask(addForegroundGapTolerance(protectedMask, width, height), width, height);
+  const bgStats = collectBorderBackgroundStats(imageData, width, height, bgPalette);
+  const bgThreshold = Math.max(14, Math.min(86, Math.max(bgStats.p70 + 8, bgStats.p85 + 2, bgStats.median + 12)));
+  const initialMask = buildAdaptiveBackgroundRemovalMask(imageData, width, height, bgPalette, bgStats, bgThreshold);
+  return refineForegroundMask(addForegroundGapTolerance(initialMask, width, height), width, height);
 }
 
 export function collectSubjectBounds(mask, width, height) {
@@ -2878,7 +2906,7 @@ export async function buildClusterProcessPreview(sourceImage, baseProcessImage, 
   return canvas.toDataURL("image/png");
 }
 
-export async function splitImageBySubjects(source, options = {}) {
+export async function splitImageBySubjects(source) {
   const normalized = normalizeImageValue(source);
   if (!normalized) throw new Error("Invalid image source");
   const image = await loadImageElement(normalized);
@@ -2891,9 +2919,7 @@ export async function splitImageBySubjects(source, options = {}) {
   if (!ctx) throw new Error("Canvas context unavailable");
   ctx.drawImage(image, 0, 0, width, height);
   const imageData = ctx.getImageData(0, 0, width, height);
-  const mask = buildForegroundMask(imageData, width, height, {
-    foregroundProtect: options.foregroundProtect === true,
-  });
+  const mask = buildForegroundMask(imageData, width, height);
   const processImage = buildSplitProcessPreview(imageData, mask, width, height);
   const boxes = collectSubjectBounds(mask, width, height);
   const bgPalette = collectBorderPalette(imageData, width, height);
@@ -3694,7 +3720,6 @@ export async function saveSplitHistoryToLocalFolder(rootHandle, record = {}) {
     splitSource: record.splitSource || "original",
     renderMode: record.renderMode || DEFAULT_SPLIT_RENDER_MODE,
     shapeMode: record.shapeMode || DEFAULT_SPLIT_SHAPE_MODE,
-    foregroundProtect: record.foregroundProtect === true,
     backgroundColor: record.backgroundColor || DEFAULT_SPLIT_BG_COLOR,
     enhanced: record.enhanced !== false,
     timing: record.timing || {},
@@ -3801,7 +3826,6 @@ export async function loadSplitHistoryFromLocalFolder(rootHandle) {
         splitSource: meta.splitSource || "original",
         renderMode: normalizeSplitRenderMode(meta.renderMode),
         shapeMode: normalizeSplitShapeMode(meta.shapeMode),
-        foregroundProtect: meta.foregroundProtect === true,
         backgroundColor: meta.backgroundColor || DEFAULT_SPLIT_BG_COLOR,
         enhanced: meta.enhanced !== false,
         timing: meta.timing || {},
@@ -4213,7 +4237,7 @@ export async function loadApiConfigFromLocalFolder(rootHandle) {
                 [normalizeApiPlatform(raw?.apiPlatform)]: raw?.apiKey,
               }
         );
-        if (!candidateKeys.deerapi && !candidateKeys.bailian) continue;
+        if (!candidateKeys.comet && !candidateKeys.deerapi && !candidateKeys.bailian) continue;
         const seq = Number(raw?.seq) || 0;
         const createdAt = Number(raw?.createdAt) || 0;
         const isNewer = seq > bestSeq || (seq === bestSeq && createdAt >= bestCreatedAt);
@@ -4241,6 +4265,12 @@ export async function loadApiConfigFromLocalFolder(rootHandle) {
     const legacyPlatform = normalizeApiPlatform(raw?.apiPlatform);
     const legacyKey = normalizeApiKey(raw?.apiKey);
     const normalizedKeys = normalizeApiKeys({
+      comet:
+        rawObject?.cometKey ||
+        rawObject?.cometapiKey ||
+        rawObject?.apiKeys?.comet ||
+        rawObject?.apiKeys?.cometKey ||
+        (legacyPlatform === "comet" ? legacyKey : ""),
       deerapi:
         rawObject?.deerapiKey ||
         rawObject?.deerApiKey ||
@@ -4255,7 +4285,7 @@ export async function loadApiConfigFromLocalFolder(rootHandle) {
         rawObject?.apiKeys?.dashscopeKey ||
         (legacyPlatform === "bailian" ? legacyKey : ""),
     });
-    if (!normalizedKeys.deerapi && !normalizedKeys.bailian) {
+    if (!normalizedKeys.comet && !normalizedKeys.deerapi && !normalizedKeys.bailian) {
       return recoverApiKeysFromTurns();
     }
     return {
@@ -4282,15 +4312,23 @@ export async function saveApiConfigToLocalFolder(rootHandle, apiKeys) {
     API_CONFIG_FILE_NAME,
     JSON.stringify(
       {
+        cometKey: normalizedKeys.comet,
         deerapiKey: normalizedKeys.deerapi,
         bailianKey: normalizedKeys.bailian,
         apiKeys: {
+          comet: normalizedKeys.comet,
           deerapi: normalizedKeys.deerapi,
           bailian: normalizedKeys.bailian,
         },
-        // Keep legacy DeerAPI fields so old folders remain readable by older builds.
-        apiKey: normalizedKeys.deerapi,
-        apiPlatform: normalizedKeys.deerapi ? "deerapi" : normalizedKeys.bailian ? "bailian" : "deerapi",
+        // Keep legacy single-key fields so old folders remain readable by older builds.
+        apiKey: normalizedKeys.comet || normalizedKeys.deerapi,
+        apiPlatform: normalizedKeys.comet
+          ? "comet"
+          : normalizedKeys.deerapi
+          ? "deerapi"
+          : normalizedKeys.bailian
+          ? "bailian"
+          : "comet",
       },
       null,
       2
@@ -4663,6 +4701,7 @@ export async function callOpenAiImageEditAPI(proxyUrl, model, prompt, imageInput
   formData.append("model", model.id);
   formData.append("prompt", prompt || "Generate a creative image");
   formData.append("n", String(Math.max(1, Number(count) || 1)));
+  formData.append("size", mapAspectRatioToOpenAiImageSize(options.aspectRatio));
 
   const data = await postFormDataWithRetry(proxyUrl, "/v1/images/edits", formData, {
     signal,
@@ -4693,7 +4732,7 @@ export async function callImagesAPI(proxyUrl, model, prompt, imageBase64, option
     model: model.id,
     prompt: prompt || "Generate a creative image",
     n: Math.max(1, Number(count) || 1),
-    size: isSeedream ? "2K" : "1024x1024",
+    size: isSeedream ? "2K" : mapAspectRatioToOpenAiImageSize(options.aspectRatio),
   };
   if (isSeedream) {
     // Use URL response to avoid oversized base64 payload causing network failures.

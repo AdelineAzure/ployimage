@@ -2,25 +2,25 @@
 // Each model has its own apiType defining which upstream endpoint/format to use.
 const SEEDREAM_MODELS = [
   // Seedream — /v1/images/generations (豆包生图)
-  { id: "doubao-seedream-4-0-250828", name: "Seedream 4.0", shortName: "Seed 4.0", provider: "ByteDance", apiType: "images", platforms: ["deerapi"] },
-  { id: "doubao-seedream-4-5-251128", name: "Seedream 4.5", shortName: "Seed 4.5", provider: "ByteDance", apiType: "images", badge: "NEW", platforms: ["deerapi"] },
-  { id: "doubao-seedream-5-0-260128", name: "Seedream 5.0 Lite", shortName: "Seed 5", provider: "ByteDance", apiType: "images", badge: "NEW", platforms: ["deerapi"] },
+  { id: "doubao-seedream-4-0-250828", name: "Seedream 4.0", shortName: "Seed 4.0", provider: "ByteDance", apiType: "images", platforms: ["comet"] },
+  { id: "doubao-seedream-4-5-251128", name: "Seedream 4.5", shortName: "Seed 4.5", provider: "ByteDance", apiType: "images", badge: "NEW", platforms: ["comet"] },
+  { id: "doubao-seedream-5-0-260128", name: "Seedream 5.0 Lite", shortName: "Seed 5", provider: "ByteDance", apiType: "images", badge: "NEW", platforms: ["comet"] },
 ];
 
 const NANO_MODELS = [
   // NanoBanana 系列：本质调用 Gemini 图像模型
-  { id: "gemini-2.5-flash-image", name: "NanoBanana", shortName: "Nano", provider: "Google", apiType: "gemini", badge: "HOT", platforms: ["deerapi"] },
-  { id: "gemini-3.1-flash-image-preview", name: "NanoBanana 2", shortName: "Nano 2", provider: "Google", apiType: "gemini", badge: "NEW", platforms: ["deerapi"] },
-  { id: "gemini-3-pro-image", name: "NanoBanana Pro", shortName: "Nano Pro", provider: "Google", apiType: "gemini", badge: "PRO", platforms: ["deerapi"] },
+  { id: "gemini-2.5-flash-image", name: "NanoBanana", shortName: "Nano", provider: "Google", apiType: "gemini", badge: "HOT", platforms: ["comet"] },
+  { id: "gemini-3.1-flash-image-preview", name: "NanoBanana 2", shortName: "Nano 2", provider: "Google", apiType: "gemini", badge: "NEW", platforms: ["comet"] },
+  { id: "gemini-3-pro-image", name: "NanoBanana Pro", shortName: "Nano Pro", provider: "Google", apiType: "gemini", badge: "PRO", platforms: ["comet"] },
 ];
 
 const MID_GPT_MODELS = [
   // Midjourney via /mj
-  { id: "midjourney-imagine", name: "Midjourney Imagine", shortName: "Midjourney", provider: "Midjourney", apiType: "midjourney", badge: "BETA", platforms: ["deerapi"] },
+  { id: "midjourney-imagine", name: "Midjourney Imagine", shortName: "Midjourney", provider: "Midjourney", apiType: "midjourney", badge: "BETA", platforms: ["comet"] },
   // GPT Image 系列 — 文生图走 /v1/images/generations；带输入图优先走 JSON 兼容路径，
   // gpt-image-1 / gpt-image-1-mini 才使用 /v1/images/edits (multipart)
-  { id: "gpt-image-1.5", name: "GPT‑1.5 Image", shortName: "GPT-1.5", provider: "OpenAI", apiType: "images", badge: "HOT", platforms: ["deerapi"] },
-  { id: "gpt-image-2", name: "GPT‑2 Image", shortName: "GPT-2", provider: "OpenAI", apiType: "images", badge: "NEW", platforms: ["deerapi"] },
+  { id: "gpt-image-1.5", name: "GPT‑1.5 Image", shortName: "GPT-1.5", provider: "OpenAI", apiType: "images", badge: "HOT", platforms: ["comet"] },
+  { id: "gpt-image-2", name: "GPT‑2 Image", shortName: "GPT-2", provider: "OpenAI", apiType: "images", badge: "NEW", platforms: ["comet"] },
 ];
 
 const WAN_QWEN_MODELS = [
@@ -73,18 +73,20 @@ export const DEFAULT_TASK_MODE = "single";
 export const DEFAULT_COMPARE_PROMPTS = { a: "", b: "" };
 export const DEFAULT_LAST_EDITED_COUNT = 1;
 export const DEFAULT_ASPECT_RATIO = "auto";
-export const DEFAULT_API_PLATFORM = "deerapi";
+export const DEFAULT_API_PLATFORM = "comet";
 export const DEFAULT_API_BASE_URLS = {
+  comet: "https://api.cometapi.com",
   deerapi: "https://api.deerapi.com",
   bailian: "https://dashscope.aliyuncs.com",
 };
 export const DEFAULT_API_BASE_URL = DEFAULT_API_BASE_URLS[DEFAULT_API_PLATFORM];
 export const DEFAULT_API_KEY = "";
 export const DEFAULT_API_KEYS = {
+  comet: DEFAULT_API_KEY,
   deerapi: DEFAULT_API_KEY,
   bailian: DEFAULT_API_KEY,
 };
-export const DEFAULT_GPT_ASSIST_MODEL = "gpt-4o-mini";
+export const DEFAULT_GPT_ASSIST_MODEL = "gpt-5.4";
 export const DEFAULT_BAILIAN_ASSIST_MODEL = "qwen-plus";
 export const DEFAULT_GPT_ASSIST_PROMPT = "你是一个提示词优化助手。你只改写 {{ }} 里的内容，保持用户原有写作风格、长度和随机感，不要改动大括号外的任何字符。";
 export const DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT = true;

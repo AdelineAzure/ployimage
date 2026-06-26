@@ -5,7 +5,7 @@
 //   1. Go to https://dash.cloudflare.com → Workers & Pages → Create
 //   2. Paste this code into the editor
 //   3. Go to Settings → Variables → Add:
-//      - Name: DEERAPI_KEY or DASHSCOPE_API_KEY
+//      - Name: COMETAPI_KEY, DEERAPI_KEY or DASHSCOPE_API_KEY
 //      - Value: your upstream API key
 //      - Check "Encrypt"
 //   4. Deploy
@@ -108,12 +108,17 @@ export default {
       const fallbackApiKey = getFallbackApiKey(env, apiPlatform);
       const apiKey = requestApiKey || fallbackApiKey;
       if (!apiKey) {
-        const envName = apiPlatform === "bailian" ? "DASHSCOPE_API_KEY" : "DEERAPI_KEY";
+        const envName =
+          apiPlatform === "bailian"
+            ? "DASHSCOPE_API_KEY"
+            : apiPlatform === "deerapi"
+            ? "DEERAPI_KEY"
+            : "COMETAPI_KEY";
         return json({ error: `API key missing. Provide X-Api-Key or configure ${envName}.` }, 400);
       }
 
       const isGemini = targetPath.includes("/v1beta/");
-      const prefersBearer = apiPlatform === "bailian" || !isGemini;
+      const prefersBearer = apiPlatform === "bailian" || apiPlatform === "comet" || !isGemini;
       const primaryAuth = prefersBearer ? `Bearer ${apiKey}` : apiKey;
       const fallbackAuth = prefersBearer ? apiKey : `Bearer ${apiKey}`;
       const baseHeaders = {
@@ -165,7 +170,7 @@ function corsHeaders() {
   };
 }
 
-const DEFAULT_UPSTREAM_BASE = "https://api.deerapi.com";
+const DEFAULT_UPSTREAM_BASE = "https://api.cometapi.com";
 const WORKER_VERSION = "2026-05-13-wan21-upscale";
 
 function normalizeApiKey(value) {
@@ -180,18 +185,27 @@ function normalizeApiKey(value) {
 }
 
 function normalizeApiPlatform(value) {
-  return value === "bailian" ? "bailian" : "deerapi";
+  if (value === "bailian") return "bailian";
+  if (value === "deerapi") return "deerapi";
+  if (value === "comet") return "comet";
+  return "comet";
 }
 
 function inferApiPlatformFromBase(value) {
-  return /dashscope\.aliyuncs\.com/i.test(value || "") ? "bailian" : "deerapi";
+  if (/dashscope\.aliyuncs\.com/i.test(value || "")) return "bailian";
+  if (/cometapi\.com/i.test(value || "")) return "comet";
+  if (/deerapi\.com/i.test(value || "")) return "deerapi";
+  return "comet";
 }
 
 function getFallbackApiKey(env, apiPlatform) {
   if (apiPlatform === "bailian") {
     return normalizeApiKey(env.DASHSCOPE_API_KEY || env.BAILIAN_API_KEY || "");
   }
-  return normalizeApiKey(env.DEERAPI_KEY || "");
+  if (apiPlatform === "deerapi") {
+    return normalizeApiKey(env.DEERAPI_KEY || "");
+  }
+  return normalizeApiKey(env.COMETAPI_KEY || env.COMET_API_KEY || "");
 }
 
 function resolveUpstreamBase(value) {

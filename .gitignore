@@ -1,0 +1,19 @@
+# dependencies
+node_modules/
+
+# build / dev caches
+.vite/
+node_modules/.vite/
+
+# OS files
+.DS_Store
+**/.DS_Store
+
+# local docs / scratch (not for repo)
+docs/
+prd/
+archive/
+
+# logs
+*.log
+npm-debug.log*

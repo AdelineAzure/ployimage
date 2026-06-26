@@ -44,11 +44,11 @@ export function SettingsModal({ show, onClose, proxyUrl, setProxyUrl, uiLanguage
         <p style={S.hint}>
           {uiLanguage === "zh" ? (
             <>
-              请先部署下面的 Worker。使用 DeerAPI 时可配置 <code style={{ color: "#a78bfa" }}>DEERAPI_KEY</code>，使用百炼时可配置 <code style={{ color: "#a78bfa" }}>DASHSCOPE_API_KEY</code>；如果你已在 API 面板里保存密钥，则会优先使用面板里的值。
+              请先部署下面的 Worker。使用 Comet 时可配置 <code style={{ color: "#a78bfa" }}>COMETAPI_KEY</code>，使用 DeerAPI 时可配置 <code style={{ color: "#a78bfa" }}>DEERAPI_KEY</code>，使用百炼时可配置 <code style={{ color: "#a78bfa" }}>DASHSCOPE_API_KEY</code>；如果你已在 API 面板里保存密钥，则会优先使用面板里的值。
             </>
           ) : (
             <>
-              Deploy the Worker below. Use <code style={{ color: "#a78bfa" }}>DEERAPI_KEY</code> for DeerAPI or <code style={{ color: "#a78bfa" }}>DASHSCOPE_API_KEY</code> for Bailian. If you save a key in the API panel, that value takes precedence.
+              Deploy the Worker below. Use <code style={{ color: "#a78bfa" }}>COMETAPI_KEY</code> for Comet, <code style={{ color: "#a78bfa" }}>DEERAPI_KEY</code> for DeerAPI, or <code style={{ color: "#a78bfa" }}>DASHSCOPE_API_KEY</code> for Bailian. If you save a key in the API panel, that value takes precedence.
             </>
           )}
         </p>
@@ -75,6 +75,7 @@ export function ApiKeyModal({
   const normalizedCurrentKeys = normalizeApiKeys(apiKeys);
   const normalizedDraftKeys = normalizeApiKeys(draftApiKeys);
   const isDirty =
+    normalizedDraftKeys.comet !== normalizedCurrentKeys.comet ||
     normalizedDraftKeys.deerapi !== normalizedCurrentKeys.deerapi ||
     normalizedDraftKeys.bailian !== normalizedCurrentKeys.bailian;
   return (
@@ -84,7 +85,14 @@ export function ApiKeyModal({
           <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>🔑 {t("api.title")}</h2>
           <button onClick={onClose} style={S.closeBtn}>✕</button>
         </div>
-        <label style={S.fieldLabel}>{t("api.deerapiLabel")}</label>
+        <label style={S.fieldLabel}>{t("api.cometLabel")}</label>
+        <input
+          style={S.proxyInput}
+          value={normalizedDraftKeys.comet}
+          onChange={(e) => setDraftApiKeys((prev) => ({ ...normalizeApiKeys(prev), comet: e.target.value }))}
+          placeholder="sk-..."
+        />
+        <label style={{ ...S.fieldLabel, marginTop: 14 }}>{t("api.deerapiLabel")}</label>
         <input
           style={S.proxyInput}
           value={normalizedDraftKeys.deerapi}
@@ -110,8 +118,8 @@ export function ApiKeyModal({
         </div>
         <p style={S.hint}>
           {uiLanguage === "zh"
-            ? "保存后会按模型自动使用对应平台。留空的输入框会回退到 Worker 环境变量：DeerAPI 走 DEERAPI_KEY，百炼走 DASHSCOPE_API_KEY。"
-            : "After saving, each model automatically uses its matching provider. Empty fields fall back to Worker env vars: DEERAPI_KEY for DeerAPI and DASHSCOPE_API_KEY for Bailian."}
+            ? "保存后会按模型自动使用对应平台。留空的输入框会回退到 Worker 环境变量：Comet 走 COMETAPI_KEY，DeerAPI 走 DEERAPI_KEY，百炼走 DASHSCOPE_API_KEY。"
+            : "After saving, each model automatically uses its matching provider. Empty fields fall back to Worker env vars: COMETAPI_KEY for Comet, DEERAPI_KEY for DeerAPI, and DASHSCOPE_API_KEY for Bailian."}
         </p>
       </div>
     </div>
