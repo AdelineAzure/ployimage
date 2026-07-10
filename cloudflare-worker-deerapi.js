@@ -113,12 +113,14 @@ export default {
             ? "DASHSCOPE_API_KEY"
             : apiPlatform === "deerapi"
             ? "DEERAPI_KEY"
+            : apiPlatform === "lumina"
+            ? "LUMINA_API_KEY"
             : "COMETAPI_KEY";
         return json({ error: `API key missing. Provide X-Api-Key or configure ${envName}.` }, 400);
       }
 
       const isGemini = targetPath.includes("/v1beta/");
-      const prefersBearer = apiPlatform === "bailian" || apiPlatform === "comet" || !isGemini;
+      const prefersBearer = apiPlatform === "bailian" || apiPlatform === "comet" || apiPlatform === "lumina" || !isGemini;
       const primaryAuth = prefersBearer ? `Bearer ${apiKey}` : apiKey;
       const fallbackAuth = prefersBearer ? apiKey : `Bearer ${apiKey}`;
       const baseHeaders = {
@@ -188,6 +190,7 @@ function normalizeApiPlatform(value) {
   if (value === "bailian") return "bailian";
   if (value === "deerapi") return "deerapi";
   if (value === "comet") return "comet";
+  if (value === "lumina") return "lumina";
   return "comet";
 }
 
@@ -195,6 +198,7 @@ function inferApiPlatformFromBase(value) {
   if (/dashscope\.aliyuncs\.com/i.test(value || "")) return "bailian";
   if (/cometapi\.com/i.test(value || "")) return "comet";
   if (/deerapi\.com/i.test(value || "")) return "deerapi";
+  if (/tripo3d\.com/i.test(value || "")) return "lumina";
   return "comet";
 }
 
@@ -204,6 +208,9 @@ function getFallbackApiKey(env, apiPlatform) {
   }
   if (apiPlatform === "deerapi") {
     return normalizeApiKey(env.DEERAPI_KEY || "");
+  }
+  if (apiPlatform === "lumina") {
+    return normalizeApiKey(env.LUMINA_API_KEY || "");
   }
   return normalizeApiKey(env.COMETAPI_KEY || env.COMET_API_KEY || "");
 }

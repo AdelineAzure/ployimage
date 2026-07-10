@@ -28,6 +28,7 @@ const {
   ASPECT_RATIO_OPTIONS,
   DEFAULT_TASK_MODE,
   DEFAULT_COMPARE_PROMPTS,
+  MAX_COMPARE_PROMPTS,
   DEFAULT_LAST_EDITED_COUNT,
   DEFAULT_ASPECT_RATIO,
   DEFAULT_API_PLATFORM,
@@ -354,12 +355,17 @@ function consolidateSplitHistoryRecords(records = []) {
 // ─── Main App ───
 export default function App() {
   const promptEditor = useUndoRedoText("");
-  const compareAEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS.a);
-  const compareBEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS.b);
+  const compareAEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[0]);
+  const compareBEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[1]);
+  const compareCEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[2]);
+  const compareDEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[3]);
+  const compareEditors = [compareAEditor, compareBEditor, compareCEditor, compareDEditor];
+  const [compareCount, setCompareCount] = useState(2);
   const prompt = promptEditor.value;
   const comparePrompts = useMemo(
-    () => ({ a: compareAEditor.value, b: compareBEditor.value }),
-    [compareAEditor.value, compareBEditor.value]
+    () => compareEditors.map((ed) => ed.value),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [compareAEditor.value, compareBEditor.value, compareCEditor.value, compareDEditor.value]
   );
   const [activePage, setActivePage] = useState("workspace");
   const [uiLanguage, setUiLanguage] = useState(DEFAULT_UI_LANGUAGE);
@@ -476,6 +482,9 @@ export default function App() {
   const promptInputRef = useRef(null);
   const compareAInputRef = useRef(null);
   const compareBInputRef = useRef(null);
+  const compareCInputRef = useRef(null);
+  const compareDInputRef = useRef(null);
+  const compareInputRefs = [compareAInputRef, compareBInputRef, compareCInputRef, compareDInputRef];
   const seqRef = useRef(1);
   const isPickingHistoryFolderRef = useRef(false);
   const hasAutoPromptedHistoryFolderRef = useRef(false);
@@ -495,15 +504,12 @@ export default function App() {
 
   const insertPlaceholderChip = useCallback(() => {
     if (taskMode === "compare") {
-      if (activePromptFieldRef.current === "b") {
-        compareBInputRef.current?.insertPlaceholder?.();
-        return;
-      }
-      compareAInputRef.current?.insertPlaceholder?.();
+      const idx = typeof activePromptFieldRef.current === "number" ? activePromptFieldRef.current : 0;
+      compareInputRefs[idx]?.current?.insertPlaceholder?.();
       return;
     }
     promptInputRef.current?.insertPlaceholder?.();
-  }, [taskMode]);
+  }, [taskMode, compareInputRefs]);
 
   useEffect(() => {
     try {
@@ -526,9 +532,18 @@ export default function App() {
           setModelCounts((prev) => ({ ...prev, ...migratedCounts }));
         }
         if (saved.taskMode === "single" || saved.taskMode === "compare" || saved.taskMode === "style") setTaskMode(saved.taskMode);
-        if (saved.comparePrompts && typeof saved.comparePrompts === "object") {
-          compareAEditor.resetText(typeof saved.comparePrompts.a === "string" ? saved.comparePrompts.a : DEFAULT_COMPARE_PROMPTS.a);
-          compareBEditor.resetText(typeof saved.comparePrompts.b === "string" ? saved.comparePrompts.b : DEFAULT_COMPARE_PROMPTS.b);
+        if (saved.comparePrompts) {
+          if (Array.isArray(saved.comparePrompts)) {
+            saved.comparePrompts.slice(0, MAX_COMPARE_PROMPTS).forEach((v, i) => {
+              if (typeof v === "string") compareEditors[i].resetText(v);
+            });
+            if (typeof saved.compareCount === "number" && saved.compareCount >= 2 && saved.compareCount <= MAX_COMPARE_PROMPTS) {
+              setCompareCount(saved.compareCount);
+            }
+          } else if (typeof saved.comparePrompts === "object") {
+            if (typeof saved.comparePrompts.a === "string") compareEditors[0].resetText(saved.comparePrompts.a);
+            if (typeof saved.comparePrompts.b === "string") compareEditors[1].resetText(saved.comparePrompts.b);
+          }
         }
         if (typeof saved.prompt === "string") promptEditor.resetText(saved.prompt);
         if (Array.isArray(saved.styleThemes)) {
@@ -583,6 +598,7 @@ export default function App() {
       prompt,
       taskMode,
       comparePrompts,
+      compareCount,
       styleThemes,
       styleReferenceImages,
       apiBaseUrl,
@@ -595,7 +611,7 @@ export default function App() {
     try {
       localStorage.setItem(LOCAL_STATE_KEY, JSON.stringify(state));
     } catch {}
-  }, [historyLimit, selectedModels, modelCounts, prompt, taskMode, comparePrompts, styleThemes, styleReferenceImages, apiBaseUrl, lastEditedCount, aspectRatio, proxyUrl, uiLanguage]);
+  }, [historyLimit, selectedModels, modelCounts, prompt, taskMode, comparePrompts, compareCount, styleThemes, styleReferenceImages, apiBaseUrl, lastEditedCount, aspectRatio, proxyUrl, uiLanguage]);
 
   useEffect(() => {
     if (selectedAtlasItems.length > 0) return;
@@ -657,14 +673,14 @@ export default function App() {
       const promptA = body;
       const promptB = backup.trim() ? backup : promptA;
       if (taskMode === "compare") {
-        if (comparePrompts.a !== promptA) compareAEditor.setText(promptA, { record: false });
-        if (comparePrompts.b !== promptB) compareBEditor.setText(promptB, { record: false });
+        if (comparePrompts[0] !== promptA) compareEditors[0].setText(promptA, { record: false });
+        if (comparePrompts[1] !== promptB) compareEditors[1].setText(promptB, { record: false });
       } else if (prompt !== promptA) {
         promptEditor.setText(promptA, { record: false });
       }
     }
     setShowTemplateModal(false);
-  }, [templateDraft, editingTemplateId, historyDirHandle, activeTemplateId, taskMode, comparePrompts.a, comparePrompts.b, prompt, compareAEditor, compareBEditor, promptEditor, uiLanguage]);
+  }, [templateDraft, editingTemplateId, historyDirHandle, activeTemplateId, taskMode, comparePrompts, prompt, compareEditors, promptEditor, uiLanguage]);
 
   const openStyleTemplateEditor = useCallback((templateId) => {
     if (!historyDirHandle) return;
@@ -698,12 +714,12 @@ export default function App() {
     const promptA = template.body || "";
     const promptB = template.backup?.trim() ? template.backup : promptA;
     if (taskMode === "compare") {
-      if (comparePrompts.a !== promptA) compareAEditor.setText(promptA, { record: false });
-      if (comparePrompts.b !== promptB) compareBEditor.setText(promptB, { record: false });
+      if (comparePrompts[0] !== promptA) compareEditors[0].setText(promptA, { record: false });
+      if (comparePrompts[1] !== promptB) compareEditors[1].setText(promptB, { record: false });
       return;
     }
     if (prompt !== promptA) promptEditor.setText(promptA, { record: false });
-  }, [templates, taskMode, compareAEditor, compareBEditor, promptEditor, activeTemplateId, comparePrompts.a, comparePrompts.b, prompt, historyDirHandle]);
+  }, [templates, taskMode, compareEditors, promptEditor, activeTemplateId, comparePrompts, prompt, historyDirHandle]);
 
   const selectStyleTemplateUsage = useCallback((templateId) => {
     if (!historyDirHandle) return;
@@ -755,10 +771,10 @@ export default function App() {
     }
 
     const items = taskMode === "compare"
-      ? [
-          { key: "a", prompt: comparePrompts.a, clearedPrompt: clearPlaceholderValues(comparePrompts.a) },
-          { key: "b", prompt: comparePrompts.b, clearedPrompt: clearPlaceholderValues(comparePrompts.b) },
-        ]
+      ? comparePrompts.slice(0, compareCount).map((p, i) => {
+          const key = ["a", "b", "c", "d"][i];
+          return { key, prompt: p, clearedPrompt: clearPlaceholderValues(p) };
+        })
       : [{ key: "single", prompt, clearedPrompt: clearPlaceholderValues(prompt) }];
     const targetItems = items.filter((item) => extractPlaceholderTokens(item.prompt).length > 0);
     if (!targetItems.length) {
@@ -767,8 +783,7 @@ export default function App() {
     }
 
     if (taskMode === "compare") {
-      compareAEditor.setText(items[0].clearedPrompt, { record: false });
-      compareBEditor.setText(items[1].clearedPrompt, { record: false });
+      items.forEach((item, i) => compareEditors[i].setText(item.clearedPrompt, { record: false }));
     } else {
       promptEditor.setText(items[0].clearedPrompt, { record: false });
     }
@@ -777,8 +792,8 @@ export default function App() {
     try {
       const rewritten = {};
       if (taskMode === "compare") {
-        const sourceKey = activePromptFieldRef.current === "b" ? "b" : "a";
-        const sourceItem = targetItems.find((item) => item.key === sourceKey) || targetItems[0];
+        const activeIdx = typeof activePromptFieldRef.current === "number" ? activePromptFieldRef.current : 0;
+        const sourceItem = targetItems.find((item) => item.key === ["a", "b", "c", "d"][activeIdx]) || targetItems[0];
         const sourceRewritten = await callTextAssistWithFallback(
           proxyUrl,
           sourceItem.clearedPrompt,
@@ -791,8 +806,9 @@ export default function App() {
           }
         );
         const syncedReplacements = extractPlaceholderTokens(sourceRewritten);
-        rewritten.a = applyPlaceholderReplacements(items[0].clearedPrompt, syncedReplacements);
-        rewritten.b = applyPlaceholderReplacements(items[1].clearedPrompt, syncedReplacements);
+        items.forEach((item) => {
+          rewritten[item.key] = applyPlaceholderReplacements(item.clearedPrompt, syncedReplacements);
+        });
       } else {
         const item = targetItems[0];
         rewritten[item.key] = await callTextAssistWithFallback(
@@ -809,12 +825,11 @@ export default function App() {
       }
 
       if (taskMode === "compare") {
-        if (typeof rewritten.a === "string" && rewritten.a !== comparePrompts.a) {
-          compareAEditor.setText(rewritten.a, { record: false });
-        }
-        if (typeof rewritten.b === "string" && rewritten.b !== comparePrompts.b) {
-          compareBEditor.setText(rewritten.b, { record: false });
-        }
+        items.forEach((item, i) => {
+          if (typeof rewritten[item.key] === "string" && rewritten[item.key] !== comparePrompts[i]) {
+            compareEditors[i].setText(rewritten[item.key], { record: false });
+          }
+        });
       } else if (typeof rewritten.single === "string" && rewritten.single !== prompt) {
         promptEditor.setText(rewritten.single, { record: false });
       }
@@ -827,7 +842,7 @@ export default function App() {
     } finally {
       setGptAssistBusy(false);
     }
-  }, [gptAssistBusy, proxyUrl, taskMode, comparePrompts.a, comparePrompts.b, prompt, uploadedImage, gptAssistPrompt, gptAssistSendPromptImage, gptAssistSendPromptText, apiKeys, compareAEditor, compareBEditor, promptEditor, t]);
+  }, [gptAssistBusy, proxyUrl, taskMode, comparePrompts, compareCount, compareEditors, prompt, uploadedImage, gptAssistPrompt, gptAssistSendPromptImage, gptAssistSendPromptText, apiKeys, promptEditor, t]);
 
   const clearAllStyleThemes = useCallback(() => {
     setStyleThemes(Array.from({ length: STYLE_THEME_SLOTS }, () => ""));
@@ -1036,30 +1051,20 @@ export default function App() {
     });
   }, []);
 
-  const updateComparePrompt = useCallback((key, value) => {
+  const updateComparePrompt = useCallback((index, value) => {
     const nextValue = typeof value === "string" ? value : String(value ?? "");
-    if (key === "a") {
-      const prevTokens = extractPlaceholderTokens(comparePrompts.a);
-      const nextTokens = extractPlaceholderTokens(nextValue);
-      compareAEditor.setText(nextValue);
-      const changed = prevTokens.length !== nextTokens.length || prevTokens.some((v, index) => v !== nextTokens[index]);
-      if (changed) {
-        const synced = applyPlaceholderReplacements(comparePrompts.b, nextTokens);
-        if (synced !== comparePrompts.b) compareBEditor.setText(synced, { record: false });
-      }
-      return;
-    }
-    if (key === "b") {
-      const prevTokens = extractPlaceholderTokens(comparePrompts.b);
-      const nextTokens = extractPlaceholderTokens(nextValue);
-      compareBEditor.setText(nextValue);
-      const changed = prevTokens.length !== nextTokens.length || prevTokens.some((v, index) => v !== nextTokens[index]);
-      if (changed) {
-        const synced = applyPlaceholderReplacements(comparePrompts.a, nextTokens);
-        if (synced !== comparePrompts.a) compareAEditor.setText(synced, { record: false });
+    const prevTokens = extractPlaceholderTokens(comparePrompts[index] || "");
+    const nextTokens = extractPlaceholderTokens(nextValue);
+    compareEditors[index].setText(nextValue);
+    const changed = prevTokens.length !== nextTokens.length || prevTokens.some((v, i) => v !== nextTokens[i]);
+    if (changed) {
+      for (let i = 0; i < compareCount; i++) {
+        if (i === index) continue;
+        const synced = applyPlaceholderReplacements(comparePrompts[i] || "", nextTokens);
+        if (synced !== comparePrompts[i]) compareEditors[i].setText(synced, { record: false });
       }
     }
-  }, [compareAEditor, compareBEditor, comparePrompts.a, comparePrompts.b]);
+  }, [compareEditors, comparePrompts, compareCount]);
 
   const selectedImageKeys = useMemo(
     () => new Set(selectedAtlasItems.map((item) => item.key)),
@@ -2586,12 +2591,11 @@ export default function App() {
       setHistoryFolderMsg(t("history.createdTasks", { count: queuedTurns.length }));
     }
     if (taskMode === "compare") {
-      compareAEditor.setText((prev) => clearPlaceholderValues(prev), { record: false });
-      compareBEditor.setText((prev) => clearPlaceholderValues(prev), { record: false });
+      compareEditors.slice(0, compareCount).forEach((ed) => ed.setText((prev) => clearPlaceholderValues(prev), { record: false }));
     } else {
       promptEditor.setText((prev) => clearPlaceholderValues(prev), { record: false });
     }
-  }, [proxyUrl, selectedModels, modelCounts, taskMode, prompt, comparePrompts, styleThemes, styleReferenceImages, apiKeys, apiBaseUrl, aspectRatio, uploadedInputImages, uploadedImage, compareAEditor, compareBEditor, promptEditor, t]);
+  }, [proxyUrl, selectedModels, modelCounts, taskMode, prompt, comparePrompts, compareCount, compareEditors, styleThemes, styleReferenceImages, apiKeys, apiBaseUrl, aspectRatio, uploadedInputImages, uploadedImage, promptEditor, t]);
 
   const removeTurnFromPage = useCallback((turnId) => {
     const targetTurn = turns.find((item) => item.id === turnId) || null;
@@ -2644,8 +2648,8 @@ export default function App() {
           ? turn.styleBasePrompt
           : primaryPrompt;
       promptEditor.resetText(styleBasePrompt);
-      compareAEditor.resetText(DEFAULT_COMPARE_PROMPTS.a);
-      compareBEditor.resetText(DEFAULT_COMPARE_PROMPTS.b);
+      compareEditors.forEach((ed, i) => ed.resetText(DEFAULT_COMPARE_PROMPTS[i]));
+      setCompareCount(2);
       setStyleThemes(normalizeStyleThemes(turn.styleThemes));
       setStyleReferenceImages(
         (Array.isArray(turn.styleReferenceImages) ? turn.styleReferenceImages : [])
@@ -2656,15 +2660,16 @@ export default function App() {
     } else if (mode === "compare") {
       setTaskMode("compare");
       promptEditor.resetText(primaryPrompt);
-      compareAEditor.resetText(promptVariants[0]?.prompt || "");
-      compareBEditor.resetText(promptVariants[1]?.prompt || "");
+      const variantCount = Math.max(2, Math.min(MAX_COMPARE_PROMPTS, promptVariants.length));
+      setCompareCount(variantCount);
+      compareEditors.forEach((ed, i) => ed.resetText(promptVariants[i]?.prompt || ""));
       setStyleThemes(normalizeStyleThemes(DEFAULT_STYLE_THEMES));
       setStyleReferenceImages([]);
     } else {
       setTaskMode("single");
       promptEditor.resetText(primaryPrompt);
-      compareAEditor.resetText(DEFAULT_COMPARE_PROMPTS.a);
-      compareBEditor.resetText(DEFAULT_COMPARE_PROMPTS.b);
+      compareEditors.forEach((ed, i) => ed.resetText(DEFAULT_COMPARE_PROMPTS[i]));
+      setCompareCount(2);
       setStyleThemes(normalizeStyleThemes(DEFAULT_STYLE_THEMES));
       setStyleReferenceImages([]);
     }
@@ -2701,7 +2706,7 @@ export default function App() {
       setUploadedPreview(null);
       if (fileRef.current) fileRef.current.value = "";
     }
-    activePromptFieldRef.current = mode === "compare" ? "a" : "single";
+    activePromptFieldRef.current = mode === "compare" ? 0 : "single";
     setActivePage("workspace");
     setHistoryFolderMsg(t("history.reusedTurn", { seq: turn.seq || "?" }));
     requestAnimationFrame(() => {
@@ -2711,7 +2716,7 @@ export default function App() {
         targetRef.current?.focus?.({ end: true, preventScroll: true });
       });
     });
-  }, [compareAEditor, compareBEditor, promptEditor, t]);
+  }, [compareEditors, promptEditor, t]);
 
   useEffect(() => {
     if (!historyDirHandle) return;
@@ -2804,7 +2809,8 @@ export default function App() {
   const isApiKeyDirty =
     normalizedDraftApiKeys.comet !== normalizedApiKeys.comet ||
     normalizedDraftApiKeys.deerapi !== normalizedApiKeys.deerapi ||
-    normalizedDraftApiKeys.bailian !== normalizedApiKeys.bailian;
+    normalizedDraftApiKeys.bailian !== normalizedApiKeys.bailian ||
+    normalizedDraftApiKeys.lumina !== normalizedApiKeys.lumina;
   const isGptAssistPromptDirty =
     normalizeGptAssistPrompt(draftGptAssistPrompt) !== normalizeGptAssistPrompt(gptAssistPrompt) ||
     normalizeStyleThemeAssistPrompt(draftStyleThemeAssistPrompt) !== normalizeStyleThemeAssistPrompt(styleThemeAssistPrompt) ||
@@ -3093,29 +3099,50 @@ export default function App() {
                 </div>
               </div>
               {taskMode === "compare" ? (
-                <div style={S.comparePromptGrid}>
-                  <div>
-                    <TokenPromptInput
-                      value={comparePrompts.a}
-                      onChange={(next) => updateComparePrompt("a", next)}
-                      onKeyDown={compareAEditor.handleKeyDown}
-                      onFocus={() => { activePromptFieldRef.current = "a"; }}
-                      editorRef={compareAInputRef}
-                      placeholder={t("workspace.promptAPlaceholder")}
-                      rows={4}
-                    />
-                  </div>
-                  <div>
-                    <TokenPromptInput
-                      value={comparePrompts.b}
-                      onChange={(next) => updateComparePrompt("b", next)}
-                      onKeyDown={compareBEditor.handleKeyDown}
-                      onFocus={() => { activePromptFieldRef.current = "b"; }}
-                      editorRef={compareBInputRef}
-                      placeholder={t("workspace.promptBPlaceholder")}
-                      rows={4}
-                    />
-                  </div>
+                <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(compareCount, 2)}, minmax(0, 1fr))`, gap: 12 }}>
+                  {Array.from({ length: compareCount }, (_, i) => {
+                    const placeholderKeys = ["workspace.promptAPlaceholder", "workspace.promptBPlaceholder", "workspace.promptCPlaceholder", "workspace.promptDPlaceholder"];
+                    return (
+                      <div key={i} style={{ position: "relative" }}>
+                        {compareCount > 2 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              for (let j = i; j < compareCount - 1; j++) {
+                                compareEditors[j].resetText(comparePrompts[j + 1] || "");
+                              }
+                              compareEditors[compareCount - 1].resetText("");
+                              setCompareCount((c) => c - 1);
+                            }}
+                            style={{ position: "absolute", top: 6, right: 6, zIndex: 4, width: 18, height: 18, borderRadius: 9, background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.15)", color: "#fff", fontSize: 11, lineHeight: "16px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}
+                            title="Remove"
+                          >
+                            ×
+                          </button>
+                        )}
+                        <TokenPromptInput
+                          value={comparePrompts[i]}
+                          onChange={(next) => updateComparePrompt(i, next)}
+                          onKeyDown={compareEditors[i].handleKeyDown}
+                          onFocus={() => { activePromptFieldRef.current = i; }}
+                          editorRef={compareInputRefs[i]}
+                          placeholder={t(placeholderKeys[i])}
+                          rows={4}
+                        />
+                      </div>
+                    );
+                  })}
+                  {compareCount < MAX_COMPARE_PROMPTS && (
+                    <button
+                      type="button"
+                      onClick={() => setCompareCount((c) => Math.min(c + 1, MAX_COMPARE_PROMPTS))}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 80, borderRadius: 10, border: "1px dashed rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.02)", color: "rgba(255,255,255,0.35)", fontSize: 22, cursor: "pointer", transition: "border-color 0.15s, color 0.15s" }}
+                      onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.4)"; e.currentTarget.style.color = "rgba(255,255,255,0.7)"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.18)"; e.currentTarget.style.color = "rgba(255,255,255,0.35)"; }}
+                    >
+                      +
+                    </button>
+                  )}
                 </div>
               ) : (
                 <TokenPromptInput

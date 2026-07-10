@@ -100,6 +100,7 @@ export function normalizeApiPlatform(value) {
   if (value === "bailian") return "bailian";
   if (value === "deerapi") return "deerapi";
   if (value === "comet") return "comet";
+  if (value === "lumina") return "lumina";
   return DEFAULT_API_PLATFORM;
 }
 
@@ -128,6 +129,7 @@ export function normalizeApiKeys(value) {
     comet: normalizeApiKey(source.comet || source.cometKey || source.cometapiKey || source.COMETAPI_KEY || ""),
     deerapi: normalizeApiKey(source.deerapi || source.deerApiKey || source.deerapiKey || source.DEERAPI_KEY || ""),
     bailian: normalizeApiKey(source.bailian || source.bailianKey || source.dashscopeKey || source.DASHSCOPE_API_KEY || ""),
+    lumina: normalizeApiKey(source.lumina || source.luminaKey || source.LUMINA_API_KEY || ""),
   };
 }
 
@@ -186,7 +188,21 @@ export function getApiConfigForPlatform(apiPlatform, apiKeys) {
 }
 
 export function getApiConfigForModel(model, apiKeys) {
-  return getApiConfigForPlatform(getModelApiPlatform(model), apiKeys);
+  return getApiConfigForPlatform(getPreferredModelApiPlatform(model, apiKeys), apiKeys);
+}
+
+// 当模型同时支持 Lumina 且用户已填写 Lumina Key 时，优先走 Lumina；
+// 否则回退到模型声明的首个平台（原有行为）。
+export function getPreferredModelApiPlatform(model, apiKeys) {
+  if (!model) return DEFAULT_API_PLATFORM;
+  const supportedPlatforms =
+    Array.isArray(model.platforms) && model.platforms.length
+      ? model.platforms.map(normalizeApiPlatform)
+      : [DEFAULT_API_PLATFORM];
+  if (supportedPlatforms.includes("lumina") && normalizeApiKeys(apiKeys).lumina) {
+    return "lumina";
+  }
+  return normalizeApiPlatform(supportedPlatforms[0]);
 }
 
 export function normalizeAspectRatio(value) {
@@ -3302,12 +3318,20 @@ export function normalizePromptVariant(variant, index = 0) {
   };
 }
 
+const COMPARE_KEYS = ["a", "b", "c", "d"];
+const COMPARE_LABELS = ["PROMPT A", "PROMPT B", "PROMPT C", "PROMPT D"];
+
 export function getComposerPromptVariants(taskMode, prompt, comparePrompts, styleThemes = []) {
   if (taskMode === "compare") {
-    return [
-      normalizePromptVariant({ key: "a", label: "PROMPT A", prompt: comparePrompts?.a || "" }, 1),
-      normalizePromptVariant({ key: "b", label: "PROMPT B", prompt: comparePrompts?.b || "" }, 2),
-    ];
+    const list = Array.isArray(comparePrompts)
+      ? comparePrompts
+      : [comparePrompts?.a || "", comparePrompts?.b || ""];
+    return list.map((p, i) =>
+      normalizePromptVariant(
+        { key: COMPARE_KEYS[i] || `variant-${i}`, label: COMPARE_LABELS[i] || `PROMPT ${i + 1}`, prompt: p || "" },
+        i + 1
+      )
+    );
   }
   if (taskMode === "style") {
     return buildStylePromptVariants(prompt, styleThemes);
@@ -4237,7 +4261,7 @@ export async function loadApiConfigFromLocalFolder(rootHandle) {
                 [normalizeApiPlatform(raw?.apiPlatform)]: raw?.apiKey,
               }
         );
-        if (!candidateKeys.comet && !candidateKeys.deerapi && !candidateKeys.bailian) continue;
+        if (!candidateKeys.comet && !candidateKeys.deerapi && !candidateKeys.bailian && !candidateKeys.lumina) continue;
         const seq = Number(raw?.seq) || 0;
         const createdAt = Number(raw?.createdAt) || 0;
         const isNewer = seq > bestSeq || (seq === bestSeq && createdAt >= bestCreatedAt);
@@ -4284,8 +4308,13 @@ export async function loadApiConfigFromLocalFolder(rootHandle) {
         rawObject?.apiKeys?.bailian ||
         rawObject?.apiKeys?.dashscopeKey ||
         (legacyPlatform === "bailian" ? legacyKey : ""),
+      lumina:
+        rawObject?.luminaKey ||
+        rawObject?.apiKeys?.lumina ||
+        rawObject?.apiKeys?.luminaKey ||
+        (legacyPlatform === "lumina" ? legacyKey : ""),
     });
-    if (!normalizedKeys.comet && !normalizedKeys.deerapi && !normalizedKeys.bailian) {
+    if (!normalizedKeys.comet && !normalizedKeys.deerapi && !normalizedKeys.bailian && !normalizedKeys.lumina) {
       return recoverApiKeysFromTurns();
     }
     return {
@@ -4315,19 +4344,23 @@ export async function saveApiConfigToLocalFolder(rootHandle, apiKeys) {
         cometKey: normalizedKeys.comet,
         deerapiKey: normalizedKeys.deerapi,
         bailianKey: normalizedKeys.bailian,
+        luminaKey: normalizedKeys.lumina,
         apiKeys: {
           comet: normalizedKeys.comet,
           deerapi: normalizedKeys.deerapi,
           bailian: normalizedKeys.bailian,
+          lumina: normalizedKeys.lumina,
         },
         // Keep legacy single-key fields so old folders remain readable by older builds.
-        apiKey: normalizedKeys.comet || normalizedKeys.deerapi,
+        apiKey: normalizedKeys.comet || normalizedKeys.deerapi || normalizedKeys.lumina,
         apiPlatform: normalizedKeys.comet
           ? "comet"
           : normalizedKeys.deerapi
           ? "deerapi"
           : normalizedKeys.bailian
           ? "bailian"
+          : normalizedKeys.lumina
+          ? "lumina"
           : "comet",
       },
       null,
@@ -4701,7 +4734,13 @@ export async function callOpenAiImageEditAPI(proxyUrl, model, prompt, imageInput
   formData.append("model", model.id);
   formData.append("prompt", prompt || "Generate a creative image");
   formData.append("n", String(Math.max(1, Number(count) || 1)));
-  formData.append("size", mapAspectRatioToOpenAiImageSize(options.aspectRatio));
+  if (apiPlatform === "lumina") {
+    // Lumina 使用 ratio（如 "1:1"）而非 size；auto 时不传。
+    const ratio = normalizeAspectRatio(options.aspectRatio);
+    if (ratio !== "auto") formData.append("ratio", ratio);
+  } else {
+    formData.append("size", mapAspectRatioToOpenAiImageSize(options.aspectRatio));
+  }
 
   const data = await postFormDataWithRetry(proxyUrl, "/v1/images/edits", formData, {
     signal,
@@ -4728,12 +4767,19 @@ export async function callImagesAPI(proxyUrl, model, prompt, imageBase64, option
   if (supportsOpenAiImageEdits(model) && imageInputs.length) {
     return callOpenAiImageEditAPI(proxyUrl, model, prompt, imageInputs, options);
   }
+  const isLumina = apiPlatform === "lumina";
   const body = {
     model: model.id,
     prompt: prompt || "Generate a creative image",
     n: Math.max(1, Number(count) || 1),
-    size: isSeedream ? "2K" : mapAspectRatioToOpenAiImageSize(options.aspectRatio),
   };
+  if (isLumina) {
+    // Lumina（OpenAI 兼容网关）使用 ratio 而非 size；auto 时不传，让上游按输入图自适应。
+    const ratio = normalizeAspectRatio(options.aspectRatio);
+    if (ratio !== "auto") body.ratio = ratio;
+  } else {
+    body.size = isSeedream ? "2K" : mapAspectRatioToOpenAiImageSize(options.aspectRatio);
+  }
   if (isSeedream) {
     // Use URL response to avoid oversized base64 payload causing network failures.
     body.response_format = "url";
@@ -5178,10 +5224,13 @@ export async function generateImage(proxyUrl, model, prompt, imageBase64, option
   const primaryImage = imageInputs[0] || "";
   const expandedPrompt = expandPlaceholderValues(prompt || "");
   if (!isModelAvailableOnPlatform(model, apiPlatform)) {
-    throw new Error(`${model?.name || model?.id || "当前模型"} 当前不支持 ${apiPlatform === "bailian" ? "百炼" : "DeerAPI"} 平台`);
+    const platformLabel =
+      apiPlatform === "bailian" ? "百炼" : apiPlatform === "lumina" ? "Lumina" : apiPlatform === "comet" ? "Comet" : "DeerAPI";
+    throw new Error(`${model?.name || model?.id || "当前模型"} 当前不支持 ${platformLabel} 平台`);
   }
   const promptWithAspectRatio =
-    model.apiType === "gemini" || model.apiType === "bailian"
+    // Lumina 通过结构化 ratio 参数控制比例，无需把 "Aspect ratio: X" 追加进提示词。
+    model.apiType === "gemini" || model.apiType === "bailian" || apiPlatform === "lumina"
       ? expandedPrompt.trim()
       : mergePromptWithAspectRatio(expandedPrompt, aspectRatio, model);
   const nextOptions = { ...options, apiPlatform, aspectRatio, imageInputs };

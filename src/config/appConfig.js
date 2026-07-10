@@ -19,8 +19,8 @@ const MID_GPT_MODELS = [
   { id: "midjourney-imagine", name: "Midjourney Imagine", shortName: "Midjourney", provider: "Midjourney", apiType: "midjourney", badge: "BETA", platforms: ["comet"] },
   // GPT Image 系列 — 文生图走 /v1/images/generations；带输入图优先走 JSON 兼容路径，
   // gpt-image-1 / gpt-image-1-mini 才使用 /v1/images/edits (multipart)
-  { id: "gpt-image-1.5", name: "GPT‑1.5 Image", shortName: "GPT-1.5", provider: "OpenAI", apiType: "images", badge: "HOT", platforms: ["comet"] },
-  { id: "gpt-image-2", name: "GPT‑2 Image", shortName: "GPT-2", provider: "OpenAI", apiType: "images", badge: "NEW", platforms: ["comet"] },
+  { id: "gpt-image-1.5", name: "GPT‑1.5 Image", shortName: "GPT-1.5", provider: "OpenAI", apiType: "images", badge: "HOT", platforms: ["comet", "lumina"] },
+  { id: "gpt-image-2", name: "GPT‑2 Image", shortName: "GPT-2", provider: "OpenAI", apiType: "images", badge: "NEW", platforms: ["comet", "lumina"] },
 ];
 
 const WAN_QWEN_MODELS = [
@@ -70,7 +70,8 @@ export const ASPECT_RATIO_OPTIONS = [
   { value: "21:9", label: "21:9" },
 ];
 export const DEFAULT_TASK_MODE = "single";
-export const DEFAULT_COMPARE_PROMPTS = { a: "", b: "" };
+export const MAX_COMPARE_PROMPTS = 4;
+export const DEFAULT_COMPARE_PROMPTS = ["", "", "", ""];
 export const DEFAULT_LAST_EDITED_COUNT = 1;
 export const DEFAULT_ASPECT_RATIO = "auto";
 export const DEFAULT_API_PLATFORM = "comet";
@@ -78,6 +79,7 @@ export const DEFAULT_API_BASE_URLS = {
   comet: "https://api.cometapi.com",
   deerapi: "https://api.deerapi.com",
   bailian: "https://dashscope.aliyuncs.com",
+  lumina: "https://lumina.tripo3d.com",
 };
 export const DEFAULT_API_BASE_URL = DEFAULT_API_BASE_URLS[DEFAULT_API_PLATFORM];
 export const DEFAULT_API_KEY = "";
@@ -85,6 +87,7 @@ export const DEFAULT_API_KEYS = {
   comet: DEFAULT_API_KEY,
   deerapi: DEFAULT_API_KEY,
   bailian: DEFAULT_API_KEY,
+  lumina: DEFAULT_API_KEY,
 };
 export const DEFAULT_GPT_ASSIST_MODEL = "gpt-5.4";
 export const DEFAULT_BAILIAN_ASSIST_MODEL = "qwen-plus";

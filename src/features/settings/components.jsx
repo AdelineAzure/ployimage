@@ -77,7 +77,8 @@ export function ApiKeyModal({
   const isDirty =
     normalizedDraftKeys.comet !== normalizedCurrentKeys.comet ||
     normalizedDraftKeys.deerapi !== normalizedCurrentKeys.deerapi ||
-    normalizedDraftKeys.bailian !== normalizedCurrentKeys.bailian;
+    normalizedDraftKeys.bailian !== normalizedCurrentKeys.bailian ||
+    normalizedDraftKeys.lumina !== normalizedCurrentKeys.lumina;
   return (
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.settingsModal} onClick={(e) => e.stopPropagation()}>
@@ -85,7 +86,14 @@ export function ApiKeyModal({
           <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>🔑 {t("api.title")}</h2>
           <button onClick={onClose} style={S.closeBtn}>✕</button>
         </div>
-        <label style={S.fieldLabel}>{t("api.cometLabel")}</label>
+        <label style={S.fieldLabel}>{t("api.luminaLabel")}</label>
+        <input
+          style={S.proxyInput}
+          value={normalizedDraftKeys.lumina}
+          onChange={(e) => setDraftApiKeys((prev) => ({ ...normalizeApiKeys(prev), lumina: e.target.value }))}
+          placeholder="sk-..."
+        />
+        <label style={{ ...S.fieldLabel, marginTop: 14 }}>{t("api.cometLabel")}</label>
         <input
           style={S.proxyInput}
           value={normalizedDraftKeys.comet}
@@ -118,8 +126,8 @@ export function ApiKeyModal({
         </div>
         <p style={S.hint}>
           {uiLanguage === "zh"
-            ? "保存后会按模型自动使用对应平台。留空的输入框会回退到 Worker 环境变量：Comet 走 COMETAPI_KEY，DeerAPI 走 DEERAPI_KEY，百炼走 DASHSCOPE_API_KEY。"
-            : "After saving, each model automatically uses its matching provider. Empty fields fall back to Worker env vars: COMETAPI_KEY for Comet, DEERAPI_KEY for DeerAPI, and DASHSCOPE_API_KEY for Bailian."}
+            ? "保存后会按模型自动使用对应平台；填写 Lumina Key 后，兼容 Lumina 的模型（如 GPT Image）会优先走 Lumina。留空的输入框会回退到 Worker 环境变量：Lumina 走 LUMINA_API_KEY，Comet 走 COMETAPI_KEY，DeerAPI 走 DEERAPI_KEY，百炼走 DASHSCOPE_API_KEY。"
+            : "After saving, each model automatically uses its matching provider; once a Lumina key is set, Lumina-compatible models (e.g. GPT Image) prefer Lumina. Empty fields fall back to Worker env vars: LUMINA_API_KEY for Lumina, COMETAPI_KEY for Comet, DEERAPI_KEY for DeerAPI, and DASHSCOPE_API_KEY for Bailian."}
         </p>
       </div>
     </div>
