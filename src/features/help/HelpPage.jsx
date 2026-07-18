@@ -43,7 +43,7 @@ export function HelpPage() {
           fullWidth: true,
           lines: [
             "这个工具本身没有内置账号登录页面。",
-            "先去 DeerAPI 或百炼网页端创建并复制你的 API Key；回到本工具后点击 `API`，分别填入对应的密钥即可。",
+            "先去 Comet 或百炼网页端创建并复制你的 API Key；回到本工具后点击 `API`，分别填入对应的密钥即可。",
             "如果你想保存本地历史和模板，再选择一个 `History Folder`；之后选择模式、勾选模型、填写提示词或上传图片，再点击 `开始任务` 即可开始。",
           ],
         },
@@ -124,7 +124,7 @@ export function HelpPage() {
           fullWidth: true,
           lines: [
             "There is no built-in account login inside this app.",
-            "Create or copy your API key from DeerAPI or Bailian, open this app, click `API`, and fill the matching key fields.",
+            "Create or copy your API key from Comet or Bailian, open this app, click `API`, and fill the matching key fields.",
             "Then choose a `History Folder` if you want local history and templates, select a mode, pick models, fill prompt or images, and click `Enqueue Task`.",
           ],
         },

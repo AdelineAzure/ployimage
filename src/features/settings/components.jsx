@@ -44,11 +44,11 @@ export function SettingsModal({ show, onClose, proxyUrl, setProxyUrl, uiLanguage
         <p style={S.hint}>
           {uiLanguage === "zh" ? (
             <>
-              请先部署下面的 Worker。使用 Comet 时可配置 <code style={{ color: "#a78bfa" }}>COMETAPI_KEY</code>，使用 DeerAPI 时可配置 <code style={{ color: "#a78bfa" }}>DEERAPI_KEY</code>，使用百炼时可配置 <code style={{ color: "#a78bfa" }}>DASHSCOPE_API_KEY</code>；如果你已在 API 面板里保存密钥，则会优先使用面板里的值。
+              请先部署下面的 Worker。使用 Comet 时可配置 <code style={{ color: "#a78bfa" }}>COMETAPI_KEY</code>，使用百炼时可配置 <code style={{ color: "#a78bfa" }}>DASHSCOPE_API_KEY</code>；如果你已在 API 面板里保存密钥，则会优先使用面板里的值。
             </>
           ) : (
             <>
-              Deploy the Worker below. Use <code style={{ color: "#a78bfa" }}>COMETAPI_KEY</code> for Comet, <code style={{ color: "#a78bfa" }}>DEERAPI_KEY</code> for DeerAPI, or <code style={{ color: "#a78bfa" }}>DASHSCOPE_API_KEY</code> for Bailian. If you save a key in the API panel, that value takes precedence.
+              Deploy the Worker below. Use <code style={{ color: "#a78bfa" }}>COMETAPI_KEY</code> for Comet or <code style={{ color: "#a78bfa" }}>DASHSCOPE_API_KEY</code> for Bailian. If you save a key in the API panel, that value takes precedence.
             </>
           )}
         </p>
@@ -76,7 +76,6 @@ export function ApiKeyModal({
   const normalizedDraftKeys = normalizeApiKeys(draftApiKeys);
   const isDirty =
     normalizedDraftKeys.comet !== normalizedCurrentKeys.comet ||
-    normalizedDraftKeys.deerapi !== normalizedCurrentKeys.deerapi ||
     normalizedDraftKeys.bailian !== normalizedCurrentKeys.bailian ||
     normalizedDraftKeys.lumina !== normalizedCurrentKeys.lumina;
   return (
@@ -100,13 +99,6 @@ export function ApiKeyModal({
           onChange={(e) => setDraftApiKeys((prev) => ({ ...normalizeApiKeys(prev), comet: e.target.value }))}
           placeholder="sk-..."
         />
-        <label style={{ ...S.fieldLabel, marginTop: 14 }}>{t("api.deerapiLabel")}</label>
-        <input
-          style={S.proxyInput}
-          value={normalizedDraftKeys.deerapi}
-          onChange={(e) => setDraftApiKeys((prev) => ({ ...normalizeApiKeys(prev), deerapi: e.target.value }))}
-          placeholder="sk-..."
-        />
         <label style={{ ...S.fieldLabel, marginTop: 14 }}>{t("api.bailianLabel")}</label>
         <input
           style={S.proxyInput}
@@ -126,8 +118,8 @@ export function ApiKeyModal({
         </div>
         <p style={S.hint}>
           {uiLanguage === "zh"
-            ? "保存后会按模型自动使用对应平台；填写 Lumina Key 后，兼容 Lumina 的模型（如 GPT Image）会优先走 Lumina。留空的输入框会回退到 Worker 环境变量：Lumina 走 LUMINA_API_KEY，Comet 走 COMETAPI_KEY，DeerAPI 走 DEERAPI_KEY，百炼走 DASHSCOPE_API_KEY。"
-            : "After saving, each model automatically uses its matching provider; once a Lumina key is set, Lumina-compatible models (e.g. GPT Image) prefer Lumina. Empty fields fall back to Worker env vars: LUMINA_API_KEY for Lumina, COMETAPI_KEY for Comet, DEERAPI_KEY for DeerAPI, and DASHSCOPE_API_KEY for Bailian."}
+            ? "保存后会按模型自动使用对应平台；填写 Lumina Key 后，除百炼模型外，Seed、NanoBanana 和 GPT Image 都会优先走 Lumina。留空的输入框会回退到 Worker 环境变量：Lumina 走 LUMINA_API_KEY，Comet 走 COMETAPI_KEY，百炼走 DASHSCOPE_API_KEY。"
+            : "After saving, each model automatically uses its matching provider. Once a Lumina key is set, Seed, NanoBanana, and GPT Image prefer Lumina; Bailian models remain on Bailian. Empty fields fall back to Worker env vars: LUMINA_API_KEY for Lumina, COMETAPI_KEY for Comet, and DASHSCOPE_API_KEY for Bailian."}
         </p>
       </div>
     </div>

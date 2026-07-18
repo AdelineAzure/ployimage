@@ -1,7 +1,7 @@
-# POLYIMAGE · DeerAPI / 百炼 图像任务工具
+# POLYIMAGE · Comet / 百炼 图像任务工具
 
 一个基于 React + Vite 的网页工具，用于多模型生图、提示词对比、风格批量任务与图集导出。  
-支持 DeerAPI 与百炼（Bailian）通道，适合做模型对照、提示词实验和风格探索。
+支持 Comet、百炼（Bailian）与 Lumina 通道，适合做模型对照、提示词实验和风格探索。
 
 ---
 
@@ -9,7 +9,7 @@
 
 ### 环境要求
 - Node.js 18+（推荐 LTS）
-- 可用 DeerAPI Key 或百炼 API Key（`sk-...`）
+- 可用 Comet Key、百炼 API Key 或 Lumina Key（`sk-...`）
 - Cloudflare 账号（用于部署 Worker 代理）
 
 ### 本地启动网页（先看到界面）
@@ -22,12 +22,13 @@ npm run dev
 浏览器打开终端输出的本地地址（默认 `http://localhost:5173`）。
 
 ### 配置 API 通路（让生成真正可用）
-1. 将根目录 `cloudflare-worker-deerapi.js` 部署到 Cloudflare Worker。
+1. 将根目录 `cloudflare-worker.js` 部署到 Cloudflare Worker。
 2. 在 Worker 环境变量中按平台配置：
-   - DeerAPI：`DEERAPI_KEY=你的sk...`
+   - Comet：`COMETAPI_KEY=你的sk...`
    - 百炼：`DASHSCOPE_API_KEY=你的sk...`
+   - Lumina：`LUMINA_API_KEY=你的sk...`
 3. 回到网页右上角 `⚙`，填入 Worker URL。
-4. （可选）右上角 `API` 中分别填写 DeerAPI / 百炼 Key。留空时走对应的 Worker 环境变量。
+4. （可选）右上角 `API` 中填写对应平台的 Key。留空时走对应的 Worker 环境变量。
 
 ### 2 分钟自检（确认 API 跑通）
 1. 选 `Single` 模式。
@@ -89,7 +90,7 @@ npm run dev
 
 ## 4) 常见问题（简版）
 
-- 页面能打开但无法生成：优先检查 Worker URL、对应平台的 Worker 环境变量（`DEERAPI_KEY` 或 `DASHSCOPE_API_KEY`）、网络权限。
+- 页面能打开但无法生成：优先检查 Worker URL、对应平台的 Worker 环境变量与网络权限。
 - 有结果但图片加载失败：先尝试预览/下载，确认是否是第三方图床防盗链导致。
 - 模板点击无效：确保已选择 History Folder（模板写入依赖本地目录权限）。
 
@@ -98,6 +99,6 @@ npm run dev
 ## 5) 主要文件
 
 - `src/App.jsx`：主页面与核心逻辑。
-- `cloudflare-worker-deerapi.js`：Worker 代理示例。
+- `cloudflare-worker.js`：Worker 代理示例。
 - `package.json`：脚本与依赖。
 - `vite.config.js`：Vite 配置。

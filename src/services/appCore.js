@@ -98,7 +98,6 @@ export function normalizeApiBaseUrl(value) {
 
 export function normalizeApiPlatform(value) {
   if (value === "bailian") return "bailian";
-  if (value === "deerapi") return "deerapi";
   if (value === "comet") return "comet";
   if (value === "lumina") return "lumina";
   return DEFAULT_API_PLATFORM;
@@ -127,10 +126,24 @@ export function normalizeApiKeys(value) {
   const source = value && typeof value === "object" ? value : {};
   return {
     comet: normalizeApiKey(source.comet || source.cometKey || source.cometapiKey || source.COMETAPI_KEY || ""),
-    deerapi: normalizeApiKey(source.deerapi || source.deerApiKey || source.deerapiKey || source.DEERAPI_KEY || ""),
     bailian: normalizeApiKey(source.bailian || source.bailianKey || source.dashscopeKey || source.DASHSCOPE_API_KEY || ""),
     lumina: normalizeApiKey(source.lumina || source.luminaKey || source.LUMINA_API_KEY || ""),
   };
+}
+
+// Merge saved task snapshots with newer settings. Later non-empty values win,
+// while an empty current field still allows a legacy task key to act as fallback.
+export function mergeApiKeys(...sources) {
+  return sources.reduce(
+    (merged, source) => {
+      const normalized = normalizeApiKeys(source);
+      for (const platform of ["comet", "bailian", "lumina"]) {
+        if (normalized[platform]) merged[platform] = normalized[platform];
+      }
+      return merged;
+    },
+    normalizeApiKeys(DEFAULT_API_KEYS)
+  );
 }
 
 export function getApiKeyForPlatform(apiKeys, apiPlatform = DEFAULT_API_PLATFORM) {
@@ -141,7 +154,7 @@ export function getApiKeyForPlatform(apiKeys, apiPlatform = DEFAULT_API_PLATFORM
 
 export function getAssistPlatformOrder(apiKeys) {
   const normalizedKeys = normalizeApiKeys(apiKeys);
-  const base = ["comet", "deerapi", "bailian"];
+  const base = ["comet", "bailian"];
   // Lead with whichever platforms actually have a saved key, keeping comet first by default.
   const withKey = base.filter((platform) => normalizedKeys[platform]);
   const withoutKey = base.filter((platform) => !normalizedKeys[platform]);
@@ -191,8 +204,8 @@ export function getApiConfigForModel(model, apiKeys) {
   return getApiConfigForPlatform(getPreferredModelApiPlatform(model, apiKeys), apiKeys);
 }
 
-// 当模型同时支持 Lumina 且用户已填写 Lumina Key 时，优先走 Lumina；
-// 否则回退到模型声明的首个平台（原有行为）。
+// 除百炼模型外，只要模型声明支持 Lumina 且用户已填写 Lumina Key，
+// 就优先走 Lumina；Lumina Key 为空时回退到模型声明的首个平台。
 export function getPreferredModelApiPlatform(model, apiKeys) {
   if (!model) return DEFAULT_API_PLATFORM;
   const supportedPlatforms =
@@ -217,6 +230,9 @@ export function normalizeAspectRatio(value) {
 export function normalizeModelId(id) {
   if (typeof id !== "string") return id;
   if (NANO_PRO_LEGACY_MODEL_IDS.includes(id)) return NANO_PRO_OFFICIAL_MODEL_ID;
+  if (id === "qwen-image-3.0" || id === "qwen-image-3.0-pro") return "qwen-image-invite-beta-v1";
+  if (id === "qwen-image-plus") return "qwen-image-2.0";
+  if (id === "qwen-image-max") return "qwen-image-2.0-pro";
   return id;
 }
 
@@ -230,8 +246,24 @@ export function mapAspectRatioToOpenAiImageSize(aspectRatio = DEFAULT_ASPECT_RAT
   return w > h ? "1536x1024" : "1024x1536";
 }
 
+const LUMINA_IMAGE_RATIOS = ["1:1", "4:3", "3:4", "16:9", "9:16"];
+
+export function mapAspectRatioToLuminaRatio(aspectRatio = DEFAULT_ASPECT_RATIO) {
+  const ratio = normalizeAspectRatio(aspectRatio);
+  if (ratio === "auto" || LUMINA_IMAGE_RATIOS.includes(ratio)) return ratio;
+  const [width, height] = ratio.split(":").map(Number);
+  const target = width / height;
+  return LUMINA_IMAGE_RATIOS.reduce((closest, candidate) => {
+    const [candidateWidth, candidateHeight] = candidate.split(":").map(Number);
+    const distance = Math.abs(Math.log(target / (candidateWidth / candidateHeight)));
+    const [closestWidth, closestHeight] = closest.split(":").map(Number);
+    const closestDistance = Math.abs(Math.log(target / (closestWidth / closestHeight)));
+    return distance < closestDistance ? candidate : closest;
+  }, LUMINA_IMAGE_RATIOS[0]);
+}
+
 export function supportsOpenAiImageEdits(model) {
-  // DeerAPI 的 /v1/images/edits（multipart）在 gpt-image-1 系列兼容性更稳定。
+  // /v1/images/edits（multipart）在 gpt-image-1 系列兼容性更稳定。
   // gpt-image-1.5 / gpt-image-2 在部分通道会按 JSON 解析请求体，
   // 对 multipart 报 "invalid character '-' in numeric literal"。
   // 因此这里仅保留 gpt-image-1 / gpt-image-1-mini 走 edits。
@@ -239,7 +271,19 @@ export function supportsOpenAiImageEdits(model) {
 }
 
 export function isQwenImageModel(model) {
+  return isQwenImage2Model(model) || isQwenImage3Model(model);
+}
+
+export function isQwenImage2Model(model) {
   return /^qwen-image-2\.0(?:-pro)?(?:-|$)/.test(String(model?.id || ""));
+}
+
+export function isQwenImage3Model(model) {
+  return String(model?.id || "") === "qwen-image-invite-beta-v1";
+}
+
+export function normalizeQwenPromptExtendMode(value) {
+  return value === "agent" ? "agent" : "direct";
 }
 
 export function roundBailianSize(value, step = 64) {
@@ -279,6 +323,37 @@ export function getBailianAspectRatioSize(aspectRatio = DEFAULT_ASPECT_RATIO) {
   return `${width}*${height}`;
 }
 
+export function getQwen3ImageEditSize(aspectRatio = DEFAULT_ASPECT_RATIO) {
+  const normalizedRatio = normalizeAspectRatio(aspectRatio);
+  if (normalizedRatio === DEFAULT_ASPECT_RATIO) return null;
+
+  const [rawWidthRatio, rawHeightRatio] = normalizedRatio.split(":").map((value) => Number(value) || 0);
+  if (!rawWidthRatio || !rawHeightRatio) return null;
+
+  const gcd = (left, right) => {
+    let a = Math.abs(left);
+    let b = Math.abs(right);
+    while (b) [a, b] = [b, a % b];
+    return a || 1;
+  };
+  const divisor = gcd(rawWidthRatio, rawHeightRatio);
+  const widthRatio = rawWidthRatio / divisor;
+  const heightRatio = rawHeightRatio / divisor;
+  const maxPixels = 1_500 * 1_500;
+  const maxSide = 2048;
+  const scale = Math.max(
+    1,
+    Math.floor(
+      Math.min(
+        Math.sqrt(maxPixels / (widthRatio * heightRatio)),
+        maxSide / Math.max(widthRatio, heightRatio),
+      ),
+    ),
+  );
+
+  return `${widthRatio * scale}*${heightRatio * scale}`;
+}
+
 export function getBailianImageInputLimit(model) {
   if (isQwenImageModel(model)) return 3;
   if (/^wan2\.7-image(?:-pro)?(?:-|$)/.test(String(model?.id || ""))) return 9;
@@ -286,13 +361,17 @@ export function getBailianImageInputLimit(model) {
 }
 
 export function getBailianImageSize(model, aspectRatio = DEFAULT_ASPECT_RATIO, hasImageInputs = false) {
-  const isQwenModel = isQwenImageModel(model);
-  const fallbackSize = isQwenModel ? "2048*2048" : "2K";
+  const isQwen2Model = isQwenImage2Model(model);
+  const isQwen3Model = isQwenImage3Model(model);
+  const fallbackSize = isQwen2Model ? "2048*2048" : "2K";
   const normalizedRatio = normalizeAspectRatio(aspectRatio);
   if (normalizedRatio === DEFAULT_ASPECT_RATIO) {
-    // For Qwen image editing, omitting size lets Bailian keep the last input image ratio.
-    if (isQwenModel && hasImageInputs) return null;
+    // Qwen3 auto-selects resolution from the prompt; Qwen 2.0 editing follows the last input ratio.
+    if (isQwen3Model || (isQwen2Model && hasImageInputs)) return null;
     return fallbackSize;
+  }
+  if (isQwen3Model && hasImageInputs) {
+    return getQwen3ImageEditSize(normalizedRatio);
   }
   // Wan and Qwen both accept custom width*height values, so a non-auto ratio
   // should keep using an explicit size even when image inputs are present.
@@ -4261,7 +4340,7 @@ export async function loadApiConfigFromLocalFolder(rootHandle) {
                 [normalizeApiPlatform(raw?.apiPlatform)]: raw?.apiKey,
               }
         );
-        if (!candidateKeys.comet && !candidateKeys.deerapi && !candidateKeys.bailian && !candidateKeys.lumina) continue;
+        if (!candidateKeys.comet && !candidateKeys.bailian && !candidateKeys.lumina) continue;
         const seq = Number(raw?.seq) || 0;
         const createdAt = Number(raw?.createdAt) || 0;
         const isNewer = seq > bestSeq || (seq === bestSeq && createdAt >= bestCreatedAt);
@@ -4295,13 +4374,6 @@ export async function loadApiConfigFromLocalFolder(rootHandle) {
         rawObject?.apiKeys?.comet ||
         rawObject?.apiKeys?.cometKey ||
         (legacyPlatform === "comet" ? legacyKey : ""),
-      deerapi:
-        rawObject?.deerapiKey ||
-        rawObject?.deerApiKey ||
-        rawObject?.apiKeys?.deerapi ||
-        rawObject?.apiKeys?.deerApiKey ||
-        rawString ||
-        (legacyPlatform === "deerapi" ? legacyKey : ""),
       bailian:
         rawObject?.bailianKey ||
         rawObject?.dashscopeKey ||
@@ -4314,7 +4386,7 @@ export async function loadApiConfigFromLocalFolder(rootHandle) {
         rawObject?.apiKeys?.luminaKey ||
         (legacyPlatform === "lumina" ? legacyKey : ""),
     });
-    if (!normalizedKeys.comet && !normalizedKeys.deerapi && !normalizedKeys.bailian && !normalizedKeys.lumina) {
+    if (!normalizedKeys.comet && !normalizedKeys.bailian && !normalizedKeys.lumina) {
       return recoverApiKeysFromTurns();
     }
     return {
@@ -4342,21 +4414,17 @@ export async function saveApiConfigToLocalFolder(rootHandle, apiKeys) {
     JSON.stringify(
       {
         cometKey: normalizedKeys.comet,
-        deerapiKey: normalizedKeys.deerapi,
         bailianKey: normalizedKeys.bailian,
         luminaKey: normalizedKeys.lumina,
         apiKeys: {
           comet: normalizedKeys.comet,
-          deerapi: normalizedKeys.deerapi,
           bailian: normalizedKeys.bailian,
           lumina: normalizedKeys.lumina,
         },
         // Keep legacy single-key fields so old folders remain readable by older builds.
-        apiKey: normalizedKeys.comet || normalizedKeys.deerapi || normalizedKeys.lumina,
+        apiKey: normalizedKeys.comet || normalizedKeys.lumina,
         apiPlatform: normalizedKeys.comet
           ? "comet"
-          : normalizedKeys.deerapi
-          ? "deerapi"
           : normalizedKeys.bailian
           ? "bailian"
           : normalizedKeys.lumina
@@ -4432,7 +4500,7 @@ export async function downloadAllAsZip(turns) {
   URL.revokeObjectURL(url);
 }
 
-// ─── DeerAPI Call Functions ───
+// ─── Image API Call Functions ───
 
 export async function callTextAssistAPI(proxyUrl, sourcePrompt, imageBase64, assistPrompt, options = {}) {
   const { signal } = options;
@@ -4724,7 +4792,7 @@ export async function callOpenAiImageEditAPI(proxyUrl, model, prompt, imageInput
   const apiKey = normalizeApiKey(options.apiKey);
   const editableImages = await resolveEditImageDataUrls(proxyUrl, imageInputs, apiBaseUrl);
   if (!editableImages.length) {
-    throw new Error("OpenAI 图像编辑需要至少 1 张可用输入图");
+    throw new Error("图像编辑需要至少 1 张可用输入图");
   }
 
   const formData = new FormData();
@@ -4736,7 +4804,7 @@ export async function callOpenAiImageEditAPI(proxyUrl, model, prompt, imageInput
   formData.append("n", String(Math.max(1, Number(count) || 1)));
   if (apiPlatform === "lumina") {
     // Lumina 使用 ratio（如 "1:1"）而非 size；auto 时不传。
-    const ratio = normalizeAspectRatio(options.aspectRatio);
+    const ratio = mapAspectRatioToLuminaRatio(options.aspectRatio);
     if (ratio !== "auto") formData.append("ratio", ratio);
   } else {
     formData.append("size", mapAspectRatioToOpenAiImageSize(options.aspectRatio));
@@ -4754,7 +4822,7 @@ export async function callOpenAiImageEditAPI(proxyUrl, model, prompt, imageInput
   return finalizeImagesApiResponse(proxyUrl, data, apiBaseUrl);
 }
 
-// 2. OpenAI Images / Seedream format (gpt-image-1, gpt-image-1.5, gpt-image-2, seedream)
+// 2. OpenAI-compatible Images format (all Lumina models; Comet GPT/Seedream)
 export async function callImagesAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
   const { signal, count = 1 } = options;
   const apiPlatform = normalizeApiPlatform(options.apiPlatform);
@@ -4764,7 +4832,7 @@ export async function callImagesAPI(proxyUrl, model, prompt, imageBase64, option
   const primaryImage = imageInputs[0] || "";
   const isSeedream = model.provider === "ByteDance";
   const isOpenAiImageModel = model.provider === "OpenAI" && /^gpt-image-/i.test(String(model?.id || ""));
-  if (supportsOpenAiImageEdits(model) && imageInputs.length) {
+  if ((apiPlatform === "lumina" || supportsOpenAiImageEdits(model)) && imageInputs.length) {
     return callOpenAiImageEditAPI(proxyUrl, model, prompt, imageInputs, options);
   }
   const isLumina = apiPlatform === "lumina";
@@ -4775,12 +4843,12 @@ export async function callImagesAPI(proxyUrl, model, prompt, imageBase64, option
   };
   if (isLumina) {
     // Lumina（OpenAI 兼容网关）使用 ratio 而非 size；auto 时不传，让上游按输入图自适应。
-    const ratio = normalizeAspectRatio(options.aspectRatio);
+    const ratio = mapAspectRatioToLuminaRatio(options.aspectRatio);
     if (ratio !== "auto") body.ratio = ratio;
   } else {
     body.size = isSeedream ? "2K" : mapAspectRatioToOpenAiImageSize(options.aspectRatio);
   }
-  if (isSeedream) {
+  if (isSeedream && !isLumina) {
     // Use URL response to avoid oversized base64 payload causing network failures.
     body.response_format = "url";
     body.watermark = true;
@@ -4788,7 +4856,7 @@ export async function callImagesAPI(proxyUrl, model, prompt, imageBase64, option
   }
   if (primaryImage && (isSeedream || isOpenAiImageModel)) {
     // For gpt-image-1.5 / gpt-image-2 we keep image-conditioned generation on JSON path
-    // to avoid multipart parsing issues on some DeerAPI channels.
+    // to avoid multipart parsing issues on some compatible channels.
     body.image = primaryImage;
   }
 
@@ -4810,6 +4878,9 @@ export async function callBailianImageAPI(proxyUrl, model, prompt, imageBase64, 
   const apiKey = normalizeApiKey(options.apiKey);
   const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
   const isQwenModel = isQwenImageModel(model);
+  const isQwen3Model = isQwenImage3Model(model);
+  const promptExtend = options.promptExtend !== false;
+  const promptExtendMode = normalizeQwenPromptExtendMode(options.promptExtendMode);
   const effectiveImageInputs = imageInputs
     .slice(0, getBailianImageInputLimit(model))
     .map((image) => normalizeImageValue(image, apiBaseUrl))
@@ -4836,10 +4907,11 @@ export async function callBailianImageAPI(proxyUrl, model, prompt, imageBase64, 
       ],
     },
     parameters: {
-      n: Math.min(Math.max(1, Number(count) || 1), isQwenModel ? 6 : 4),
+      ...(!isQwen3Model ? { n: Math.min(Math.max(1, Number(count) || 1), isQwenModel ? 6 : 4) } : {}),
       ...(imageSize ? { size: imageSize } : {}),
       watermark: false,
-      ...(isQwenModel ? { prompt_extend: true } : {}),
+      ...(isQwenModel ? { prompt_extend: promptExtend } : {}),
+      ...(isQwen3Model && promptExtend ? { prompt_extend_mode: promptExtendMode } : {}),
       ...(!isQwenModel && !effectiveImageInputs.length && model?.id === "wan2.7-image-pro" ? { thinking_mode: true } : {}),
     },
   };
@@ -5224,16 +5296,21 @@ export async function generateImage(proxyUrl, model, prompt, imageBase64, option
   const primaryImage = imageInputs[0] || "";
   const expandedPrompt = expandPlaceholderValues(prompt || "");
   if (!isModelAvailableOnPlatform(model, apiPlatform)) {
-    const platformLabel =
-      apiPlatform === "bailian" ? "百炼" : apiPlatform === "lumina" ? "Lumina" : apiPlatform === "comet" ? "Comet" : "DeerAPI";
+    const platformLabel = apiPlatform === "bailian" ? "百炼" : apiPlatform === "lumina" ? "Lumina" : "Comet";
     throw new Error(`${model?.name || model?.id || "当前模型"} 当前不支持 ${platformLabel} 平台`);
   }
   const promptWithAspectRatio =
-    // Lumina 通过结构化 ratio 参数控制比例，无需把 "Aspect ratio: X" 追加进提示词。
+    // Lumina, Gemini and Bailian carry aspect ratio structurally.
     model.apiType === "gemini" || model.apiType === "bailian" || apiPlatform === "lumina"
       ? expandedPrompt.trim()
       : mergePromptWithAspectRatio(expandedPrompt, aspectRatio, model);
   const nextOptions = { ...options, apiPlatform, aspectRatio, imageInputs };
+  if (apiPlatform === "lumina") {
+    return callImagesAPI(proxyUrl, model, promptWithAspectRatio, primaryImage, {
+      ...nextOptions,
+      count: requested,
+    });
+  }
   switch (model.apiType) {
     case "chat": {
       const all = [];
@@ -5245,8 +5322,17 @@ export async function generateImage(proxyUrl, model, prompt, imageBase64, option
     }
     case "images":
       return callImagesAPI(proxyUrl, model, promptWithAspectRatio, primaryImage, { ...nextOptions, count: requested });
-    case "bailian":
+    case "bailian": {
+      if (isQwenImage3Model(model) && requested > 1) {
+        const all = [];
+        for (let index = 0; index < requested; index += 1) {
+          const one = await callBailianImageAPI(proxyUrl, model, promptWithAspectRatio, primaryImage, { ...nextOptions, count: 1 });
+          if (Array.isArray(one) && one.length) all.push(one[0]);
+        }
+        return all;
+      }
       return callBailianImageAPI(proxyUrl, model, promptWithAspectRatio, primaryImage, { ...nextOptions, count: requested });
+    }
     case "gemini": {
       const all = [];
       let lastErr = null;

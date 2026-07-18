@@ -10,6 +10,7 @@ import {
   getTurnPromptVariants,
   isAbortError,
   isSameResultTask,
+  mergeApiKeys,
   normalizeAspectRatio,
   normalizeImageInputs,
   saveTurnToLocalFolder,
@@ -141,7 +142,7 @@ export function useTaskQueue({ turns, setTurns, apiKeys, historyDirHandle, setHi
             const requestedCount = Math.max(1, Number(task.requestedCount || next.modelCounts?.[task.modelId] || 1));
             let partialImages = [];
             let lastNonAbortError = null;
-            const requestConfig = getApiConfigForModel(model, next.apiKeys || apiKeys);
+            const requestConfig = getApiConfigForModel(model, mergeApiKeys(next.apiKeys, apiKeys));
 
             for (let index = 0; index < requestedCount; index += 1) {
               try {
@@ -151,6 +152,8 @@ export function useTaskQueue({ turns, setTurns, apiKeys, historyDirHandle, setHi
                   ...requestConfig,
                   aspectRatio: normalizeAspectRatio(next.aspectRatio ?? next.geminiAspectRatio),
                   imageInputs: turnImageInputs,
+                  promptExtend: next.qwenPromptExtend !== false,
+                  promptExtendMode: next.qwenPromptExtendMode,
                 });
                 const nextImage = Array.isArray(generated) && generated.length ? generated[0] : null;
                 if (!nextImage) {

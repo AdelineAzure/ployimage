@@ -1,5 +1,5 @@
 {
-  "name": "polyimage-deerapi-app",
+  "name": "polyimage-app",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -19,6 +19,7 @@
     "eslint": "^10.2.1",
     "globals": "^17.5.0",
     "vite": "^7.3.1",
-    "vitest": "^4.1.5"
+    "vitest": "^4.1.5",
+    "wrangler": "^4.112.0"
   }
 }

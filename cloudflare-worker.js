@@ -5,7 +5,7 @@
 //   1. Go to https://dash.cloudflare.com → Workers & Pages → Create
 //   2. Paste this code into the editor
 //   3. Go to Settings → Variables → Add:
-//      - Name: COMETAPI_KEY, DEERAPI_KEY or DASHSCOPE_API_KEY
+//      - Name: COMETAPI_KEY, DASHSCOPE_API_KEY or LUMINA_API_KEY
 //      - Value: your upstream API key
 //      - Check "Encrypt"
 //   4. Deploy
@@ -13,7 +13,7 @@
 //      and paste it into the app's Settings panel (⚙)
 // ============================================================
 //
-// This proxy supports DeerAPI and Bailian endpoints:
+// This proxy supports Comet, Bailian and Lumina endpoints:
 //   - /v1/chat/completions
 //   - /compatible-mode/v1/chat/completions
 //   - /v1/images/generations
@@ -71,7 +71,7 @@ export default {
       if (method === "GET" && url.pathname === "/" && !request.headers.get("X-Target-Path")) {
         return json({
           ok: true,
-          service: "deerapi-proxy",
+          service: "polyimage-proxy",
           version: WORKER_VERSION,
           features: [
             "dashscope-image2image",
@@ -111,8 +111,6 @@ export default {
         const envName =
           apiPlatform === "bailian"
             ? "DASHSCOPE_API_KEY"
-            : apiPlatform === "deerapi"
-            ? "DEERAPI_KEY"
             : apiPlatform === "lumina"
             ? "LUMINA_API_KEY"
             : "COMETAPI_KEY";
@@ -188,7 +186,6 @@ function normalizeApiKey(value) {
 
 function normalizeApiPlatform(value) {
   if (value === "bailian") return "bailian";
-  if (value === "deerapi") return "deerapi";
   if (value === "comet") return "comet";
   if (value === "lumina") return "lumina";
   return "comet";
@@ -197,7 +194,6 @@ function normalizeApiPlatform(value) {
 function inferApiPlatformFromBase(value) {
   if (/dashscope\.aliyuncs\.com/i.test(value || "")) return "bailian";
   if (/cometapi\.com/i.test(value || "")) return "comet";
-  if (/deerapi\.com/i.test(value || "")) return "deerapi";
   if (/tripo3d\.com/i.test(value || "")) return "lumina";
   return "comet";
 }
@@ -205,9 +201,6 @@ function inferApiPlatformFromBase(value) {
 function getFallbackApiKey(env, apiPlatform) {
   if (apiPlatform === "bailian") {
     return normalizeApiKey(env.DASHSCOPE_API_KEY || env.BAILIAN_API_KEY || "");
-  }
-  if (apiPlatform === "deerapi") {
-    return normalizeApiKey(env.DEERAPI_KEY || "");
   }
   if (apiPlatform === "lumina") {
     return normalizeApiKey(env.LUMINA_API_KEY || "");

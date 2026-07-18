@@ -649,6 +649,8 @@ export function CanvasPage({
   apiBaseUrl = "",
   proxyUrl = "",
   aspectRatio = "auto",
+  qwenPromptExtend = true,
+  qwenPromptExtendMode = "direct",
   onOpenSplitNode = null,
 }) {
   const { t } = useI18n();
@@ -1168,6 +1170,8 @@ export function CanvasPage({
         signal: controller.signal,
         apiBaseUrl,
         aspectRatio,
+        promptExtend: qwenPromptExtend,
+        promptExtendMode: qwenPromptExtendMode,
         count: nextCount,
         imageInputs: inputImages,
       });

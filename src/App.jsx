@@ -31,6 +31,8 @@ const {
   MAX_COMPARE_PROMPTS,
   DEFAULT_LAST_EDITED_COUNT,
   DEFAULT_ASPECT_RATIO,
+  DEFAULT_QWEN_PROMPT_EXTEND,
+  DEFAULT_QWEN_PROMPT_EXTEND_MODE,
   DEFAULT_API_PLATFORM,
   DEFAULT_API_BASE_URLS,
   DEFAULT_API_BASE_URL,
@@ -101,6 +103,7 @@ const {
   resolveApiBaseUrl,
   normalizeApiKey,
   normalizeApiKeys,
+  mergeApiKeys,
   getApiKeyForPlatform,
   getAssistPlatformOrder,
   resolveTextAssistTargetPath,
@@ -411,6 +414,8 @@ export default function App() {
   const [modelCounts, setModelCounts] = useState(DEFAULT_MODEL_COUNTS);
   const [lastEditedCount, setLastEditedCount] = useState(DEFAULT_LAST_EDITED_COUNT);
   const [aspectRatio, setAspectRatio] = useState(DEFAULT_ASPECT_RATIO);
+  const [qwenPromptExtend, setQwenPromptExtend] = useState(DEFAULT_QWEN_PROMPT_EXTEND);
+  const [qwenPromptExtendMode, setQwenPromptExtendMode] = useState(DEFAULT_QWEN_PROMPT_EXTEND_MODE);
   const [turns, setTurns] = useState([]);
   const [activeTurnId, setActiveTurnId] = useState(null);
   const [historyLimit, setHistoryLimit] = useState(4);
@@ -518,8 +523,11 @@ export default function App() {
         const saved = JSON.parse(raw);
         if (typeof saved.historyLimit === "number") setHistoryLimit(saved.historyLimit);
         if (Array.isArray(saved.selectedModels) && saved.selectedModels.length) {
-          const migrated = saved.selectedModels.map((id) => normalizeModelId(id));
-          setSelectedModels(migrated);
+          const availableModelIds = new Set(IMAGE_MODELS.map((model) => model.id));
+          const migrated = Array.from(
+            new Set(saved.selectedModels.map((id) => normalizeModelId(id)).filter((id) => availableModelIds.has(id))),
+          );
+          setSelectedModels(migrated.length ? migrated : DEFAULT_SELECTED_MODELS);
         }
         if (saved.modelCounts && typeof saved.modelCounts === "object") {
           const migratedCounts = { ...saved.modelCounts };
@@ -528,6 +536,16 @@ export default function App() {
           }
           if (typeof migratedCounts["gemini-3-pro-preview"] === "number" && typeof migratedCounts[NANO_PRO_OFFICIAL_MODEL_ID] !== "number") {
             migratedCounts[NANO_PRO_OFFICIAL_MODEL_ID] = migratedCounts["gemini-3-pro-preview"];
+          }
+          const legacyQwen3Count = migratedCounts["qwen-image-3.0"] ?? migratedCounts["qwen-image-3.0-pro"];
+          if (typeof legacyQwen3Count === "number" && typeof migratedCounts["qwen-image-invite-beta-v1"] !== "number") {
+            migratedCounts["qwen-image-invite-beta-v1"] = legacyQwen3Count;
+          }
+          if (typeof migratedCounts["qwen-image-plus"] === "number" && typeof migratedCounts["qwen-image-2.0"] !== "number") {
+            migratedCounts["qwen-image-2.0"] = migratedCounts["qwen-image-plus"];
+          }
+          if (typeof migratedCounts["qwen-image-max"] === "number" && typeof migratedCounts["qwen-image-2.0-pro"] !== "number") {
+            migratedCounts["qwen-image-2.0-pro"] = migratedCounts["qwen-image-max"];
           }
           setModelCounts((prev) => ({ ...prev, ...migratedCounts }));
         }
@@ -568,6 +586,10 @@ export default function App() {
         if (typeof saved.aspectRatio === "string" || typeof saved.geminiAspectRatio === "string") {
           setAspectRatio(normalizeAspectRatio(saved.aspectRatio ?? saved.geminiAspectRatio));
         }
+        if (typeof saved.qwenPromptExtend === "boolean") setQwenPromptExtend(saved.qwenPromptExtend);
+        if (saved.qwenPromptExtendMode === "direct" || saved.qwenPromptExtendMode === "agent") {
+          setQwenPromptExtendMode(saved.qwenPromptExtendMode);
+        }
         if (typeof saved.proxyUrl === "string" && saved.proxyUrl.trim()) setProxyUrl(saved.proxyUrl);
         if (typeof saved.uiLanguage === "string") setUiLanguage(normalizeUiLanguage(saved.uiLanguage));
         if (typeof saved.nextSeq === "number" && Number.isFinite(saved.nextSeq)) seqRef.current = saved.nextSeq;
@@ -604,6 +626,8 @@ export default function App() {
       apiBaseUrl,
       lastEditedCount,
       aspectRatio,
+      qwenPromptExtend,
+      qwenPromptExtendMode,
       proxyUrl,
       uiLanguage,
       nextSeq: seqRef.current,
@@ -611,7 +635,7 @@ export default function App() {
     try {
       localStorage.setItem(LOCAL_STATE_KEY, JSON.stringify(state));
     } catch {}
-  }, [historyLimit, selectedModels, modelCounts, prompt, taskMode, comparePrompts, compareCount, styleThemes, styleReferenceImages, apiBaseUrl, lastEditedCount, aspectRatio, proxyUrl, uiLanguage]);
+  }, [historyLimit, selectedModels, modelCounts, prompt, taskMode, comparePrompts, compareCount, styleThemes, styleReferenceImages, apiBaseUrl, lastEditedCount, aspectRatio, qwenPromptExtend, qwenPromptExtendMode, proxyUrl, uiLanguage]);
 
   useEffect(() => {
     if (selectedAtlasItems.length > 0) return;
@@ -1159,12 +1183,14 @@ export default function App() {
     );
 
     try {
-      const requestConfig = getApiConfigForModel(model, targetTurn.apiKeys || apiKeys);
+      const requestConfig = getApiConfigForModel(model, mergeApiKeys(targetTurn.apiKeys, apiKeys));
       const generated = await generateImage(targetTurn.proxyUrl || proxyUrl, model, promptText, targetTurn.referenceImage, {
         count: 1,
         ...requestConfig,
         aspectRatio: normalizeAspectRatio(targetTurn.aspectRatio ?? targetTurn.geminiAspectRatio ?? aspectRatio),
         imageInputs: turnImageInputs,
+        promptExtend: targetTurn.qwenPromptExtend !== false,
+        promptExtendMode: targetTurn.qwenPromptExtendMode,
       });
       const nextImage = Array.isArray(generated) && generated.length ? generated[0] : null;
       if (!nextImage) throw new Error("No images returned");
@@ -2563,6 +2589,8 @@ export default function App() {
       apiBaseUrl: resolveApiBaseUrl(apiBaseUrl),
       apiKeys: normalizeApiKeys(apiKeys),
       aspectRatio: normalizeAspectRatio(aspectRatio),
+      qwenPromptExtend,
+      qwenPromptExtendMode,
       referenceImage,
       styleReferenceImages: taskMode === "style" ? styleReferenceImages.slice(0, MAX_STYLE_REFERENCE_IMAGES) : [],
       selectedModelIds: [...effectiveModelIds],
@@ -2595,7 +2623,7 @@ export default function App() {
     } else {
       promptEditor.setText((prev) => clearPlaceholderValues(prev), { record: false });
     }
-  }, [proxyUrl, selectedModels, modelCounts, taskMode, prompt, comparePrompts, compareCount, compareEditors, styleThemes, styleReferenceImages, apiKeys, apiBaseUrl, aspectRatio, uploadedInputImages, uploadedImage, promptEditor, t]);
+  }, [proxyUrl, selectedModels, modelCounts, taskMode, prompt, comparePrompts, compareCount, compareEditors, styleThemes, styleReferenceImages, apiKeys, apiBaseUrl, aspectRatio, qwenPromptExtend, qwenPromptExtendMode, uploadedInputImages, uploadedImage, promptEditor, t]);
 
   const removeTurnFromPage = useCallback((turnId) => {
     const targetTurn = turns.find((item) => item.id === turnId) || null;
@@ -2690,7 +2718,7 @@ export default function App() {
       }
     }
     if (turn.apiKeys && typeof turn.apiKeys === "object") {
-      const nextApiKeys = normalizeApiKeys(turn.apiKeys);
+      const nextApiKeys = mergeApiKeys(turn.apiKeys, apiKeys);
       setApiKeys(nextApiKeys);
       setDraftApiKeys(nextApiKeys);
     }
@@ -2716,7 +2744,7 @@ export default function App() {
         targetRef.current?.focus?.({ end: true, preventScroll: true });
       });
     });
-  }, [compareEditors, promptEditor, t]);
+  }, [apiKeys, compareEditors, promptEditor, t]);
 
   useEffect(() => {
     if (!historyDirHandle) return;
@@ -2808,7 +2836,6 @@ export default function App() {
   const normalizedDraftApiKeys = normalizeApiKeys(draftApiKeys);
   const isApiKeyDirty =
     normalizedDraftApiKeys.comet !== normalizedApiKeys.comet ||
-    normalizedDraftApiKeys.deerapi !== normalizedApiKeys.deerapi ||
     normalizedDraftApiKeys.bailian !== normalizedApiKeys.bailian ||
     normalizedDraftApiKeys.lumina !== normalizedApiKeys.lumina;
   const isGptAssistPromptDirty =
@@ -3060,6 +3087,8 @@ export default function App() {
             apiBaseUrl={apiBaseUrl}
             proxyUrl={proxyUrl}
             aspectRatio={aspectRatio}
+            qwenPromptExtend={qwenPromptExtend}
+            qwenPromptExtendMode={qwenPromptExtendMode}
             onOpenSplitNode={openSplitModalForCanvasNode}
           />
         </div>
@@ -3135,8 +3164,8 @@ export default function App() {
                   {compareCount < MAX_COMPARE_PROMPTS && (
                     <button
                       type="button"
-                      onClick={() => setCompareCount((c) => Math.min(c + 1, MAX_COMPARE_PROMPTS))}
-                      style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 80, borderRadius: 10, border: "1px dashed rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.02)", color: "rgba(255,255,255,0.35)", fontSize: 22, cursor: "pointer", transition: "border-color 0.15s, color 0.15s" }}
+                      onClick={() => setCompareCount(MAX_COMPARE_PROMPTS)}
+                      style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", justifyContent: "center", height: 32, borderRadius: 8, border: "1px dashed rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.02)", color: "rgba(255,255,255,0.35)", fontSize: 20, lineHeight: 1, cursor: "pointer", transition: "border-color 0.15s, color 0.15s" }}
                       onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.4)"; e.currentTarget.style.color = "rgba(255,255,255,0.7)"; }}
                       onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.18)"; e.currentTarget.style.color = "rgba(255,255,255,0.35)"; }}
                     >
@@ -3355,7 +3384,27 @@ export default function App() {
                 ))}
               </div>
               <div style={S.imageSizePanel}>
-                <label style={{ ...S.label, marginBottom: 6 }}>{t("workspace.imageRatio")}</label>
+                <div style={S.imageSizeHeadRow}>
+                  <label style={{ ...S.label, marginBottom: 0 }}>{t("workspace.imageRatio")}</label>
+                  <label style={S.promptExtendToggle}>
+                    <input
+                      type="checkbox"
+                      checked={qwenPromptExtend}
+                      onChange={(event) => setQwenPromptExtend(event.target.checked)}
+                    />
+                    <span>{t("workspace.qwenPromptExtend")}</span>
+                  </label>
+                  <select
+                    value={qwenPromptExtendMode}
+                    onChange={(event) => setQwenPromptExtendMode(event.target.value)}
+                    style={S.promptExtendModeSelect}
+                    disabled={!qwenPromptExtend}
+                    title={t("workspace.qwenPromptExtendMode")}
+                  >
+                    <option value="direct">DPE</option>
+                    <option value="agent">APE</option>
+                  </select>
+                </div>
                 <div style={S.imageSizeGroup}>
                   <div style={S.imageSizeBtnRow}>
                     {ASPECT_RATIO_OPTIONS.map((option) => (
