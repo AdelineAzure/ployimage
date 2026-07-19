@@ -51,7 +51,6 @@ describe("image API platform routing", () => {
   });
 
   it.each([
-    "doubao-seedream-4-0-250828",
     "doubao-seedream-4-5-251128",
     "doubao-seedream-5-0-260128",
     "gemini-2.5-flash-image",
@@ -144,7 +143,8 @@ describe("image API platform routing", () => {
     expect(request.headers["X-Target-Path"]).toBe("/v1/images/edits");
     expect(request.headers["X-Upstream-Base"]).toBe("https://lumina.tripo3d.com");
     expect(request.body).toBeInstanceOf(FormData);
-    expect(request.body.get("model")).toBe("gemini-2.5-flash-image");
+    // Lumina names this model with a -preview suffix; the app id is mapped on the way out.
+    expect(request.body.get("model")).toBe("gemini-2.5-flash-image-preview");
     expect(request.body.get("ratio")).toBe("4:3");
   });
 
@@ -156,6 +156,25 @@ describe("image API platform routing", () => {
     ["21:9", "16:9"],
   ])("maps %s to Lumina-supported ratio %s", (input, expected) => {
     expect(mapAspectRatioToLuminaRatio(input)).toBe(expected);
+  });
+
+  it("maps the Lumina text-to-image model name to the -preview variant", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ data: [{ b64_json: "cHJldg==" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const model = findModel("gemini-3-pro-image");
+    await generateImage("https://proxy.example", model, "starry sky", null, {
+      ...getApiConfigForModel(model, { lumina: "lumina-key" }),
+      aspectRatio: "1:1",
+    });
+
+    const [, request] = fetchMock.mock.calls[0];
+    expect(JSON.parse(request.body).model).toBe("gemini-3-pro-image-preview");
   });
 
   it("adds a current Lumina key to an old Comet-only task snapshot", () => {
@@ -188,7 +207,7 @@ describe("image API platform routing", () => {
     }
   );
 
-  it.each(["doubao-seedream-4-0-250828", "gemini-2.5-flash-image", "gpt-image-2"])(
+  it.each(["gemini-2.5-flash-image", "gpt-image-2"])(
     "falls back to Comet for %s when no Lumina key exists",
     (modelId) => {
       expect(getApiConfigForModel(findModel(modelId), { comet: "comet-key" })).toEqual({
@@ -198,6 +217,19 @@ describe("image API platform routing", () => {
       });
     }
   );
+
+  it("keeps Seedream 4.0 on Comet even with a Lumina key (Lumina lacks that model)", () => {
+    expect(
+      getApiConfigForModel(findModel("doubao-seedream-4-0-250828"), {
+        comet: "comet-key",
+        lumina: "lumina-key",
+      })
+    ).toEqual({
+      apiPlatform: "comet",
+      apiBaseUrl: "https://api.cometapi.com",
+      apiKey: "comet-key",
+    });
+  });
 
   it("lets current non-empty keys replace stale task keys without erasing other fallbacks", () => {
     expect(

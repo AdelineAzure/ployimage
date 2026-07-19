@@ -21,6 +21,7 @@ import {
   DEFAULT_STYLE_THEME_ASSIST_PROMPT,
   DEFAULT_TEMPLATES,
   GPT_ASSIST_FILE_NAME,
+  mapModelIdForLumina,
   MAX_ATLAS_SELECTED_IMAGES,
   MAX_CLUSTERED_SPLIT_ITEMS,
   MAX_INPUT_IMAGES_PER_BATCH,
@@ -4799,7 +4800,7 @@ export async function callOpenAiImageEditAPI(proxyUrl, model, prompt, imageInput
   editableImages.forEach((image, index) => {
     appendImageToFormData(formData, "image", image, index);
   });
-  formData.append("model", model.id);
+  formData.append("model", apiPlatform === "lumina" ? mapModelIdForLumina(model.id) : model.id);
   formData.append("prompt", prompt || "Generate a creative image");
   formData.append("n", String(Math.max(1, Number(count) || 1)));
   if (apiPlatform === "lumina") {
@@ -4837,7 +4838,7 @@ export async function callImagesAPI(proxyUrl, model, prompt, imageBase64, option
   }
   const isLumina = apiPlatform === "lumina";
   const body = {
-    model: model.id,
+    model: isLumina ? mapModelIdForLumina(model.id) : model.id,
     prompt: prompt || "Generate a creative image",
     n: Math.max(1, Number(count) || 1),
   };

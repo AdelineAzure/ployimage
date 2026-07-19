@@ -2,7 +2,8 @@
 // Each model has its own apiType defining which upstream endpoint/format to use.
 const SEEDREAM_MODELS = [
   // Seedream — /v1/images/generations (豆包生图)
-  { id: "doubao-seedream-4-0-250828", name: "Seedream 4.0", shortName: "Seed 4.0", provider: "ByteDance", apiType: "images", platforms: ["comet", "lumina"] },
+  // Lumina 网关未提供 Seedream 4.0（该 key 仅有 4.5 / 5.0），保留 Comet-only。
+  { id: "doubao-seedream-4-0-250828", name: "Seedream 4.0", shortName: "Seed 4.0", provider: "ByteDance", apiType: "images", platforms: ["comet"] },
   { id: "doubao-seedream-4-5-251128", name: "Seedream 4.5", shortName: "Seed 4.5", provider: "ByteDance", apiType: "images", badge: "NEW", platforms: ["comet", "lumina"] },
   { id: "doubao-seedream-5-0-260128", name: "Seedream 5.0 Lite", shortName: "Seed 5", provider: "ByteDance", apiType: "images", badge: "NEW", platforms: ["comet", "lumina"] },
 ];
@@ -40,6 +41,18 @@ export const IMAGE_MODEL_ROWS = [
 ];
 export const IMAGE_MODELS = IMAGE_MODEL_ROWS.flat();
 
+// Lumina 网关对部分模型使用了与 Comet 不同的模型名（多带 -preview 后缀）。
+// 仅在 apiPlatform === "lumina" 时把 app 内部 id 映射为 Lumina 认可的名字；
+// 未列出的模型按原 id 透传。映射目标已用真实 key 打 /v1/models 核对。
+export const LUMINA_MODEL_ID_MAP = {
+  "gemini-2.5-flash-image": "gemini-2.5-flash-image-preview",
+  "gemini-3-pro-image": "gemini-3-pro-image-preview",
+};
+
+export function mapModelIdForLumina(modelId) {
+  return LUMINA_MODEL_ID_MAP[modelId] || modelId;
+}
+
 export const PROVIDER_COLORS = {
   OpenAI: { bg: "#10a37f", text: "#fff" },
   Google: { bg: "#1a73e8", text: "#fff" },
@@ -48,7 +61,7 @@ export const PROVIDER_COLORS = {
 };
 
 export const LOCAL_STATE_KEY = "polyimage_local_state_v1";
-export const DEFAULT_PROXY_URL = "https://img-proxy.adelineazures.workers.dev";
+export const DEFAULT_PROXY_URL = "https://polyimage.adelineazures.workers.dev";
 export const DEFAULT_SELECTED_MODELS = [
   "doubao-seedream-4-0-250828",
   "doubao-seedream-4-5-251128",
