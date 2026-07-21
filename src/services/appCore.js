@@ -205,15 +205,32 @@ export function getApiConfigForModel(model, apiKeys) {
   return getApiConfigForPlatform(getPreferredModelApiPlatform(model, apiKeys), apiKeys);
 }
 
-// 除百炼模型外，只要模型声明支持 Lumina 且用户已填写 Lumina Key，
-// 就优先走 Lumina；Lumina Key 为空时回退到模型声明的首个平台。
+// 系列级路由（互为回退）：
+//  - GPT 系列首选 Lumina（Comet 的 GPT 图像端点不认 image 字段，会报 Unknown parameter: 'image'）；
+//  - Nano(Gemini) 系列首选 Comet（Lumina 上游对 gemini 无容量时会降级到 doubao，出错且不是想要的模型）；
+//  - 首选平台的 Key 缺失时回退到另一平台。
+//  - 其余模型（Seed / 百炼等）沿用旧逻辑：支持 Lumina 且填了 Lumina Key 就走 Lumina，否则取首个声明平台。
 export function getPreferredModelApiPlatform(model, apiKeys) {
   if (!model) return DEFAULT_API_PLATFORM;
   const supportedPlatforms =
     Array.isArray(model.platforms) && model.platforms.length
       ? model.platforms.map(normalizeApiPlatform)
       : [DEFAULT_API_PLATFORM];
-  if (supportedPlatforms.includes("lumina") && normalizeApiKeys(apiKeys).lumina) {
+  const keys = normalizeApiKeys(apiKeys);
+  const canUse = (platform) => supportedPlatforms.includes(platform) && Boolean(keys[platform]);
+
+  const id = String(model.id || "");
+  const isGptImage = model.provider === "OpenAI" && /^gpt-image-/i.test(id);
+  const isNano = model.apiType === "gemini";
+  if (isGptImage) {
+    if (canUse("lumina")) return "lumina";
+    if (canUse("comet")) return "comet";
+  } else if (isNano) {
+    if (canUse("comet")) return "comet";
+    if (canUse("lumina")) return "lumina";
+  }
+
+  if (supportedPlatforms.includes("lumina") && keys.lumina) {
     return "lumina";
   }
   return normalizeApiPlatform(supportedPlatforms[0]);
@@ -4804,9 +4821,14 @@ export async function callOpenAiImageEditAPI(proxyUrl, model, prompt, imageInput
   formData.append("prompt", prompt || "Generate a creative image");
   formData.append("n", String(Math.max(1, Number(count) || 1)));
   if (apiPlatform === "lumina") {
-    // Lumina 使用 ratio（如 "1:1"）而非 size；auto 时不传。
-    const ratio = mapAspectRatioToLuminaRatio(options.aspectRatio);
-    if (ratio !== "auto") formData.append("ratio", ratio);
+    // Lumina 编辑端点忽略 ratio、只认离散 size 档位（与 OpenAI 编辑同款：
+    // 1024x1024 / 1536x1024 / 1024x1536）；实测非标准像素会被拒并回退方图。
+    // auto 时不传，让上游跟随输入图尺寸。
+    // Seedream(ByteDance) 例外：其编辑端点要求 size ≥ 3,686,400px(1920²)，
+    // 这些小档位会被 400 拒绝，所以对它不传 size、跟随输入图（恢复改动前行为）。
+    const isSeedream = model.provider === "ByteDance";
+    const size = mapAspectRatioToOpenAiImageSize(options.aspectRatio);
+    if (!isSeedream && size !== "auto") formData.append("size", size);
   } else {
     formData.append("size", mapAspectRatioToOpenAiImageSize(options.aspectRatio));
   }

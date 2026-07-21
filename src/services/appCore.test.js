@@ -50,12 +50,10 @@ describe("image API platform routing", () => {
     expect(JSON.parse(request.body)).not.toHaveProperty("size");
   });
 
+  // Seed 与 GPT 系列在双 Key 下首选 Lumina（GPT 走 Lumina 绕开 Comet 不认 image 字段）。
   it.each([
     "doubao-seedream-4-5-251128",
     "doubao-seedream-5-0-260128",
-    "gemini-2.5-flash-image",
-    "gemini-3.1-flash-image-preview",
-    "gemini-3-pro-image",
     "gpt-image-1.5",
     "gpt-image-2",
   ])("prefers Lumina for non-Bailian model %s", (modelId) => {
@@ -68,6 +66,45 @@ describe("image API platform routing", () => {
       apiPlatform: "lumina",
       apiBaseUrl: "https://lumina.tripo3d.com",
       apiKey: "lumina-key",
+    });
+  });
+
+  // Nano(Gemini) 系列在双 Key 下首选 Comet（避开 Lumina 上游 gemini→doubao 降级）。
+  it.each([
+    "gemini-2.5-flash-image",
+    "gemini-3.1-flash-image-preview",
+    "gemini-3-pro-image",
+  ])("prefers Comet for Nano model %s", (modelId) => {
+    expect(
+      getApiConfigForModel(findModel(modelId), {
+        comet: "comet-key",
+        lumina: "lumina-key",
+      })
+    ).toEqual({
+      apiPlatform: "comet",
+      apiBaseUrl: "https://api.cometapi.com",
+      apiKey: "comet-key",
+    });
+  });
+
+  // 互为回退：Nano 系列缺 Comet Key 时回退 Lumina；GPT 系列缺 Lumina Key 时回退 Comet。
+  it("falls back to Lumina for Nano when only a Lumina key exists", () => {
+    expect(
+      getApiConfigForModel(findModel("gemini-3.1-flash-image-preview"), { lumina: "lumina-key" })
+    ).toEqual({
+      apiPlatform: "lumina",
+      apiBaseUrl: "https://lumina.tripo3d.com",
+      apiKey: "lumina-key",
+    });
+  });
+
+  it("falls back to Comet for GPT when only a Comet key exists", () => {
+    expect(
+      getApiConfigForModel(findModel("gpt-image-2"), { comet: "comet-key" })
+    ).toEqual({
+      apiPlatform: "comet",
+      apiBaseUrl: "https://api.cometapi.com",
+      apiKey: "comet-key",
     });
   });
 
@@ -107,9 +144,10 @@ describe("image API platform routing", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
+    // Nano 系列双 Key 下首选 Comet；这里只给 Lumina Key，回退到 Lumina 以验证其 generation 载荷。
     const model = findModel("gemini-3.1-flash-image-preview");
     await generateImage("https://proxy.example", model, "paper-cut city", null, {
-      ...getApiConfigForModel(model, { comet: "comet-key", lumina: "lumina-key" }),
+      ...getApiConfigForModel(model, { lumina: "lumina-key" }),
       aspectRatio: "1:1",
     });
 
@@ -145,7 +183,33 @@ describe("image API platform routing", () => {
     expect(request.body).toBeInstanceOf(FormData);
     // Lumina names this model with a -preview suffix; the app id is mapped on the way out.
     expect(request.body.get("model")).toBe("gemini-2.5-flash-image-preview");
-    expect(request.body.get("ratio")).toBe("4:3");
+    // Lumina 编辑端点忽略 ratio、只认离散 size 档位（3:2 → 横向 1536x1024）；
+    // 实测非标准像素会被拒并回退方图，所以这里用 OpenAI 同款档位而非 ratio。
+    expect(request.body.get("ratio")).toBeNull();
+    expect(request.body.get("size")).toBe("1536x1024");
+  });
+
+  it("omits size on the Lumina edit path for Seedream (its edit endpoint rejects the small tiers)", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ data: [{ b64_json: "c2VlZGVkaXQ=" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const model = findModel("doubao-seedream-5-0-260128");
+    await generateImage("https://proxy.example", model, "watercolor", "data:image/png;base64,aW5wdXQ=", {
+      ...getApiConfigForModel(model, { lumina: "lumina-key" }),
+      aspectRatio: "16:9",
+    });
+
+    const [, request] = fetchMock.mock.calls[0];
+    expect(request.headers["X-Target-Path"]).toBe("/v1/images/edits");
+    expect(request.body).toBeInstanceOf(FormData);
+    // Seedream 编辑端点要求 size ≥ 3,686,400px，OpenAI 小档位会被 400 拒；不传 size 跟随输入图。
+    expect(request.body.get("size")).toBeNull();
+    expect(request.body.get("ratio")).toBeNull();
   });
 
   it.each([

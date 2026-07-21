@@ -354,6 +354,9 @@ function consolidateSplitHistoryRecords(records = []) {
   );
 }
 
+// 画布(Canvas)入口暂时隐藏；代码保留，改回 true 即可恢复导航标签。
+const SHOW_CANVAS_TAB = false;
+
 // ─── Components ───
 // ─── Main App ───
 export default function App() {
@@ -3013,13 +3016,15 @@ export default function App() {
             >
               {t("nav.split")}
             </button>
-            <button
-              type="button"
-              style={{ ...S.modeTab, ...(activePage === "canvas" ? S.modeTabActive : null) }}
-              onClick={() => setActivePage("canvas")}
-            >
-              {t("nav.canvas")}
-            </button>
+            {SHOW_CANVAS_TAB && (
+              <button
+                type="button"
+                style={{ ...S.modeTab, ...(activePage === "canvas" ? S.modeTabActive : null) }}
+                onClick={() => setActivePage("canvas")}
+              >
+                {t("nav.canvas")}
+              </button>
+            )}
           </nav>
           <div style={S.apiSwitchWrap}>
             <button
