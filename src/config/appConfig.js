@@ -61,7 +61,7 @@ export const PROVIDER_COLORS = {
 };
 
 export const LOCAL_STATE_KEY = "polyimage_local_state_v1";
-export const DEFAULT_PROXY_URL = "https://polyimage.adelineazures.workers.dev";
+export const DEFAULT_PROXY_URL = "https://a.adelineazures.workers.dev";
 export const DEFAULT_SELECTED_MODELS = [
   "doubao-seedream-4-0-250828",
   "doubao-seedream-4-5-251128",
