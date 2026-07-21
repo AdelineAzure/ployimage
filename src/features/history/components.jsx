@@ -415,7 +415,9 @@ export function PreviewInfoPanel({ meta, onClose, onCopyPrompt, docked = false }
   const platformLabel = meta.apiPlatform
     ? t(PLATFORM_LABEL_KEYS[meta.apiPlatform] || "viewer.platformUnknown")
     : t("viewer.platformUnknown");
-  const modelLine = meta.provider ? `${meta.modelName} · ${meta.provider}` : meta.modelName || "-";
+  // 俗名一排（如 NanoBanana 2），正式名/模型 ID 一排（如 gemini-3.1-flash-image）。
+  const commonName = meta.provider ? `${meta.modelName} · ${meta.provider}` : meta.modelName || "-";
+  const formalName = meta.modelId && meta.modelId !== meta.modelName ? meta.modelId : "";
   const generatedText = meta.generatedAt
     ? formatUiDateTime(meta.generatedAt, uiLanguage)
     : meta.createdAt
@@ -424,12 +426,17 @@ export function PreviewInfoPanel({ meta, onClose, onCopyPrompt, docked = false }
   const aspectText = !meta.aspectRatio || meta.aspectRatio === "auto" ? t("viewer.aspectAuto") : meta.aspectRatio;
   const promptText = typeof meta.promptText === "string" ? meta.promptText.trim() : "";
   const rows = [
-    { key: "model", label: t("viewer.infoModel"), value: modelLine },
+    { key: "model", label: t("viewer.infoModel"), value: commonName },
+  ];
+  if (formalName) {
+    rows.push({ key: "modelId", label: t("viewer.infoModelId"), value: formalName });
+  }
+  rows.push(
     { key: "platform", label: t("viewer.infoPlatform"), value: platformLabel },
     { key: "time", label: t("viewer.infoTime"), value: generatedText },
     { key: "aspect", label: t("viewer.infoAspect"), value: aspectText },
     { key: "count", label: t("viewer.infoCount"), value: `x${meta.requestedCount}` },
-  ];
+  );
   if (meta.referenceCount > 0) {
     rows.push({ key: "ref", label: t("viewer.infoReference"), value: `${meta.referenceCount}` });
   }
@@ -461,14 +468,14 @@ export function PreviewInfoPanel({ meta, onClose, onCopyPrompt, docked = false }
         ))}
       </div>
       {!!promptText && (
-        <div style={S.viewerInfoPromptWrap}>
+        <div style={docked ? S.viewerInfoPromptWrapDocked : S.viewerInfoPromptWrap}>
           <div style={S.viewerInfoPromptHead}>
             <span style={S.viewerInfoLabel}>{t("viewer.infoPrompt")}</span>
             <button type="button" style={S.viewerInfoCopyBtn} onClick={onCopyPrompt}>
               {t("viewer.infoCopyPrompt")}
             </button>
           </div>
-          <div style={S.viewerInfoPromptText}>{promptText}</div>
+          <div style={docked ? S.viewerInfoPromptTextDocked : S.viewerInfoPromptText}>{promptText}</div>
         </div>
       )}
     </div>
@@ -538,7 +545,7 @@ export function ImagePreviewModal({ src, onClose }) {
     setColorSamples([]);
     setActiveColorSampleId("");
     setPromptPanelOpen(false);
-    setInfoPanelOpen(false);
+    // 信息框由用户点击 ⓘ 控制，左右切换时保持展开，不自动收回。
     dragRef.current = null;
   }, [inputSrc, outputSrc]);
 
@@ -794,7 +801,6 @@ export function ImagePreviewModal({ src, onClose }) {
         {singleMarkerStyle && <div style={singleMarkerStyle} />}
         {inputMarkerStyle && <div style={inputMarkerStyle} />}
         {outputMarkerStyle && <div style={outputMarkerStyle} />}
-        {!isComparePreview && <PreviewMetaBar modelName={modelName} promptText={promptText} onPromptClick={handlePromptClick} />}
         {hasGallery && (
           <>
             <button
