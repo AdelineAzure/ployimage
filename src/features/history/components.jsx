@@ -409,7 +409,7 @@ const PLATFORM_LABEL_KEYS = {
   bailian: "viewer.platformBailian",
 };
 
-export function PreviewInfoPanel({ meta, onClose, onCopyPrompt }) {
+export function PreviewInfoPanel({ meta, onClose, onCopyPrompt, docked = false }) {
   const { uiLanguage, t } = useI18n();
   if (!meta) return null;
   const platformLabel = meta.apiPlatform
@@ -445,7 +445,7 @@ export function PreviewInfoPanel({ meta, onClose, onCopyPrompt }) {
     });
   }
   return (
-    <div style={S.viewerInfoPanel} onClick={(event) => event.stopPropagation()}>
+    <div style={docked ? S.viewerInfoPanelDocked : S.viewerInfoPanel} onClick={(event) => event.stopPropagation()}>
       <div style={S.viewerInfoHeader}>
         <span style={S.viewerInfoTitle}>{t("viewer.infoPanel")}</span>
         <button type="button" style={S.viewerInfoClose} onClick={onClose} aria-label={t("common.close")}>
@@ -478,6 +478,7 @@ export function PreviewInfoPanel({ meta, onClose, onCopyPrompt }) {
 export function ImagePreviewModal({ src, onClose }) {
   const { t } = useI18n();
   const modalPanelRef = useRef(null);
+  const stageRef = useRef(null);
   const viewportRef = useRef(null);
   const singleImageRef = useRef(null);
   const inputImageRef = useRef(null);
@@ -689,15 +690,15 @@ export function ImagePreviewModal({ src, onClose }) {
   const activeColorSample = colorSamples.find((sample) => sample.id === activeColorSampleId) || null;
   const singleMarkerStyle =
     !isComparePreview && activeColorSample?.sourceUrl === outputSrc
-      ? getColorMarkerStyle(activeColorSample, singleImageRef, modalPanelRef)
+      ? getColorMarkerStyle(activeColorSample, singleImageRef, stageRef)
       : null;
   const inputMarkerStyle =
     isComparePreview && activeColorSample?.target === "input" && activeColorSample?.sourceUrl === inputSrc
-      ? getColorMarkerStyle(activeColorSample, inputImageRef, modalPanelRef)
+      ? getColorMarkerStyle(activeColorSample, inputImageRef, stageRef)
       : null;
   const outputMarkerStyle =
     isComparePreview && activeColorSample?.target === "output" && activeColorSample?.sourceUrl === outputSrc
-      ? getColorMarkerStyle(activeColorSample, outputImageRef, modalPanelRef)
+      ? getColorMarkerStyle(activeColorSample, outputImageRef, stageRef)
       : null;
   const sharedPreviewImageStyle = {
     maxWidth: "100%",
@@ -711,7 +712,28 @@ export function ImagePreviewModal({ src, onClose }) {
   };
   return (
     <div style={S.modalOverlay} onClick={onClose}>
-      <div ref={modalPanelRef} style={{ position: "relative", width: "94vw", height: "90vh", maxWidth: isComparePreview ? 1480 : 1360 }} onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={modalPanelRef}
+        style={{
+          position: "relative",
+          width: "94vw",
+          height: "90vh",
+          maxWidth: isComparePreview ? 1480 : 1360,
+          display: "flex",
+          alignItems: "stretch",
+          gap: infoPanelOpen && !!meta ? 12 : 0,
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {infoPanelOpen && !!meta && (
+          <PreviewInfoPanel
+            meta={meta}
+            docked
+            onClose={() => setInfoPanelOpen(false)}
+            onCopyPrompt={() => handlePromptCopy(meta.promptText || promptText)}
+          />
+        )}
+        <div ref={stageRef} style={{ position: "relative", flex: 1, minWidth: 0, height: "100%" }}>
         <button onClick={onClose} style={{ ...S.closeBtn, position: "absolute", top: 12, right: 12, zIndex: 10 }}>✕</button>
         <div style={S.viewerColorPickerBar}>
           {!!meta && (
@@ -745,13 +767,6 @@ export function ImagePreviewModal({ src, onClose }) {
           <div style={S.viewerPromptPanel} onClick={(event) => event.stopPropagation()}>
             {promptText}
           </div>
-        )}
-        {infoPanelOpen && !!meta && (
-          <PreviewInfoPanel
-            meta={meta}
-            onClose={() => setInfoPanelOpen(false)}
-            onCopyPrompt={() => handlePromptCopy(meta.promptText || promptText)}
-          />
         )}
         {!!toastText && <div style={S.viewerToast}>{toastText}</div>}
         {colorSamples.length > 0 && (
@@ -816,7 +831,8 @@ export function ImagePreviewModal({ src, onClose }) {
         <div
           ref={viewportRef}
           style={{
-            width: "100%",
+            flex: 1,
+            minWidth: 0,
             height: "100%",
             borderRadius: 10,
             border: "1px solid rgba(255,255,255,0.12)",
@@ -915,6 +931,7 @@ export function ImagePreviewModal({ src, onClose }) {
               />
             </div>
           )}
+        </div>
         </div>
       </div>
     </div>
