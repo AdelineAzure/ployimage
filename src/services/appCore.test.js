@@ -4,6 +4,7 @@ import {
   callBailianImageAPI,
   generateImage,
   getApiConfigForModel,
+  getModelPlatformCandidates,
   getQwen3ImageEditSize,
   mapAspectRatioToLuminaRatio,
   mergeApiKeys,
@@ -69,17 +70,32 @@ describe("image API platform routing", () => {
     });
   });
 
-  // Nano(Gemini) 系列在双 Key 下首选 Comet（避开 Lumina 上游 gemini→doubao 降级）。
+  // Nano(Gemini) 系列在双 Key 下默认首选 Lumina（正式版模型），报错时回退 Comet。
   it.each([
     "gemini-2.5-flash-image",
-    "gemini-3.1-flash-image-preview",
+    "gemini-3.1-flash-image",
     "gemini-3-pro-image",
-  ])("prefers Comet for Nano model %s", (modelId) => {
+  ])("prefers Lumina by default for Nano model %s", (modelId) => {
     expect(
       getApiConfigForModel(findModel(modelId), {
         comet: "comet-key",
         lumina: "lumina-key",
       })
+    ).toEqual({
+      apiPlatform: "lumina",
+      apiBaseUrl: "https://lumina.tripo3d.com",
+      apiKey: "lumina-key",
+    });
+  });
+
+  // 用户在设置里把某组首选平台改成 Comet 时，覆盖内置默认。
+  it("honors a per-group platform override for Nano", () => {
+    expect(
+      getApiConfigForModel(
+        findModel("gemini-3.1-flash-image"),
+        { comet: "comet-key", lumina: "lumina-key" },
+        { nano: "comet" }
+      )
     ).toEqual({
       apiPlatform: "comet",
       apiBaseUrl: "https://api.cometapi.com",
@@ -87,14 +103,14 @@ describe("image API platform routing", () => {
     });
   });
 
-  // 互为回退：Nano 系列缺 Comet Key 时回退 Lumina；GPT 系列缺 Lumina Key 时回退 Comet。
-  it("falls back to Lumina for Nano when only a Lumina key exists", () => {
+  // 互为回退：Nano 系列缺 Lumina Key 时回退 Comet；GPT 系列缺 Lumina Key 时回退 Comet。
+  it("falls back to Comet for Nano when only a Comet key exists", () => {
     expect(
-      getApiConfigForModel(findModel("gemini-3.1-flash-image-preview"), { lumina: "lumina-key" })
+      getApiConfigForModel(findModel("gemini-3.1-flash-image"), { comet: "comet-key" })
     ).toEqual({
-      apiPlatform: "lumina",
-      apiBaseUrl: "https://lumina.tripo3d.com",
-      apiKey: "lumina-key",
+      apiPlatform: "comet",
+      apiBaseUrl: "https://api.cometapi.com",
+      apiKey: "comet-key",
     });
   });
 
@@ -106,6 +122,16 @@ describe("image API platform routing", () => {
       apiBaseUrl: "https://api.cometapi.com",
       apiKey: "comet-key",
     });
+  });
+
+  // getModelPlatformCandidates: 首选在前，Comet 作为通用回退。
+  it("returns ordered platform candidates with Comet as fallback for Nano", () => {
+    expect(
+      getModelPlatformCandidates(findModel("gemini-3.1-flash-image"), {
+        comet: "comet-key",
+        lumina: "lumina-key",
+      })
+    ).toEqual(["lumina", "comet"]);
   });
 
   it("uses the unified Lumina generation payload for Seedream", async () => {
@@ -144,8 +170,8 @@ describe("image API platform routing", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    // Nano 系列双 Key 下首选 Comet；这里只给 Lumina Key，回退到 Lumina 以验证其 generation 载荷。
-    const model = findModel("gemini-3.1-flash-image-preview");
+    // Nano 系列默认走 Lumina；这里只给 Lumina Key，验证其 generation 载荷。
+    const model = findModel("gemini-3.1-flash-image");
     await generateImage("https://proxy.example", model, "paper-cut city", null, {
       ...getApiConfigForModel(model, { lumina: "lumina-key" }),
       aspectRatio: "1:1",
@@ -156,7 +182,7 @@ describe("image API platform routing", () => {
     expect(request.headers["X-Upstream-Base"]).toBe("https://lumina.tripo3d.com");
     expect(request.headers["X-Api-Key"]).toBe("lumina-key");
     expect(JSON.parse(request.body)).toMatchObject({
-      model: "gemini-3.1-flash-image-preview",
+      model: "gemini-3.1-flash-image",
       ratio: "1:1",
       n: 1,
     });
@@ -231,14 +257,14 @@ describe("image API platform routing", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const model = findModel("gemini-3-pro-image");
+    const model = findModel("gemini-2.5-flash-image");
     await generateImage("https://proxy.example", model, "starry sky", null, {
       ...getApiConfigForModel(model, { lumina: "lumina-key" }),
       aspectRatio: "1:1",
     });
 
     const [, request] = fetchMock.mock.calls[0];
-    expect(JSON.parse(request.body).model).toBe("gemini-3-pro-image-preview");
+    expect(JSON.parse(request.body).model).toBe("gemini-2.5-flash-image-preview");
   });
 
   it("adds a current Lumina key to an old Comet-only task snapshot", () => {

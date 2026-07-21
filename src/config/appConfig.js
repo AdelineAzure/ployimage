@@ -11,7 +11,7 @@ const SEEDREAM_MODELS = [
 const NANO_MODELS = [
   // NanoBanana 系列：本质调用 Gemini 图像模型
   { id: "gemini-2.5-flash-image", name: "NanoBanana", shortName: "Nano", provider: "Google", apiType: "gemini", badge: "HOT", platforms: ["comet", "lumina"] },
-  { id: "gemini-3.1-flash-image-preview", name: "NanoBanana 2", shortName: "Nano 2", provider: "Google", apiType: "gemini", badge: "NEW", platforms: ["comet", "lumina"] },
+  { id: "gemini-3.1-flash-image", name: "NanoBanana 2", shortName: "Nano 2", provider: "Google", apiType: "gemini", badge: "NEW", platforms: ["comet", "lumina"] },
   { id: "gemini-3-pro-image", name: "NanoBanana Pro", shortName: "Nano Pro", provider: "Google", apiType: "gemini", badge: "PRO", platforms: ["comet", "lumina"] },
 ];
 
@@ -41,12 +41,52 @@ export const IMAGE_MODEL_ROWS = [
 ];
 export const IMAGE_MODELS = IMAGE_MODEL_ROWS.flat();
 
+// ─── 模型分组与每组最优 API 平台 ───
+// 用户可在设置里为每组指定首选平台，覆盖内置系列默认。运行时若首选平台报错，
+// 会自动回退到该组支持且已配置 Key 的其它平台（默认回退到 Comet）。
+export const MODEL_GROUPS = [
+  // Seedream 保持原有默认：首选 Lumina（统一 generation 载荷），报错回退 Comet。
+  { key: "seedream", labelKey: "settings.groupSeedream", platforms: ["lumina", "comet"], defaultPlatform: "lumina" },
+  // Nano(Gemini) 默认走 Lumina（正式版模型），报错时回退 Comet。
+  { key: "nano", labelKey: "settings.groupNano", platforms: ["lumina", "comet"], defaultPlatform: "lumina" },
+  // GPT Image 单独一组：Comet 的 GPT 端点不认 image 字段，默认走 Lumina，回退 Comet。
+  { key: "gpt", labelKey: "settings.groupGpt", platforms: ["lumina", "comet"], defaultPlatform: "lumina" },
+  // Wan + Qwen 都是百炼模型，只有 bailian 一个平台，无可选项。
+  { key: "wanQwen", labelKey: "settings.groupWanQwen", platforms: ["bailian"], defaultPlatform: "bailian" },
+];
+
+// 把单个模型映射到它所属的分组 key。
+export function getModelGroupKey(model) {
+  if (!model) return "seedream";
+  if (model.apiType === "bailian") return "wanQwen";
+  if (model.apiType === "gemini") return "nano";
+  const id = String(model.id || "");
+  if (model.provider === "OpenAI" && /^gpt-image-/i.test(id)) return "gpt";
+  return "seedream";
+}
+
+// 每组首选平台的默认取值（用户未配置时使用）。
+export const DEFAULT_MODEL_GROUP_PLATFORMS = Object.fromEntries(
+  MODEL_GROUPS.map((group) => [group.key, group.defaultPlatform])
+);
+
+// 校验持久化/外部传入的每组平台配置：只接受该组支持的平台，其余回退到默认。
+export function normalizeGroupPlatforms(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return Object.fromEntries(
+    MODEL_GROUPS.map((group) => {
+      const candidate = source[group.key];
+      const valid = typeof candidate === "string" && group.platforms.includes(candidate);
+      return [group.key, valid ? candidate : group.defaultPlatform];
+    })
+  );
+}
+
 // Lumina 网关对部分模型使用了与 Comet 不同的模型名（多带 -preview 后缀）。
 // 仅在 apiPlatform === "lumina" 时把 app 内部 id 映射为 Lumina 认可的名字；
 // 未列出的模型按原 id 透传。映射目标已用真实 key 打 /v1/models 核对。
 export const LUMINA_MODEL_ID_MAP = {
   "gemini-2.5-flash-image": "gemini-2.5-flash-image-preview",
-  "gemini-3-pro-image": "gemini-3-pro-image-preview",
 };
 
 export function mapModelIdForLumina(modelId) {

@@ -5,7 +5,8 @@ import { setRuntimeConfig } from "../../services/runtimeConfig";
 import {
   ensureDirectoryPermission,
   generateImage,
-  getApiConfigForModel,
+  getApiConfigForPlatform,
+  getModelPlatformCandidates,
   getResultPromptKey,
   getTurnPromptVariants,
   isAbortError,
@@ -16,7 +17,7 @@ import {
   saveTurnToLocalFolder,
 } from "../../services/appCore";
 
-export function useTaskQueue({ turns, setTurns, apiKeys, historyDirHandle, setHistoryFolderMsg, t }) {
+export function useTaskQueue({ turns, setTurns, apiKeys, groupPlatforms, historyDirHandle, setHistoryFolderMsg, t }) {
   const [isProcessing, setIsProcessing] = useState(false);
   const controllersRef = useRef({});
   const savingToFolderRef = useRef(new Set());
@@ -142,24 +143,39 @@ export function useTaskQueue({ turns, setTurns, apiKeys, historyDirHandle, setHi
             const requestedCount = Math.max(1, Number(task.requestedCount || next.modelCounts?.[task.modelId] || 1));
             let partialImages = [];
             let lastNonAbortError = null;
-            const requestConfig = getApiConfigForModel(model, mergeApiKeys(next.apiKeys, apiKeys));
+            const effectiveKeys = mergeApiKeys(next.apiKeys, apiKeys);
+            // 首选平台在前，其余为回退候选（默认回退 Comet）。首选报错时自动降级重试。
+            const candidatePlatforms = getModelPlatformCandidates(model, effectiveKeys, next.groupPlatforms || groupPlatforms);
+
+            const generateOnce = async () => {
+              let attemptErr = null;
+              for (const platform of candidatePlatforms) {
+                try {
+                  const requestConfig = getApiConfigForPlatform(platform, effectiveKeys);
+                  const generated = await generateImage(next.proxyUrl, model, task.promptText, next.referenceImage, {
+                    signal: controller.signal,
+                    count: 1,
+                    ...requestConfig,
+                    aspectRatio: normalizeAspectRatio(next.aspectRatio ?? next.geminiAspectRatio),
+                    imageInputs: turnImageInputs,
+                    promptExtend: next.qwenPromptExtend !== false,
+                    promptExtendMode: next.qwenPromptExtendMode,
+                  });
+                  const nextImage = Array.isArray(generated) && generated.length ? generated[0] : null;
+                  if (nextImage) return nextImage;
+                  attemptErr = new Error("No images returned");
+                } catch (err) {
+                  if (isAbortError(err)) throw err;
+                  attemptErr = err;
+                  // 落到下一候选平台继续尝试；已是最后一个则抛出。
+                }
+              }
+              throw attemptErr || new Error("No images returned");
+            };
 
             for (let index = 0; index < requestedCount; index += 1) {
               try {
-                const generated = await generateImage(next.proxyUrl, model, task.promptText, next.referenceImage, {
-                  signal: controller.signal,
-                  count: 1,
-                  ...requestConfig,
-                  aspectRatio: normalizeAspectRatio(next.aspectRatio ?? next.geminiAspectRatio),
-                  imageInputs: turnImageInputs,
-                  promptExtend: next.qwenPromptExtend !== false,
-                  promptExtendMode: next.qwenPromptExtendMode,
-                });
-                const nextImage = Array.isArray(generated) && generated.length ? generated[0] : null;
-                if (!nextImage) {
-                  lastNonAbortError = new Error("No images returned");
-                  continue;
-                }
+                const nextImage = await generateOnce();
                 partialImages = [...partialImages, nextImage];
                 patchTaskResult(task, (current) => ({
                   ...current,

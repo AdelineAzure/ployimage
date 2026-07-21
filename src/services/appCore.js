@@ -12,6 +12,8 @@ import {
   DEFAULT_GPT_ASSIST_PROMPT,
   DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE,
   DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT,
+  DEFAULT_MODEL_GROUP_PLATFORMS,
+  getModelGroupKey,
   DEFAULT_SPLIT_GROUP_MODE,
   DEFAULT_SPLIT_BG_COLOR,
   DEFAULT_SPLIT_RENDER_MODE,
@@ -201,39 +203,57 @@ export function getApiConfigForPlatform(apiPlatform, apiKeys) {
   };
 }
 
-export function getApiConfigForModel(model, apiKeys) {
-  return getApiConfigForPlatform(getPreferredModelApiPlatform(model, apiKeys), apiKeys);
+export function getApiConfigForModel(model, apiKeys, groupPlatforms) {
+  return getApiConfigForPlatform(getPreferredModelApiPlatform(model, apiKeys, groupPlatforms), apiKeys);
 }
 
-// 系列级路由（互为回退）：
-//  - GPT 系列首选 Lumina（Comet 的 GPT 图像端点不认 image 字段，会报 Unknown parameter: 'image'）；
-//  - Nano(Gemini) 系列首选 Comet（Lumina 上游对 gemini 无容量时会降级到 doubao，出错且不是想要的模型）；
-//  - 首选平台的 Key 缺失时回退到另一平台。
-//  - 其余模型（Seed / 百炼等）沿用旧逻辑：支持 Lumina 且填了 Lumina Key 就走 Lumina，否则取首个声明平台。
-export function getPreferredModelApiPlatform(model, apiKeys) {
-  if (!model) return DEFAULT_API_PLATFORM;
+// 把 groupPlatforms 配置里对某模型分组的首选平台取出并校验；无效时回退到该组默认。
+export function resolveGroupPreferredPlatform(model, groupPlatforms) {
+  const groupKey = getModelGroupKey(model);
+  const fallback = DEFAULT_MODEL_GROUP_PLATFORMS[groupKey] || DEFAULT_API_PLATFORM;
+  const configured = groupPlatforms && typeof groupPlatforms === "object" ? groupPlatforms[groupKey] : undefined;
+  if (typeof configured !== "string" || !configured.trim()) return fallback;
+  const normalized = normalizeApiPlatform(configured);
+  const supported =
+    Array.isArray(model?.platforms) && model.platforms.length
+      ? model.platforms.map(normalizeApiPlatform)
+      : [DEFAULT_API_PLATFORM];
+  return supported.includes(normalized) ? normalized : fallback;
+}
+
+// 返回该模型可用平台的有序候选列表（首选在前，后续为回退项），只包含已配置 Key 的平台。
+// 运行时首选平台报错时，依次尝试后续候选（默认回退到 Comet）。
+export function getModelPlatformCandidates(model, apiKeys, groupPlatforms) {
+  if (!model) return [DEFAULT_API_PLATFORM];
   const supportedPlatforms =
     Array.isArray(model.platforms) && model.platforms.length
       ? model.platforms.map(normalizeApiPlatform)
       : [DEFAULT_API_PLATFORM];
   const keys = normalizeApiKeys(apiKeys);
-  const canUse = (platform) => supportedPlatforms.includes(platform) && Boolean(keys[platform]);
+  const hasKey = (platform) => Boolean(keys[platform]);
 
-  const id = String(model.id || "");
-  const isGptImage = model.provider === "OpenAI" && /^gpt-image-/i.test(id);
-  const isNano = model.apiType === "gemini";
-  if (isGptImage) {
-    if (canUse("lumina")) return "lumina";
-    if (canUse("comet")) return "comet";
-  } else if (isNano) {
-    if (canUse("comet")) return "comet";
-    if (canUse("lumina")) return "lumina";
+  const preferred = resolveGroupPreferredPlatform(model, groupPlatforms);
+  // 首选优先，其次 Comet 作为通用回退，再补齐其余支持的平台。
+  const order = [preferred, "comet", ...supportedPlatforms];
+  const seen = new Set();
+  const ranked = [];
+  for (const platform of order) {
+    if (!supportedPlatforms.includes(platform) || seen.has(platform)) continue;
+    seen.add(platform);
+    ranked.push(platform);
   }
+  const withKey = ranked.filter(hasKey);
+  // 全部平台都没配 Key：回退到 ranked 首项（让上游报缺 Key 而非静默失败）。
+  return withKey.length ? withKey : [ranked[0] || DEFAULT_API_PLATFORM];
+}
 
-  if (supportedPlatforms.includes("lumina") && keys.lumina) {
-    return "lumina";
-  }
-  return normalizeApiPlatform(supportedPlatforms[0]);
+// 每组可配置最优平台（默认见 DEFAULT_MODEL_GROUP_PLATFORMS）：
+//  - 用户在设置里为某组选定平台后，该组模型首选该平台；未配置则用系列默认
+//    （Nano/GPT 默认 Lumina，Seedream 默认 Comet，Wan+Qwen 仅百炼）。
+//  - 首选平台无 Key 或运行时报错时，回退到该组其它已配置 Key 的平台（优先 Comet）。
+export function getPreferredModelApiPlatform(model, apiKeys, groupPlatforms) {
+  if (!model) return DEFAULT_API_PLATFORM;
+  return getModelPlatformCandidates(model, apiKeys, groupPlatforms)[0];
 }
 
 export function normalizeAspectRatio(value) {

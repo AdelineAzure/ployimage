@@ -5,6 +5,7 @@ import {
   DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT,
   INPUT_IMAGE_EDITOR_COLORS,
   MAX_INPUT_IMAGES_PER_BATCH,
+  MODEL_GROUPS,
 } from "../../config/appConfig";
 import { normalizeUiLanguage, useI18n } from "../../i18n";
 import {
@@ -23,10 +24,17 @@ import {
 import { S } from "../../styles/appStyles";
 import { TokenPromptInput } from "../workspace/promptControls";
 
-export function SettingsModal({ show, onClose, proxyUrl, setProxyUrl, uiLanguage, setUiLanguage }) {
+const PLATFORM_LABELS = { comet: "Comet", lumina: "Lumina", bailian: "Bailian" };
+
+export function SettingsModal({ show, onClose, proxyUrl, setProxyUrl, uiLanguage, setUiLanguage, groupPlatforms, setGroupPlatforms }) {
   const { t } = useI18n();
   const [showWorkerCode, setShowWorkerCode] = useState(false);
   if (!show) return null;
+  const currentGroupPlatforms = groupPlatforms && typeof groupPlatforms === "object" ? groupPlatforms : {};
+  const setGroupPlatform = (groupKey, platform) => {
+    if (typeof setGroupPlatforms !== "function") return;
+    setGroupPlatforms((prev) => ({ ...(prev && typeof prev === "object" ? prev : {}), [groupKey]: platform }));
+  };
   return (
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.settingsModal} onClick={(e) => e.stopPropagation()}>
@@ -41,6 +49,27 @@ export function SettingsModal({ show, onClose, proxyUrl, setProxyUrl, uiLanguage
           <option value="en">{t("settings.languageEnglish")}</option>
           <option value="zh">{t("settings.languageChinese")}</option>
         </select>
+        <label style={{ ...S.fieldLabel, marginTop: 14 }}>{t("settings.groupPlatformLabel")}</label>
+        <p style={{ ...S.hint, marginTop: 4, marginBottom: 8 }}>{t("settings.groupPlatformHint")}</p>
+        {MODEL_GROUPS.map((group) => {
+          const value = currentGroupPlatforms[group.key] || group.defaultPlatform;
+          const singleOption = group.platforms.length <= 1;
+          return (
+            <div key={group.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 8 }}>
+              <span style={{ fontSize: 13, opacity: 0.85 }}>{t(group.labelKey)}</span>
+              <select
+                style={{ ...S.proxyInput, width: 160, marginTop: 0, opacity: singleOption ? 0.6 : 1 }}
+                value={value}
+                disabled={singleOption}
+                onChange={(event) => setGroupPlatform(group.key, event.target.value)}
+              >
+                {group.platforms.map((platform) => (
+                  <option key={platform} value={platform}>{PLATFORM_LABELS[platform] || platform}</option>
+                ))}
+              </select>
+            </div>
+          );
+        })}
         <p style={S.hint}>
           {uiLanguage === "zh" ? (
             <>

@@ -38,6 +38,9 @@ const {
   DEFAULT_API_BASE_URL,
   DEFAULT_API_KEY,
   DEFAULT_API_KEYS,
+  DEFAULT_MODEL_GROUP_PLATFORMS,
+  MODEL_GROUPS,
+  normalizeGroupPlatforms,
   DEFAULT_GPT_ASSIST_MODEL,
   DEFAULT_BAILIAN_ASSIST_MODEL,
   DEFAULT_GPT_ASSIST_PROMPT,
@@ -111,7 +114,7 @@ const {
   isModelAvailableOnPlatform,
   getModelApiPlatform,
   getApiConfigForPlatform,
-  getApiConfigForModel,
+  getModelPlatformCandidates,
   normalizeAspectRatio,
   normalizeModelId,
   supportsOpenAiImageEdits,
@@ -379,6 +382,7 @@ export default function App() {
   const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_BASE_URL);
   const [apiKeys, setApiKeys] = useState(DEFAULT_API_KEYS);
   const [draftApiKeys, setDraftApiKeys] = useState(DEFAULT_API_KEYS);
+  const [groupPlatforms, setGroupPlatforms] = useState(DEFAULT_MODEL_GROUP_PLATFORMS);
   const [apiKeySavedAt, setApiKeySavedAt] = useState(null);
   const [showApiModal, setShowApiModal] = useState(false);
   const [gptAssistPrompt, setGptAssistPrompt] = useState(DEFAULT_GPT_ASSIST_PROMPT);
@@ -505,6 +509,7 @@ export default function App() {
     turns,
     setTurns,
     apiKeys,
+    groupPlatforms,
     historyDirHandle,
     setHistoryFolderMsg,
     t,
@@ -589,6 +594,9 @@ export default function App() {
         if (typeof saved.aspectRatio === "string" || typeof saved.geminiAspectRatio === "string") {
           setAspectRatio(normalizeAspectRatio(saved.aspectRatio ?? saved.geminiAspectRatio));
         }
+        if (saved.groupPlatforms && typeof saved.groupPlatforms === "object") {
+          setGroupPlatforms(normalizeGroupPlatforms(saved.groupPlatforms));
+        }
         if (typeof saved.qwenPromptExtend === "boolean") setQwenPromptExtend(saved.qwenPromptExtend);
         if (saved.qwenPromptExtendMode === "direct" || saved.qwenPromptExtendMode === "agent") {
           setQwenPromptExtendMode(saved.qwenPromptExtendMode);
@@ -631,6 +639,7 @@ export default function App() {
       aspectRatio,
       qwenPromptExtend,
       qwenPromptExtendMode,
+      groupPlatforms,
       proxyUrl,
       uiLanguage,
       nextSeq: seqRef.current,
@@ -638,7 +647,7 @@ export default function App() {
     try {
       localStorage.setItem(LOCAL_STATE_KEY, JSON.stringify(state));
     } catch {}
-  }, [historyLimit, selectedModels, modelCounts, prompt, taskMode, comparePrompts, compareCount, styleThemes, styleReferenceImages, apiBaseUrl, lastEditedCount, aspectRatio, qwenPromptExtend, qwenPromptExtendMode, proxyUrl, uiLanguage]);
+  }, [historyLimit, selectedModels, modelCounts, prompt, taskMode, comparePrompts, compareCount, styleThemes, styleReferenceImages, apiBaseUrl, lastEditedCount, aspectRatio, qwenPromptExtend, qwenPromptExtendMode, groupPlatforms, proxyUrl, uiLanguage]);
 
   useEffect(() => {
     if (selectedAtlasItems.length > 0) return;
@@ -1186,17 +1195,30 @@ export default function App() {
     );
 
     try {
-      const requestConfig = getApiConfigForModel(model, mergeApiKeys(targetTurn.apiKeys, apiKeys));
-      const generated = await generateImage(targetTurn.proxyUrl || proxyUrl, model, promptText, targetTurn.referenceImage, {
-        count: 1,
-        ...requestConfig,
-        aspectRatio: normalizeAspectRatio(targetTurn.aspectRatio ?? targetTurn.geminiAspectRatio ?? aspectRatio),
-        imageInputs: turnImageInputs,
-        promptExtend: targetTurn.qwenPromptExtend !== false,
-        promptExtendMode: targetTurn.qwenPromptExtendMode,
-      });
-      const nextImage = Array.isArray(generated) && generated.length ? generated[0] : null;
-      if (!nextImage) throw new Error("No images returned");
+      const effectiveKeys = mergeApiKeys(targetTurn.apiKeys, apiKeys);
+      // 首选平台在前，其余为回退候选（默认回退 Comet）；首选报错时自动降级重试。
+      const candidatePlatforms = getModelPlatformCandidates(model, effectiveKeys, targetTurn.groupPlatforms || groupPlatforms);
+      let nextImage = null;
+      let attemptErr = null;
+      for (const platform of candidatePlatforms) {
+        try {
+          const requestConfig = getApiConfigForPlatform(platform, effectiveKeys);
+          const generated = await generateImage(targetTurn.proxyUrl || proxyUrl, model, promptText, targetTurn.referenceImage, {
+            count: 1,
+            ...requestConfig,
+            aspectRatio: normalizeAspectRatio(targetTurn.aspectRatio ?? targetTurn.geminiAspectRatio ?? aspectRatio),
+            imageInputs: turnImageInputs,
+            promptExtend: targetTurn.qwenPromptExtend !== false,
+            promptExtendMode: targetTurn.qwenPromptExtendMode,
+          });
+          nextImage = Array.isArray(generated) && generated.length ? generated[0] : null;
+          if (nextImage) break;
+          attemptErr = new Error("No images returned");
+        } catch (err) {
+          attemptErr = err;
+        }
+      }
+      if (!nextImage) throw attemptErr || new Error("No images returned");
 
       setTurns((prev) =>
         prev.map((turn) =>
@@ -1266,7 +1288,7 @@ export default function App() {
         return next;
       });
     }
-  }, [turns, proxyUrl, apiKeys, aspectRatio, t]);
+  }, [turns, proxyUrl, apiKeys, groupPlatforms, aspectRatio, t]);
 
   const retryImage = useCallback((payload) => runResultImageAction(payload, "replace"), [runResultImageAction]);
   const appendResultImage = useCallback((payload) => runResultImageAction(payload, "append"), [runResultImageAction]);
@@ -2591,6 +2613,7 @@ export default function App() {
       promptVariants: normalizedPromptVariants,
       apiBaseUrl: resolveApiBaseUrl(apiBaseUrl),
       apiKeys: normalizeApiKeys(apiKeys),
+      groupPlatforms: normalizeGroupPlatforms(groupPlatforms),
       aspectRatio: normalizeAspectRatio(aspectRatio),
       qwenPromptExtend,
       qwenPromptExtendMode,
@@ -2626,7 +2649,7 @@ export default function App() {
     } else {
       promptEditor.setText((prev) => clearPlaceholderValues(prev), { record: false });
     }
-  }, [proxyUrl, selectedModels, modelCounts, taskMode, prompt, comparePrompts, compareCount, compareEditors, styleThemes, styleReferenceImages, apiKeys, apiBaseUrl, aspectRatio, qwenPromptExtend, qwenPromptExtendMode, uploadedInputImages, uploadedImage, promptEditor, t]);
+  }, [proxyUrl, selectedModels, modelCounts, taskMode, prompt, comparePrompts, compareCount, compareEditors, styleThemes, styleReferenceImages, apiKeys, apiBaseUrl, aspectRatio, qwenPromptExtend, qwenPromptExtendMode, groupPlatforms, uploadedInputImages, uploadedImage, promptEditor, t]);
 
   const removeTurnFromPage = useCallback((turnId) => {
     const targetTurn = turns.find((item) => item.id === turnId) || null;
@@ -3693,7 +3716,7 @@ export default function App() {
         </div>
       </main>
 
-      <SettingsModal show={showSettings} onClose={() => setShowSettings(false)} proxyUrl={proxyUrl} setProxyUrl={setProxyUrl} uiLanguage={uiLanguage} setUiLanguage={setUiLanguage} />
+      <SettingsModal show={showSettings} onClose={() => setShowSettings(false)} proxyUrl={proxyUrl} setProxyUrl={setProxyUrl} uiLanguage={uiLanguage} setUiLanguage={setUiLanguage} groupPlatforms={groupPlatforms} setGroupPlatforms={setGroupPlatforms} />
       <ApiKeyModal
         show={showApiModal}
         onClose={() => setShowApiModal(false)}
