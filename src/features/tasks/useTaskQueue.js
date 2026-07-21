@@ -147,6 +147,7 @@ export function useTaskQueue({ turns, setTurns, apiKeys, groupPlatforms, history
             // 首选平台在前，其余为回退候选（默认回退 Comet）。首选报错时自动降级重试。
             const candidatePlatforms = getModelPlatformCandidates(model, effectiveKeys, next.groupPlatforms || groupPlatforms);
 
+            // 记录实际出图的平台（首选报错回退后可能与首选不同）。
             const generateOnce = async () => {
               let attemptErr = null;
               for (const platform of candidatePlatforms) {
@@ -162,7 +163,7 @@ export function useTaskQueue({ turns, setTurns, apiKeys, groupPlatforms, history
                     promptExtendMode: next.qwenPromptExtendMode,
                   });
                   const nextImage = Array.isArray(generated) && generated.length ? generated[0] : null;
-                  if (nextImage) return nextImage;
+                  if (nextImage) return { image: nextImage, platform };
                   attemptErr = new Error("No images returned");
                 } catch (err) {
                   if (isAbortError(err)) throw err;
@@ -173,14 +174,18 @@ export function useTaskQueue({ turns, setTurns, apiKeys, groupPlatforms, history
               throw attemptErr || new Error("No images returned");
             };
 
+            let usedPlatform = candidatePlatforms[0] || null;
             for (let index = 0; index < requestedCount; index += 1) {
               try {
-                const nextImage = await generateOnce();
+                const { image: nextImage, platform } = await generateOnce();
+                usedPlatform = platform;
                 partialImages = [...partialImages, nextImage];
                 patchTaskResult(task, (current) => ({
                   ...current,
                   status: "loading",
                   error: null,
+                  apiPlatform: platform,
+                  generatedAt: Date.now(),
                   images: [...(Array.isArray(current.images) ? current.images : []), nextImage],
                 }));
               } catch (err) {
@@ -194,6 +199,8 @@ export function useTaskQueue({ turns, setTurns, apiKeys, groupPlatforms, history
             patchTaskResult(task, {
               status: "success",
               error: null,
+              apiPlatform: usedPlatform,
+              generatedAt: Date.now(),
               images: partialImages,
             });
           } catch (err) {

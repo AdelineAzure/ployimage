@@ -1199,6 +1199,7 @@ export default function App() {
       // 首选平台在前，其余为回退候选（默认回退 Comet）；首选报错时自动降级重试。
       const candidatePlatforms = getModelPlatformCandidates(model, effectiveKeys, targetTurn.groupPlatforms || groupPlatforms);
       let nextImage = null;
+      let usedPlatform = candidatePlatforms[0] || null;
       let attemptErr = null;
       for (const platform of candidatePlatforms) {
         try {
@@ -1212,7 +1213,10 @@ export default function App() {
             promptExtendMode: targetTurn.qwenPromptExtendMode,
           });
           nextImage = Array.isArray(generated) && generated.length ? generated[0] : null;
-          if (nextImage) break;
+          if (nextImage) {
+            usedPlatform = platform;
+            break;
+          }
           attemptErr = new Error("No images returned");
         } catch (err) {
           attemptErr = err;
@@ -1241,6 +1245,8 @@ export default function App() {
                     ...result,
                     status: "success",
                     error: null,
+                    apiPlatform: usedPlatform,
+                    generatedAt: Date.now(),
                     images: baseImages,
                   };
                 }),

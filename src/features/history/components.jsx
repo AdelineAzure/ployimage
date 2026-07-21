@@ -129,6 +129,38 @@ export function normalizePreviewItem(value) {
     imageKey: typeof value?.imageKey === "string" ? value.imageKey : "",
     modelName: typeof value?.modelName === "string" ? value.modelName.trim() : "",
     promptText: typeof value?.promptText === "string" ? value.promptText.trim() : "",
+    meta: value?.meta && typeof value.meta === "object" ? value.meta : null,
+  };
+}
+
+// 汇总一张图的完整元信息，供预览大图里的信息面板展示。
+// turn 提供生成参数（比例 / 提示词加强 / 参考图），result 提供模型与实际走的平台/时间。
+export function buildPreviewMeta(turn, resultLike) {
+  if (!resultLike) return null;
+  const modelId = typeof resultLike.modelId === "string" ? resultLike.modelId : "";
+  const model = IMAGE_MODELS.find((m) => m.id === modelId) || null;
+  const referenceCount =
+    (normalizeImageValue(turn?.referenceImage) ? 1 : 0) +
+    (Array.isArray(turn?.styleReferenceImages)
+      ? turn.styleReferenceImages.filter((img) => normalizeImageValue(img)).length
+      : 0);
+  const isBailian = model?.apiType === "bailian";
+  return {
+    modelId,
+    modelName:
+      (typeof resultLike.modelName === "string" && resultLike.modelName.trim()) ||
+      model?.name ||
+      modelId,
+    provider: model?.provider || "",
+    apiPlatform: typeof resultLike.apiPlatform === "string" ? resultLike.apiPlatform : "",
+    generatedAt: Number(resultLike.generatedAt) || 0,
+    createdAt: Number(turn?.createdAt) || 0,
+    aspectRatio: (typeof turn?.aspectRatio === "string" && turn.aspectRatio) || turn?.geminiAspectRatio || "",
+    requestedCount: Math.max(1, Number(resultLike.requestedCount) || 1),
+    promptExtend: isBailian ? turn?.qwenPromptExtend !== false : null,
+    promptExtendMode: isBailian ? turn?.qwenPromptExtendMode || "" : "",
+    referenceCount,
+    promptText: typeof resultLike.promptText === "string" ? resultLike.promptText : "",
   };
 }
 
@@ -320,6 +352,7 @@ export function buildTurnPreviewItems(turn) {
           promptKey
         );
         const images = Array.isArray(result?.images) ? result.images : [];
+        const meta = buildPreviewMeta(turn, { ...result, promptText });
         return images.map((image, index) => ({
           imageKey: buildTurnImageKey(turn.id, result.modelId, promptKey, index + 1),
           outputSrc: normalizeImageValue(image),
@@ -327,6 +360,7 @@ export function buildTurnPreviewItems(turn) {
           inputTokens,
           modelName: getPreviewModelName(result?.modelId, result?.modelName),
           promptText,
+          meta,
         }));
       })
       .filter((item) => item.outputSrc);
@@ -354,6 +388,7 @@ export function buildTurnPreviewItems(turn) {
             variant.key
           );
           const images = Array.isArray(result?.images) ? result.images : [];
+          const meta = buildPreviewMeta(turn, { ...result, promptText });
           return images.map((image, index) => ({
             imageKey: buildTurnImageKey(turn.id, result.modelId, variant.key, index + 1),
             outputSrc: normalizeImageValue(image),
@@ -361,10 +396,83 @@ export function buildTurnPreviewItems(turn) {
             inputTokens,
             modelName: getPreviewModelName(result?.modelId, result?.modelName),
             promptText,
+            meta,
           }));
         })
     )
     .filter((item) => item.outputSrc);
+}
+
+const PLATFORM_LABEL_KEYS = {
+  comet: "viewer.platformComet",
+  lumina: "viewer.platformLumina",
+  bailian: "viewer.platformBailian",
+};
+
+export function PreviewInfoPanel({ meta, onClose, onCopyPrompt }) {
+  const { uiLanguage, t } = useI18n();
+  if (!meta) return null;
+  const platformLabel = meta.apiPlatform
+    ? t(PLATFORM_LABEL_KEYS[meta.apiPlatform] || "viewer.platformUnknown")
+    : t("viewer.platformUnknown");
+  const modelLine = meta.provider ? `${meta.modelName} · ${meta.provider}` : meta.modelName || "-";
+  const generatedText = meta.generatedAt
+    ? formatUiDateTime(meta.generatedAt, uiLanguage)
+    : meta.createdAt
+    ? formatUiDateTime(meta.createdAt, uiLanguage)
+    : "-";
+  const aspectText = !meta.aspectRatio || meta.aspectRatio === "auto" ? t("viewer.aspectAuto") : meta.aspectRatio;
+  const promptText = typeof meta.promptText === "string" ? meta.promptText.trim() : "";
+  const rows = [
+    { key: "model", label: t("viewer.infoModel"), value: modelLine },
+    { key: "platform", label: t("viewer.infoPlatform"), value: platformLabel },
+    { key: "time", label: t("viewer.infoTime"), value: generatedText },
+    { key: "aspect", label: t("viewer.infoAspect"), value: aspectText },
+    { key: "count", label: t("viewer.infoCount"), value: `x${meta.requestedCount}` },
+  ];
+  if (meta.referenceCount > 0) {
+    rows.push({ key: "ref", label: t("viewer.infoReference"), value: `${meta.referenceCount}` });
+  }
+  if (meta.promptExtend !== null && meta.promptExtend !== undefined) {
+    rows.push({
+      key: "extend",
+      label: t("viewer.infoPromptExtend"),
+      value: meta.promptExtend
+        ? meta.promptExtendMode === "agent"
+          ? t("viewer.promptExtendAgent")
+          : t("viewer.promptExtendDirect")
+        : t("common.off"),
+    });
+  }
+  return (
+    <div style={S.viewerInfoPanel} onClick={(event) => event.stopPropagation()}>
+      <div style={S.viewerInfoHeader}>
+        <span style={S.viewerInfoTitle}>{t("viewer.infoPanel")}</span>
+        <button type="button" style={S.viewerInfoClose} onClick={onClose} aria-label={t("common.close")}>
+          ✕
+        </button>
+      </div>
+      <div style={S.viewerInfoRows}>
+        {rows.map((row) => (
+          <div key={row.key} style={S.viewerInfoRow}>
+            <span style={S.viewerInfoLabel}>{row.label}</span>
+            <span style={S.viewerInfoValue} title={row.value}>{row.value}</span>
+          </div>
+        ))}
+      </div>
+      {!!promptText && (
+        <div style={S.viewerInfoPromptWrap}>
+          <div style={S.viewerInfoPromptHead}>
+            <span style={S.viewerInfoLabel}>{t("viewer.infoPrompt")}</span>
+            <button type="button" style={S.viewerInfoCopyBtn} onClick={onCopyPrompt}>
+              {t("viewer.infoCopyPrompt")}
+            </button>
+          </div>
+          <div style={S.viewerInfoPromptText}>{promptText}</div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function ImagePreviewModal({ src, onClose }) {
@@ -386,6 +494,7 @@ export function ImagePreviewModal({ src, onClose }) {
   const inputTokens = activePreview.inputTokens;
   const modelName = activePreview.modelName;
   const promptText = activePreview.promptText;
+  const meta = activePreview.meta || null;
   const isComparePreview = !!inputSrc && !!outputSrc;
   const hasGallery = galleryItems.length > 1;
   const canGoPrev = hasGallery && currentIndex > 0;
@@ -399,6 +508,7 @@ export function ImagePreviewModal({ src, onClose }) {
   const [colorSamples, setColorSamples] = useState([]);
   const [activeColorSampleId, setActiveColorSampleId] = useState("");
   const [promptPanelOpen, setPromptPanelOpen] = useState(false);
+  const [infoPanelOpen, setInfoPanelOpen] = useState(false);
   const [toastText, setToastText] = useState("");
 
   const clampScale = useCallback((value) => Math.max(1, Math.min(8, Number(value) || 1)), []);
@@ -427,6 +537,7 @@ export function ImagePreviewModal({ src, onClose }) {
     setColorSamples([]);
     setActiveColorSampleId("");
     setPromptPanelOpen(false);
+    setInfoPanelOpen(false);
     dragRef.current = null;
   }, [inputSrc, outputSrc]);
 
@@ -529,6 +640,17 @@ export function ImagePreviewModal({ src, onClose }) {
     }
   }, [promptPanelOpen, showToast, t]);
 
+  const handlePromptCopy = useCallback(async (safePromptText) => {
+    const text = typeof safePromptText === "string" ? safePromptText.trim() : "";
+    if (!text) return;
+    try {
+      await copyTextToClipboard(text);
+      showToast(t("viewer.promptCopied"));
+    } catch {
+      showToast(t("viewer.promptCopyFailed"));
+    }
+  }, [showToast, t]);
+
   const handleColorPick = useCallback(async (event, sourceUrl = "", target = "output") => {
     if (!colorPickerActive) return;
     event.preventDefault();
@@ -592,6 +714,17 @@ export function ImagePreviewModal({ src, onClose }) {
       <div ref={modalPanelRef} style={{ position: "relative", width: "94vw", height: "90vh", maxWidth: isComparePreview ? 1480 : 1360 }} onClick={(e) => e.stopPropagation()}>
         <button onClick={onClose} style={{ ...S.closeBtn, position: "absolute", top: 12, right: 12, zIndex: 10 }}>✕</button>
         <div style={S.viewerColorPickerBar}>
+          {!!meta && (
+            <button
+              type="button"
+              style={{ ...S.viewerColorPickerBtn, ...(infoPanelOpen ? S.viewerColorPickerBtnActive : null) }}
+              onClick={() => setInfoPanelOpen((open) => !open)}
+              title={t("viewer.infoPanel")}
+              aria-label={t("viewer.infoPanel")}
+            >
+              ⓘ
+            </button>
+          )}
           <button
             type="button"
             style={{ ...S.viewerColorPickerBtn, ...(colorPickerActive ? S.viewerColorPickerBtnActive : null) }}
@@ -612,6 +745,13 @@ export function ImagePreviewModal({ src, onClose }) {
           <div style={S.viewerPromptPanel} onClick={(event) => event.stopPropagation()}>
             {promptText}
           </div>
+        )}
+        {infoPanelOpen && !!meta && (
+          <PreviewInfoPanel
+            meta={meta}
+            onClose={() => setInfoPanelOpen(false)}
+            onCopyPrompt={() => handlePromptCopy(meta.promptText || promptText)}
+          />
         )}
         {!!toastText && <div style={S.viewerToast}>{toastText}</div>}
         {colorSamples.length > 0 && (
