@@ -87,6 +87,8 @@ export function normalizeGroupPlatforms(value) {
 // 未列出的模型按原 id 透传。映射目标已用真实 key 打 /v1/models 核对。
 export const LUMINA_MODEL_ID_MAP = {
   "gemini-2.5-flash-image": "gemini-2.5-flash-image-preview",
+  "gemini-3.1-flash-image": "gemini-3.1-flash-image-preview",
+  "gemini-3-pro-image": "gemini-3-pro-image-preview",
 };
 
 export function mapModelIdForLumina(modelId) {
