@@ -1401,13 +1401,18 @@ export function TurnPanel({
   const isCompareMode = turnMode === "compare";
   const isStyleMode = turnMode === "style";
   const isMultiPromptMode = promptVariants.length > 1;
-  // compare 结果/提示词按组排布：最多 4 组一行，超过就自动换行（8 组 → 两排）
-  const compareColumns = Math.min(4, Math.max(2, promptVariants.length));
   const styleBasePrompt =
     typeof turn?.styleBasePrompt === "string"
       ? turn.styleBasePrompt
       : turn?.prompt || promptVariants[0]?.prompt || "";
   const selectedModelIds = Array.isArray(turn?.selectedModelIds) ? turn.selectedModelIds : [];
+  // compare 结果/提示词按组排布：每组内部最多 2 个模型并排；外层每行组数按每组模型数收窄，
+  // 让一行图片总数保持 ~4 张，避免多模型时挤到重叠（2 模型/组 → 一行最多 2 组）。
+  const modelsPerGroup = Math.min(2, Math.max(1, selectedModelIds.length || 1));
+  const compareColumns = Math.min(
+    Math.max(2, promptVariants.length),
+    Math.max(1, Math.floor(4 / modelsPerGroup))
+  );
   const styleReferenceImages = Array.isArray(turn?.styleReferenceImages) ? turn.styleReferenceImages : [];
   const previewInputImage = normalizeImageValue(turn.referenceImage) || normalizeImageValue(styleReferenceImages[0] || "");
   const handleGeneratedImagePreview = useCallback((payload) => {
