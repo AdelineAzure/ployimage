@@ -18,6 +18,13 @@ import {
   DEFAULT_SPLIT_BG_COLOR,
   DEFAULT_SPLIT_RENDER_MODE,
   DEFAULT_SPLIT_SHAPE_MODE,
+  DEFAULT_CHAT_MODEL,
+  CHAT_API_PLATFORM,
+  CHAT_API_BASE_URL,
+  CHAT_API_TARGET_PATH,
+  CHAT_HISTORY_FOLDER_NAME,
+  DETECTION_TEMPLATE_FILE_NAME,
+  DEFAULT_DETECTION_TEMPLATES,
   DEFAULT_STYLE_TEMPLATES,
   DEFAULT_STYLE_THEMES,
   DEFAULT_STYLE_THEME_ASSIST_PROMPT,
@@ -81,6 +88,11 @@ export function sleep(ms, signal) {
 export function shouldRetryApiFailure(status, text = "") {
   if (status === 408 || status === 409 || status === 425 || status === 429) return true;
   if (status >= 500) return true;
+  // Lumina(litellm) 容量吃紧时会把 GPT/gemini 请求静默降级到 doubao-seedream，
+  // 然后因我们发的 size 低于 doubao 3686400px(1920²) 下限报 400，并附
+  // "No fallback model group found"。这是间歇性容量问题而非请求缺陷，
+  // 退避重试可在 Lumina 恢复容量后成功（图生图场景 Comet 不认 image，重试是唯一恢复手段）。
+  if (/must be at least \d+ pixels|No fallback model group found/i.test(text)) return true;
   return /未接收到上游响应内容|upstream|timeout|temporarily unavailable|traceid/i.test(text);
 }
 
@@ -282,6 +294,33 @@ export function mapAspectRatioToOpenAiImageSize(aspectRatio = DEFAULT_ASPECT_RAT
   const [w, h] = ratio.split(":").map((n) => Number(n) || 0);
   if (!w || !h || w === h) return "1024x1024";
   return w > h ? "1536x1024" : "1024x1536";
+}
+
+// 把任意宽高归到 gpt-image 的三档之一（方/横/竖）。
+// 用于 auto：某些上游(Lumina 编辑端点)不做输入图自适应而是回退方图，
+// 所以这里主动按参考图方向选一档，避免竖图被压成 1:1。
+export function pickOpenAiImageSizeFromDimensions(width, height) {
+  const w = Number(width) || 0;
+  const h = Number(height) || 0;
+  if (!w || !h) return null;
+  const ratio = w / h;
+  // 用 4:3(1.333) 作为方图与横/竖的分界，避免接近正方的图被误判成横竖。
+  if (ratio >= 4 / 3) return "1536x1024";
+  if (ratio <= 3 / 4) return "1024x1536";
+  return "1024x1024";
+}
+
+// 测量 data URL / 图片地址的原始尺寸，失败返回 null（不阻断主流程）。
+export async function measureImageSize(src) {
+  if (typeof src !== "string" || !src) return null;
+  try {
+    const image = await loadImageElement(src);
+    const width = image.naturalWidth || image.width || 0;
+    const height = image.naturalHeight || image.height || 0;
+    return width && height ? { width, height } : null;
+  } catch {
+    return null;
+  }
 }
 
 const LUMINA_IMAGE_RATIOS = ["1:1", "4:3", "3:4", "16:9", "9:16"];
@@ -3992,6 +4031,205 @@ export async function loadSplitHistoryFromLocalFolder(rootHandle) {
   return records.sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
 }
 
+// ─── 对话（Chat）：Comet 文本/多模态补全 + 独立历史子文件夹 ───
+
+// 调用 Comet /v1/chat/completions，返回模型输出文本。
+// messages 由调用方组装（含历史上下文 + 本轮 user 消息；图片走 image_url part）。
+export async function callChatCompletion(proxyUrl, options = {}) {
+  const {
+    model = DEFAULT_CHAT_MODEL,
+    messages = [],
+    apiKey,
+    apiPlatform = CHAT_API_PLATFORM,
+    apiBaseUrl,
+    signal,
+  } = options;
+  const platform = normalizeApiPlatform(apiPlatform);
+  // 空 Key 会让代理静默回退到 Worker 里部署的 env key（可能过期），从而返回 "invalid token"。
+  // 直接在客户端拦截，给出可诊断的报错，而不是把锅甩给上游。
+  if (!normalizeApiKey(apiKey)) {
+    throw new Error(`Missing ${platform} API key`);
+  }
+  const data = await postJsonWithRetry(
+    proxyUrl,
+    CHAT_API_TARGET_PATH,
+    { model, stream: false, messages },
+    {
+      apiPlatform: platform,
+      apiBaseUrl: apiBaseUrl || CHAT_API_BASE_URL,
+      apiKey,
+      signal,
+    }
+  );
+  return assistantMessageToText(data?.choices?.[0]?.message?.content);
+}
+
+// 把一条对话记录里的文本 + 输入图片组装成一个 OpenAI user message。
+export function buildChatUserMessage(promptText, images = []) {
+  const cleanImages = normalizeImageInputs("", images);
+  if (!cleanImages.length) {
+    return { role: "user", content: promptText || "" };
+  }
+  const content = [];
+  if (promptText) content.push({ type: "text", text: promptText });
+  cleanImages.forEach((url) => {
+    content.push({ type: "image_url", image_url: { url } });
+  });
+  return { role: "user", content };
+}
+
+export function getChatDirName(record) {
+  return `chat-${String(record?.seq || 0).padStart(4, "0")}-${record?.id}`;
+}
+
+export async function saveChatToLocalFolder(rootHandle, record = {}) {
+  const chatRoot = await rootHandle.getDirectoryHandle(CHAT_HISTORY_FOLDER_NAME, { create: true });
+  const dirName = getChatDirName(record);
+  const chatDir = await chatRoot.getDirectoryHandle(dirName, { create: true });
+  // 一条记录 = 一个提示词 + N 个「图片+输出」小组（items）。逐组写入输入图并记录其文件名。
+  const items = Array.isArray(record.items) ? record.items : [];
+  const manifestItems = [];
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index] || {};
+    const image = typeof item.image === "string" ? item.image : "";
+    let imageFile = null;
+    if (image) {
+      imageFile = await writeDataUrlImageFile(chatDir, `input_${String(index + 1).padStart(2, "0")}`, image);
+    }
+    manifestItems.push({
+      imageFile: imageFile || null,
+      outputText: typeof item.outputText === "string" ? item.outputText : "",
+      status: item.status || "done",
+      error: typeof item.error === "string" ? item.error : null,
+      rating: item.rating === "red" || item.rating === "green" ? item.rating : null,
+    });
+  }
+  const manifest = {
+    version: 2,
+    id: record.id,
+    seq: record.seq,
+    createdAt: Number(record.createdAt) || 0,
+    model: record.model || DEFAULT_CHAT_MODEL,
+    templateId: typeof record.templateId === "string" ? record.templateId : null,
+    templateTitle: typeof record.templateTitle === "string" ? record.templateTitle : "",
+    prompt: typeof record.prompt === "string" ? record.prompt : "",
+    items: manifestItems,
+  };
+  await writeTextFile(chatDir, "chat.json", JSON.stringify(manifest, null, 2));
+  return {
+    ...record,
+    folderName: dirName,
+    folderSyncedAt: Date.now(),
+  };
+}
+
+export async function loadChatFromLocalFolder(rootHandle) {
+  const records = [];
+  let chatRoot = null;
+  try {
+    chatRoot = await rootHandle.getDirectoryHandle(CHAT_HISTORY_FOLDER_NAME);
+  } catch {
+    return [];
+  }
+  for await (const [entryName, entryHandle] of chatRoot.entries()) {
+    if (entryHandle.kind !== "directory") continue;
+    try {
+      const manifestHandle = await entryHandle.getFileHandle("chat.json");
+      const manifestFile = await manifestHandle.getFile();
+      const meta = JSON.parse(await manifestFile.text());
+      let items = [];
+      if (Array.isArray(meta.items)) {
+        // v2：每个 item 一张图 + 一段输出。
+        for (const rawItem of meta.items) {
+          const image = rawItem?.imageFile
+            ? await readSplitHistoryImageFile(entryHandle, rawItem.imageFile)
+            : "";
+          items.push({
+            image: image || "",
+            outputText: typeof rawItem?.outputText === "string" ? rawItem.outputText : "",
+            status: rawItem?.status || "done",
+            error: typeof rawItem?.error === "string" ? rawItem.error : null,
+            rating: rawItem?.rating === "red" || rawItem?.rating === "green" ? rawItem.rating : null,
+          });
+        }
+      } else {
+        // v1 兼容：旧记录是「N 张输入图 + 单段输出」，转成单个 item（保留全部图，输出挂第一个）。
+        const files = Array.isArray(meta.inputImageFiles) ? meta.inputImageFiles : [];
+        const image = files.length ? await readSplitHistoryImageFile(entryHandle, files[0]) : "";
+        items.push({
+          image: image || "",
+          outputText: typeof meta.outputText === "string" ? meta.outputText : "",
+          status: meta.status || "done",
+          error: typeof meta.error === "string" ? meta.error : null,
+          rating: meta.rating === "red" || meta.rating === "green" ? meta.rating : null,
+        });
+      }
+      records.push({
+        id: meta.id || entryName,
+        seq: Number(meta.seq) || 0,
+        createdAt: Number(meta.createdAt) || 0,
+        model: meta.model || DEFAULT_CHAT_MODEL,
+        templateId: typeof meta.templateId === "string" ? meta.templateId : null,
+        templateTitle: typeof meta.templateTitle === "string" ? meta.templateTitle : "",
+        prompt: typeof meta.prompt === "string" ? meta.prompt : "",
+        items,
+        folderName: entryName,
+        folderSyncedAt: Date.now(),
+      });
+    } catch {
+      // Ignore malformed chat history entries.
+    }
+  }
+  return records.sort((a, b) => (Number(b.seq) || 0) - (Number(a.seq) || 0));
+}
+
+// ─── 检测模版（独立于图像生成模版）───
+export function normalizeDetectionTemplate(input, index = 0) {
+  const fallbackId = `detect-template-${index + 1}`;
+  const id = typeof input?.id === "string" && input.id ? input.id : fallbackId;
+  const title = typeof input?.title === "string" && input.title.trim()
+    ? input.title.trim()
+    : `检测模版 ${index + 1}`;
+  return {
+    id,
+    title,
+    body: typeof input?.body === "string" ? input.body : "",
+  };
+}
+
+export function normalizeDetectionTemplates(input) {
+  const list = Array.isArray(input) ? input : [];
+  return DEFAULT_DETECTION_TEMPLATES.map((preset, index) => {
+    const found = list.find((item) => item?.id === preset.id);
+    return normalizeDetectionTemplate(found || preset, index);
+  });
+}
+
+export async function loadDetectionTemplatesFromLocalFolder(rootHandle) {
+  try {
+    const fileHandle = await rootHandle.getFileHandle(DETECTION_TEMPLATE_FILE_NAME);
+    const file = await fileHandle.getFile();
+    const raw = JSON.parse(await file.text());
+    const templates = normalizeDetectionTemplates(raw?.templates);
+    const activeTemplateId = pickTemplateId(templates, raw?.activeTemplateId);
+    return { templates, activeTemplateId };
+  } catch (err) {
+    if (String(err?.name || "") === "NotFoundError") return null;
+    const templates = normalizeDetectionTemplates(DEFAULT_DETECTION_TEMPLATES);
+    return { templates, activeTemplateId: null };
+  }
+}
+
+export async function saveDetectionTemplatesToLocalFolder(rootHandle, templates, activeTemplateId) {
+  const normalized = normalizeDetectionTemplates(templates);
+  const safeActiveId = pickTemplateId(normalized, activeTemplateId);
+  await writeTextFile(
+    rootHandle,
+    DETECTION_TEMPLATE_FILE_NAME,
+    JSON.stringify({ activeTemplateId: safeActiveId, templates: normalized }, null, 2)
+  );
+}
+
 async function prepareWan21BaseImage(sourceDataUrl) {
   const image = await loadImageElement(sourceDataUrl);
   const sourceWidth = Math.max(1, image.naturalWidth || image.width || 1);
@@ -4843,14 +5081,33 @@ export async function callOpenAiImageEditAPI(proxyUrl, model, prompt, imageInput
   if (apiPlatform === "lumina") {
     // Lumina 编辑端点忽略 ratio、只认离散 size 档位（与 OpenAI 编辑同款：
     // 1024x1024 / 1536x1024 / 1024x1536）；实测非标准像素会被拒并回退方图。
-    // auto 时不传，让上游跟随输入图尺寸。
-    // Seedream(ByteDance) 例外：其编辑端点要求 size ≥ 3,686,400px(1920²)，
-    // 这些小档位会被 400 拒绝，所以对它不传 size、跟随输入图（恢复改动前行为）。
+    // auto 本应让上游跟随输入图，但实测该端点不做自适应、直接回退 1:1 方图，
+    // 竖图/横图参考会被压成正方形。所以 auto 时主动测量参考图方向选一档。
     const isSeedream = model.provider === "ByteDance";
-    const size = mapAspectRatioToOpenAiImageSize(options.aspectRatio);
-    if (!isSeedream && size !== "auto") formData.append("size", size);
+    if (isSeedream) {
+      // Seedream 编辑端点有 3,686,400px(1920²) 下限，OpenAI 小档位(1024²)会被 400 拒；
+      // 但完全不传 size 时上游回退 1:1 方图，丢掉输入图比例。实测传 "2K" 会在 2K 档位内
+      // 按输入图比例出图(240×86 → 3392×1216，宽比 2.79 原样保留)，与文生图路径一致。
+      formData.append("size", "2K");
+    } else {
+      let size = mapAspectRatioToOpenAiImageSize(options.aspectRatio);
+      if (size === "auto") {
+        const measured = await measureImageSize(editableImages[0]);
+        if (measured) {
+          size = pickOpenAiImageSizeFromDimensions(measured.width, measured.height) || "auto";
+        }
+      }
+      if (size !== "auto") formData.append("size", size);
+    }
   } else {
-    formData.append("size", mapAspectRatioToOpenAiImageSize(options.aspectRatio));
+    let size = mapAspectRatioToOpenAiImageSize(options.aspectRatio);
+    if (size === "auto") {
+      const measured = await measureImageSize(editableImages[0]);
+      if (measured) {
+        size = pickOpenAiImageSizeFromDimensions(measured.width, measured.height) || "auto";
+      }
+    }
+    formData.append("size", size);
   }
 
   const data = await postFormDataWithRetry(proxyUrl, "/v1/images/edits", formData, {
@@ -4875,7 +5132,11 @@ export async function callImagesAPI(proxyUrl, model, prompt, imageBase64, option
   const primaryImage = imageInputs[0] || "";
   const isSeedream = model.provider === "ByteDance";
   const isOpenAiImageModel = model.provider === "OpenAI" && /^gpt-image-/i.test(String(model?.id || ""));
-  if ((apiPlatform === "lumina" || supportsOpenAiImageEdits(model)) && imageInputs.length) {
+  // 所有 gpt-image 带图都走 multipart /v1/images/edits（Comet 与 Lumina 皆然）。
+  // Comet 的 GPT 端点不认 JSON body.image（坑 1），而 edits 是其官方图生图入口
+  // （gpt-image-2 即该端点默认模型）。旧逻辑只放行 gpt-image-1/1-mini，导致 1.5/2
+  // 在 Comet 上掉进 JSON 死路。放行到 edits 后 Comet 成为真正可用的第二条路。
+  if ((apiPlatform === "lumina" || isOpenAiImageModel || supportsOpenAiImageEdits(model)) && imageInputs.length) {
     return callOpenAiImageEditAPI(proxyUrl, model, prompt, imageInputs, options);
   }
   const isLumina = apiPlatform === "lumina";

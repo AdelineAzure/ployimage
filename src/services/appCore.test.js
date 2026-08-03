@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { IMAGE_MODELS } from "../config/appConfig";
+import { IMAGE_MODELS, mapModelIdForLumina } from "../config/appConfig";
 import {
   callBailianImageAPI,
   generateImage,
@@ -8,7 +8,21 @@ import {
   getQwen3ImageEditSize,
   mapAspectRatioToLuminaRatio,
   mergeApiKeys,
+  pickOpenAiImageSizeFromDimensions,
+  shouldRetryApiFailure,
 } from "./appCore";
+
+// Node 环境没有 DOM 的 Image；用它模拟浏览器里 measureImageSize 的量图能力。
+function stubImage(width, height) {
+  class FakeImage {
+    set src(_value) {
+      this.naturalWidth = width;
+      this.naturalHeight = height;
+      queueMicrotask(() => this.onload && this.onload());
+    }
+  }
+  vi.stubGlobal("Image", FakeImage);
+}
 
 describe("image API platform routing", () => {
   afterEach(() => {
@@ -181,8 +195,9 @@ describe("image API platform routing", () => {
     expect(request.headers["X-Target-Path"]).toBe("/v1/images/generations");
     expect(request.headers["X-Upstream-Base"]).toBe("https://lumina.tripo3d.com");
     expect(request.headers["X-Api-Key"]).toBe("lumina-key");
+    // Lumina 认的名字带 -preview 后缀，出站时映射；透传原 id 会被上游 400 拒。
     expect(JSON.parse(request.body)).toMatchObject({
-      model: "gemini-3.1-flash-image",
+      model: "gemini-3.1-flash-image-preview",
       ratio: "1:1",
       n: 1,
     });
@@ -215,7 +230,7 @@ describe("image API platform routing", () => {
     expect(request.body.get("size")).toBe("1536x1024");
   });
 
-  it("omits size on the Lumina edit path for Seedream (its edit endpoint rejects the small tiers)", async () => {
+  it("sends size=2K on the Lumina edit path for Seedream so output follows the input ratio", async () => {
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({ data: [{ b64_json: "c2VlZGVkaXQ=" }] }), {
         status: 200,
@@ -233,9 +248,68 @@ describe("image API platform routing", () => {
     const [, request] = fetchMock.mock.calls[0];
     expect(request.headers["X-Target-Path"]).toBe("/v1/images/edits");
     expect(request.body).toBeInstanceOf(FormData);
-    // Seedream 编辑端点要求 size ≥ 3,686,400px，OpenAI 小档位会被 400 拒；不传 size 跟随输入图。
-    expect(request.body.get("size")).toBeNull();
+    // Seedream 小档位(1024²)被 3,686,400px 下限拒，不传 size 又回退 1:1 方图。
+    // 实测传 "2K" 上游会在 2K 档位内按输入图比例出图，所以固定发 "2K"。
+    expect(request.body.get("size")).toBe("2K");
     expect(request.body.get("ratio")).toBeNull();
+  });
+
+  it("routes Comet gpt-image-2 with an input image to multipart edits, not JSON body.image", async () => {
+    // 坑 1：Comet 的 GPT 端点不认 JSON body.image。带图必须走 multipart /v1/images/edits
+    // （gpt-image-2 即该端点默认模型），让 Comet 成为 GPT 图生图真正可用的第二条路。
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ data: [{ b64_json: "ZWRpdA==" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const model = findModel("gpt-image-2");
+    await generateImage("https://proxy.example", model, "make it snow", "data:image/png;base64,aW5wdXQ=", {
+      ...getApiConfigForModel(model, { comet: "comet-key" }),
+      apiPlatform: "comet",
+      aspectRatio: "1:1",
+    });
+
+    const [, request] = fetchMock.mock.calls[0];
+    expect(request.headers["X-Target-Path"]).toBe("/v1/images/edits");
+    expect(request.body).toBeInstanceOf(FormData);
+    // Comet 不改模型名，原样透传。
+    expect(request.body.get("model")).toBe("gpt-image-2");
+    expect(request.body.get("size")).toBe("1024x1024");
+  });
+
+  it("picks a portrait size on the Lumina edit path when auto follows a tall reference image", async () => {
+    // 上游对 auto 不做自适应、回退 1:1 方图，所以 auto 时要按参考图方向主动选一档。
+    stubImage(1024, 1536);
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ data: [{ b64_json: "ZWRpdA==" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const model = findModel("gemini-2.5-flash-image");
+    await generateImage("https://proxy.example", model, "watercolor", "data:image/png;base64,aW5wdXQ=", {
+      ...getApiConfigForModel(model, { lumina: "lumina-key" }),
+      aspectRatio: "auto",
+    });
+
+    const [, request] = fetchMock.mock.calls[0];
+    expect(request.headers["X-Target-Path"]).toBe("/v1/images/edits");
+    expect(request.body.get("size")).toBe("1024x1536");
+  });
+
+  it.each([
+    [1536, 1024, "1536x1024"],
+    [1024, 1536, "1024x1536"],
+    [1000, 1000, "1024x1024"],
+    [2524, 1198, "1536x1024"],
+    [0, 100, null],
+  ])("maps %sx%s dimensions to gpt-image size %s", (width, height, expected) => {
+    expect(pickOpenAiImageSizeFromDimensions(width, height)).toBe(expected);
   });
 
   it.each([
@@ -265,6 +339,16 @@ describe("image API platform routing", () => {
 
     const [, request] = fetchMock.mock.calls[0];
     expect(JSON.parse(request.body).model).toBe("gemini-2.5-flash-image-preview");
+  });
+
+  it.each([
+    ["gemini-2.5-flash-image", "gemini-2.5-flash-image-preview"],
+    ["gemini-3.1-flash-image", "gemini-3.1-flash-image-preview"],
+    ["gemini-3-pro-image", "gemini-3-pro-image-preview"],
+    ["gpt-image-2", "gpt-image-2"],
+  ])("maps Lumina model id %s to %s", (input, expected) => {
+    // Lumina 网关的真实名字带 -preview（用真实 key 打 /v1/models 核对）；缺映射会 400。
+    expect(mapModelIdForLumina(input)).toBe(expected);
   });
 
   it("adds a current Lumina key to an old Comet-only task snapshot", () => {
@@ -332,6 +416,27 @@ describe("image API platform routing", () => {
       bailian: "new-bailian",
       lumina: "new-lumina",
     });
+  });
+});
+
+describe("shouldRetryApiFailure", () => {
+  it("retries transient status codes and 5xx", () => {
+    expect(shouldRetryApiFailure(429)).toBe(true);
+    expect(shouldRetryApiFailure(408)).toBe(true);
+    expect(shouldRetryApiFailure(503)).toBe(true);
+  });
+
+  it("retries Lumina's silent doubao downgrade 400 so it can recover on capacity return", () => {
+    // Lumina 把 GPT 降级到 doubao 后因 size 低于 1920² 报的 400。
+    const text =
+      "[doubao-seedream-5-0-lite-260128::volcengine] 400 InvalidParameter: image size must be at least 3686400 pixels";
+    expect(shouldRetryApiFailure(400, text)).toBe(true);
+    expect(shouldRetryApiFailure(400, "No fallback model group found for orig")).toBe(true);
+  });
+
+  it("does not retry a genuine client-side 400", () => {
+    expect(shouldRetryApiFailure(400, "Invalid model name passed in model=foo")).toBe(false);
+    expect(shouldRetryApiFailure(401, "Unauthorized")).toBe(false);
   });
 });
 

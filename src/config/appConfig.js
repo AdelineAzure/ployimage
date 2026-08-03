@@ -124,8 +124,8 @@ export const ASPECT_RATIO_OPTIONS = [
   { value: "21:9", label: "21:9" },
 ];
 export const DEFAULT_TASK_MODE = "single";
-export const MAX_COMPARE_PROMPTS = 4;
-export const DEFAULT_COMPARE_PROMPTS = ["", "", "", ""];
+export const MAX_COMPARE_PROMPTS = 8;
+export const DEFAULT_COMPARE_PROMPTS = ["", "", "", "", "", "", "", ""];
 export const DEFAULT_LAST_EDITED_COUNT = 1;
 export const DEFAULT_ASPECT_RATIO = "auto";
 export const DEFAULT_QWEN_PROMPT_EXTEND = true;
@@ -145,6 +145,19 @@ export const DEFAULT_API_KEYS = {
 };
 export const DEFAULT_GPT_ASSIST_MODEL = "gpt-5.4";
 export const DEFAULT_BAILIAN_ASSIST_MODEL = "qwen-plus";
+// ─── 对话（Chat）Tab ───
+// 百炼（DashScope）的 Qwen3-VL 视觉语言模型（能读图 + 输出文字）。
+// Comet 的 deer 分组没有该模型通道（503），已实测百炼可用，故走百炼 compatible-mode。
+export const DEFAULT_CHAT_MODEL = "qwen3-vl-30b-a3b-instruct";
+export const CHAT_API_PLATFORM = "bailian";
+export const CHAT_API_BASE_URL = DEFAULT_API_BASE_URLS.bailian;
+export const CHAT_API_TARGET_PATH = "/compatible-mode/v1/chat/completions";
+export const CHAT_HISTORY_FOLDER_NAME = "chat-history";
+// ─── 批量检测模版（独立于图像生成模版）───
+// 检测时把选中模版的正文作为发送给文本模型的检测提示词，红/绿标结果按模版统计错误率。
+export const DETECTION_TEMPLATE_FILE_NAME = "detection-templates.json";
+export const MAX_DETECTION_TEMPLATES = 12;
+export const MAX_DETECT_IMAGES_PER_BATCH = 50;
 export const DEFAULT_GPT_ASSIST_PROMPT = "你是一个提示词优化助手。你只改写 {{ }} 里的内容，保持用户原有写作风格、长度和随机感，不要改动大括号外的任何字符。";
 export const DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT = true;
 export const DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE = true;
@@ -184,6 +197,11 @@ export const DEFAULT_STYLE_TEMPLATES = Array.from({ length: MAX_STYLE_TEMPLATES 
   body: "",
 }));
 export const DEFAULT_STYLE_THEMES = Array.from({ length: STYLE_THEME_SLOTS }, () => "");
+export const DEFAULT_DETECTION_TEMPLATES = Array.from({ length: MAX_DETECTION_TEMPLATES }, (_, index) => ({
+  id: `detect-template-${index + 1}`,
+  title: `检测模版 ${index + 1}`,
+  body: "",
+}));
 export const NANO_PRO_OFFICIAL_MODEL_ID = "gemini-3-pro-image";
 export const NANO_PRO_LEGACY_MODEL_IDS = ["nano-banana-pro-all", "gemini-3-pro-preview"];
 export const DEFAULT_UI_LANGUAGE = "en";

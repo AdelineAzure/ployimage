@@ -10,11 +10,12 @@ import { AtlasThumbnailModal } from "./features/atlas/AtlasThumbnailModal";
 import { CanvasPage } from "./features/canvas/CanvasPage";
 import { HelpPage } from "./features/help/HelpPage";
 import { ImagePreviewModal, TurnPanel, buildTurnPreviewItems, normalizePreviewPayload } from "./features/history/components";
-import { ApiKeyModal, GptAssistModal, InputImagesModal, PromptImageEditorModal, SelectionLimitModal, SettingsModal, StyleTemplateEditorModal, TemplateEditorModal } from "./features/settings/components";
+import { ApiKeyModal, DetectTemplateEditorModal, GptAssistModal, InputImagesModal, PromptImageEditorModal, SelectionLimitModal, SettingsModal, StyleTemplateEditorModal, TemplateEditorModal } from "./features/settings/components";
 import { SpriteSplitModal } from "./features/split/SpriteSplitModal";
 import { useTaskQueue } from "./features/tasks/useTaskQueue";
 import { ModelChip } from "./features/workspace/ModelChip";
 import { PromptTextWithChips, TokenPromptInput } from "./features/workspace/promptControls";
+import { ChatMessageCard } from "./features/chat/ChatMessageCard";
 
 const {
   IMAGE_MODELS,
@@ -43,6 +44,13 @@ const {
   normalizeGroupPlatforms,
   DEFAULT_GPT_ASSIST_MODEL,
   DEFAULT_BAILIAN_ASSIST_MODEL,
+  DEFAULT_CHAT_MODEL,
+  CHAT_API_PLATFORM,
+  CHAT_API_BASE_URL,
+  CHAT_HISTORY_FOLDER_NAME,
+  DEFAULT_DETECTION_TEMPLATES,
+  MAX_DETECTION_TEMPLATES,
+  MAX_DETECT_IMAGES_PER_BATCH,
   DEFAULT_GPT_ASSIST_PROMPT,
   DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT,
   DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE,
@@ -224,6 +232,14 @@ const {
   saveSplitHistoryToLocalFolder,
   fileToDataUrlFromFile,
   loadSplitHistoryFromLocalFolder,
+  callChatCompletion,
+  buildChatUserMessage,
+  saveChatToLocalFolder,
+  loadChatFromLocalFolder,
+  getChatDirName,
+  normalizeDetectionTemplates,
+  loadDetectionTemplatesFromLocalFolder,
+  saveDetectionTemplatesToLocalFolder,
   callWan21ImageSuperResolution,
   loadTurnsFromLocalFolder,
   loadTemplatesFromLocalFolder,
@@ -368,15 +384,32 @@ export default function App() {
   const compareBEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[1]);
   const compareCEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[2]);
   const compareDEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[3]);
-  const compareEditors = [compareAEditor, compareBEditor, compareCEditor, compareDEditor];
+  const compareEEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[4]);
+  const compareFEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[5]);
+  const compareGEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[6]);
+  const compareHEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[7]);
+  const compareEditors = [compareAEditor, compareBEditor, compareCEditor, compareDEditor, compareEEditor, compareFEditor, compareGEditor, compareHEditor];
   const [compareCount, setCompareCount] = useState(2);
   const prompt = promptEditor.value;
   const comparePrompts = useMemo(
     () => compareEditors.map((ed) => ed.value),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [compareAEditor.value, compareBEditor.value, compareCEditor.value, compareDEditor.value]
+    [compareAEditor.value, compareBEditor.value, compareCEditor.value, compareDEditor.value, compareEEditor.value, compareFEditor.value, compareGEditor.value, compareHEditor.value]
   );
   const [activePage, setActivePage] = useState("workspace");
+  // ─── 批量检测 Tab 状态 ───
+  const chatEditor = useUndoRedoText("");
+  const chatInputRef = useRef(null);
+  const chatImageInputRef = useRef(null);
+  const [chatImages, setChatImages] = useState([]);
+  const [showChatImageModal, setShowChatImageModal] = useState(false);
+  const [showChatImageEditor, setShowChatImageEditor] = useState(false);
+  const [chatImageEditorIndex, setChatImageEditorIndex] = useState(0);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatSending, setChatSending] = useState(false);
+  const chatSeqRef = useRef(1);
+  const [detectTemplates, setDetectTemplates] = useState(() => normalizeDetectionTemplates(DEFAULT_DETECTION_TEMPLATES));
+  const [activeDetectTemplateId, setActiveDetectTemplateId] = useState(null);
   const [uiLanguage, setUiLanguage] = useState(DEFAULT_UI_LANGUAGE);
   const [taskMode, setTaskMode] = useState(DEFAULT_TASK_MODE);
   const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_BASE_URL);
@@ -408,6 +441,9 @@ export default function App() {
   const [showStyleTemplateModal, setShowStyleTemplateModal] = useState(false);
   const [editingStyleTemplateId, setEditingStyleTemplateId] = useState(null);
   const [styleTemplateDraft, setStyleTemplateDraft] = useState({ title: "", body: "" });
+  const [showDetectTemplateModal, setShowDetectTemplateModal] = useState(false);
+  const [editingDetectTemplateId, setEditingDetectTemplateId] = useState(null);
+  const [detectTemplateDraft, setDetectTemplateDraft] = useState({ title: "", body: "" });
   const [styleThemes, setStyleThemes] = useState(normalizeStyleThemes(DEFAULT_STYLE_THEMES));
   const [uploadedInputImages, setUploadedInputImages] = useState([]);
   const [uploadedImage, setUploadedImage] = useState(null);
@@ -496,7 +532,11 @@ export default function App() {
   const compareBInputRef = useRef(null);
   const compareCInputRef = useRef(null);
   const compareDInputRef = useRef(null);
-  const compareInputRefs = [compareAInputRef, compareBInputRef, compareCInputRef, compareDInputRef];
+  const compareEInputRef = useRef(null);
+  const compareFInputRef = useRef(null);
+  const compareGInputRef = useRef(null);
+  const compareHInputRef = useRef(null);
+  const compareInputRefs = [compareAInputRef, compareBInputRef, compareCInputRef, compareDInputRef, compareEInputRef, compareFInputRef, compareGInputRef, compareHInputRef];
   const seqRef = useRef(1);
   const isPickingHistoryFolderRef = useRef(false);
   const hasAutoPromptedHistoryFolderRef = useRef(false);
@@ -1101,6 +1141,40 @@ export default function App() {
       }
     }
   }, [compareEditors, comparePrompts, compareCount]);
+
+  const [comparePasteMsg, setComparePasteMsg] = useState("");
+  const pasteComparePromptsJson = useCallback(async () => {
+    let raw = "";
+    try {
+      raw = await navigator.clipboard.readText();
+    } catch {
+      setComparePasteMsg(t("workspace.pasteClipboardFail"));
+      return;
+    }
+    let list = null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) list = parsed;
+      else if (parsed && Array.isArray(parsed.prompts)) list = parsed.prompts;
+    } catch {
+      /* fallthrough to invalid */
+    }
+    if (!list) {
+      setComparePasteMsg(t("workspace.pasteInvalid"));
+      return;
+    }
+    const values = list.slice(0, MAX_COMPARE_PROMPTS).map((v) => (typeof v === "string" ? v : String(v ?? "")));
+    const nextCount = Math.max(2, Math.min(MAX_COMPARE_PROMPTS, values.length));
+    compareEditors.forEach((ed, i) => ed.resetText(values[i] ?? ""));
+    setCompareCount(nextCount);
+    setComparePasteMsg(t("workspace.pasteApplied", { count: nextCount }));
+  }, [compareEditors, t]);
+
+  useEffect(() => {
+    if (!comparePasteMsg) return undefined;
+    const timer = setTimeout(() => setComparePasteMsg(""), 2600);
+    return () => clearTimeout(timer);
+  }, [comparePasteMsg]);
 
   const selectedImageKeys = useMemo(
     () => new Set(selectedAtlasItems.map((item) => item.key)),
@@ -2527,9 +2601,22 @@ export default function App() {
     }
     const loadedTurns = await loadTurnsFromLocalFolder(dirHandle);
     const loadedSplitHistory = await loadSplitHistoryFromLocalFolder(dirHandle);
+    const loadedChat = await loadChatFromLocalFolder(dirHandle);
+    const detectTemplatePayload = await loadDetectionTemplatesFromLocalFolder(dirHandle);
+    if (detectTemplatePayload) {
+      setDetectTemplates(detectTemplatePayload.templates);
+      setActiveDetectTemplateId(detectTemplatePayload.activeTemplateId);
+    } else {
+      setDetectTemplates(normalizeDetectionTemplates(DEFAULT_DETECTION_TEMPLATES));
+      setActiveDetectTemplateId(null);
+    }
     setSelectedAtlasItems([]);
     setAtlasThumbnail(null);
     setSplitHistoryRecords(consolidateSplitHistoryRecords(loadedSplitHistory));
+    setChatMessages(loadedChat);
+    chatSeqRef.current = loadedChat.length
+      ? loadedChat.reduce((m, c) => Math.max(m, Number(c.seq) || 0), 0) + 1
+      : 1;
     const nextTurns = [...loadedTurns].sort((a, b) => b.seq - a.seq);
     setTurns(nextTurns);
     setHiddenTurnIds([]);
@@ -2587,7 +2674,12 @@ export default function App() {
   const handleGenerate = useCallback(async () => {
     if (!proxyUrl.trim()) { setShowSettings(true); return; }
     const effectiveModelIds = taskMode === "style" ? selectedModels.slice(0, 1) : selectedModels;
-    const promptVariants = getComposerPromptVariants(taskMode, prompt, comparePrompts, styleThemes);
+    const promptVariants = getComposerPromptVariants(
+      taskMode,
+      prompt,
+      taskMode === "compare" ? comparePrompts.slice(0, compareCount) : comparePrompts,
+      styleThemes
+    );
     const hasPromptInput = promptVariants.some((variant) => variant.prompt.trim());
     const inputBatch = (Array.isArray(uploadedInputImages) ? uploadedInputImages : [])
       .map((item) => (typeof item === "string" ? item : ""))
@@ -2778,6 +2870,327 @@ export default function App() {
     });
   }, [apiKeys, compareEditors, promptEditor, t]);
 
+  // ─── 对话（Chat）：发送 / 评级 / 复现 ───
+  // 用一条记录的 prompt + 图片跑一次补全，把结果写回该记录。
+  // 检测单个「图片+输出」小组：把结果打补丁进 record.items[itemIndex]，并把整条记录标记为待落盘。
+  const runChatItem = useCallback(
+    async (recordId, itemId, promptText, image) => {
+      const patchItem = (patch) =>
+        setChatMessages((prev) =>
+          prev.map((m) =>
+            m.id === recordId
+              ? {
+                  ...m,
+                  folderSyncedAt: null,
+                  items: m.items.map((it) => (it.id === itemId ? { ...it, ...patch } : it)),
+                }
+              : m
+          )
+        );
+      // qwen3-vl-30b-a3b-instruct 是百炼的视觉语言模型（读图+出文字），走百炼 compatible-mode。
+      const chatKey = getApiKeyForPlatform(apiKeys, CHAT_API_PLATFORM);
+      if (!chatKey) {
+        patchItem({ status: "error", error: t("chat.missingKey") });
+        return;
+      }
+      // 批量并发时上游偶发把"第一个"请求判成 401/invalid token（冷启动或突发限流），
+      // 而同批其余请求正常。这类瞬时鉴权错误不是真的坏 Key，客户端重试一次即可恢复。
+      const callOnce = () =>
+        callChatCompletion(proxyUrl.trim(), {
+          model: DEFAULT_CHAT_MODEL,
+          messages: [buildChatUserMessage(promptText, image ? [image] : [])],
+          apiKey: chatKey,
+          apiPlatform: CHAT_API_PLATFORM,
+          apiBaseUrl: CHAT_API_BASE_URL,
+        });
+      try {
+        let outputText;
+        try {
+          outputText = await callOnce();
+        } catch (firstErr) {
+          // 单次退避后再试一次；仍失败则抛出原始错误。
+          await new Promise((r) => setTimeout(r, 700 + Math.floor(Math.random() * 400)));
+          outputText = await callOnce().catch(() => {
+            throw firstErr;
+          });
+        }
+        patchItem({ status: "done", outputText, error: null });
+      } catch (err) {
+        patchItem({ status: "error", error: err?.message || t("chat.error") });
+      }
+    },
+    [apiKeys, proxyUrl, t]
+  );
+
+  // 批量检测：一次发送 = 一条记录（同一提示词），每张图 = 记录里的一个「图片+输出」小组。
+  const handleChatSend = useCallback(async () => {
+    if (chatSending) return;
+    if (!proxyUrl.trim()) { setShowSettings(true); return; }
+    const promptText = (chatEditor.value || "").trim();
+    const images = chatImages.filter((img) => typeof img === "string" && img);
+    if (!promptText) return;
+    const activeTemplate = detectTemplates.find((tpl) => tpl.id === activeDetectTemplateId) || null;
+    const templateId = activeTemplate?.id || null;
+    const templateTitle = activeTemplate?.title || "";
+    const baseTime = Date.now();
+    // 无图时也建一个纯文本小组；有图时每张图一个小组。
+    const groupImages = images.length ? images : [""];
+    const recordId = baseTime + Math.floor(Math.random() * 1000);
+    const items = groupImages.map((img, index) => ({
+      id: `${recordId}-${index}-${Math.floor(Math.random() * 100000)}`,
+      image: img || "",
+      outputText: "",
+      status: "loading",
+      error: null,
+      rating: null,
+    }));
+    const record = {
+      id: recordId,
+      seq: chatSeqRef.current,
+      createdAt: baseTime,
+      model: DEFAULT_CHAT_MODEL,
+      templateId,
+      templateTitle,
+      prompt: promptText,
+      items,
+      folderSyncedAt: null,
+    };
+    chatSeqRef.current += 1;
+    setChatMessages((prev) => [record, ...prev]);
+    // 发送后保留输入图与提示词在输入框，方便微调后再次检测。
+    setChatSending(true);
+    try {
+      // 单轮检测：每个小组独立，不携带上下文。
+      // 限并发跑，避免一次几十张图同时打上游导致突发限流/冷启动（首个请求偶发 401）。
+      const CONCURRENCY = 6;
+      let cursor = 0;
+      const runNext = async () => {
+        while (cursor < items.length) {
+          const it = items[cursor];
+          cursor += 1;
+          await runChatItem(recordId, it.id, promptText, it.image);
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, runNext));
+    } finally {
+      setChatSending(false);
+    }
+  }, [chatSending, proxyUrl, chatEditor, chatImages, detectTemplates, activeDetectTemplateId, runChatItem]);
+
+  // 检测图片上传/删除/编辑：复用 workspace 的 InputImagesModal / PromptImageEditorModal。
+  const appendChatImageFiles = useCallback(async (files) => {
+    const incoming = Array.isArray(files) ? files : [];
+    if (!incoming.length) return;
+    const encoded = await Promise.all(
+      incoming.slice(0, MAX_DETECT_IMAGES_PER_BATCH).map((file) => fileToBase64(file))
+    );
+    const safeEncoded = encoded.filter((item) => typeof item === "string" && item.startsWith("data:image/"));
+    if (!safeEncoded.length) return;
+    setChatImages((prev) => {
+      const base = (Array.isArray(prev) ? prev : []).filter((item) => typeof item === "string" && item);
+      return [...base, ...safeEncoded].slice(0, MAX_DETECT_IMAGES_PER_BATCH);
+    });
+    if (chatImageInputRef.current) chatImageInputRef.current.value = "";
+  }, []);
+
+  const removeChatImageAt = useCallback((index = 0) => {
+    setChatImages((prev) => {
+      const base = (Array.isArray(prev) ? prev : []).filter((item) => typeof item === "string" && item);
+      const safeIndex = Math.max(0, Math.min(base.length - 1, Number(index) || 0));
+      return base.filter((_, idx) => idx !== safeIndex);
+    });
+    if (chatImageInputRef.current) chatImageInputRef.current.value = "";
+  }, []);
+
+  const confirmChatImageEditor = useCallback((nextImages) => {
+    const safeImages = (Array.isArray(nextImages) ? nextImages : [])
+      .filter((item) => typeof item === "string" && item.startsWith("data:image/"))
+      .slice(0, MAX_DETECT_IMAGES_PER_BATCH);
+    setChatImages(safeImages);
+    setShowChatImageEditor(false);
+    if (chatImageInputRef.current) chatImageInputRef.current.value = "";
+  }, []);
+
+  const openChatImageEditor = useCallback((index = 0) => {
+    setChatImageEditorIndex(Math.max(0, Number(index) || 0));
+    setShowChatImageEditor(true);
+  }, []);
+
+  // 选择/取消检测模版：选中后把模版正文回填到输入框作为检测提示词。
+  const selectDetectTemplate = useCallback((templateId) => {
+    const template = detectTemplates.find((tpl) => tpl.id === templateId);
+    if (!template) return;
+    if (activeDetectTemplateId === templateId) {
+      setActiveDetectTemplateId(null);
+      return;
+    }
+    setActiveDetectTemplateId(templateId);
+    chatEditor.resetText(template.body || "");
+  }, [detectTemplates, activeDetectTemplateId, chatEditor]);
+
+  // 编辑当前选中检测模版的正文（把输入框内容存回模版）。
+  const saveDetectTemplateBody = useCallback(() => {
+    if (!activeDetectTemplateId) return;
+    const body = chatEditor.value || "";
+    setDetectTemplates((prev) =>
+      prev.map((tpl) => (tpl.id === activeDetectTemplateId ? { ...tpl, body } : tpl))
+    );
+  }, [activeDetectTemplateId, chatEditor]);
+
+  // 打开检测模版编辑器（弹窗改标题/正文）。不 gate 在文件夹上，未选文件夹也能编辑。
+  const openDetectTemplateEditor = useCallback((templateId) => {
+    const template = detectTemplates.find((tpl) => tpl.id === templateId);
+    if (!template) return;
+    setEditingDetectTemplateId(template.id);
+    setDetectTemplateDraft({ title: template.title || "", body: template.body || "" });
+    setShowDetectTemplateModal(true);
+  }, [detectTemplates]);
+
+  const saveDetectTemplateDraft = useCallback(() => {
+    if (!editingDetectTemplateId) return;
+    const title = detectTemplateDraft.title.trim() || editingDetectTemplateId;
+    const body = detectTemplateDraft.body || "";
+    setDetectTemplates((prev) =>
+      prev.map((tpl) => (tpl.id === editingDetectTemplateId ? { ...tpl, title, body } : tpl))
+    );
+    // 若正在编辑的正是当前选中模版，把正文同步回输入框。
+    if (activeDetectTemplateId === editingDetectTemplateId) {
+      chatEditor.resetText(body);
+    }
+    setShowDetectTemplateModal(false);
+  }, [detectTemplateDraft, editingDetectTemplateId, activeDetectTemplateId, chatEditor]);
+
+  // 评级作用于单个「图片+输出」小组。
+  const rateChatItem = useCallback((recordId, itemId, rating) => {
+    setChatMessages((prev) =>
+      prev.map((m) =>
+        m.id === recordId
+          ? {
+              ...m,
+              folderSyncedAt: null,
+              items: m.items.map((it) => (it.id === itemId ? { ...it, rating } : it)),
+            }
+          : m
+      )
+    );
+  }, []);
+
+  // 重跑单个小组（确定性单轮，不带上下文）。
+  const rerunChatItem = useCallback(
+    async (recordId, itemId) => {
+      const record = chatMessages.find((m) => m.id === recordId);
+      const item = record?.items.find((it) => it.id === itemId);
+      if (!record || !item) return;
+      if (!proxyUrl.trim()) { setShowSettings(true); return; }
+      setChatMessages((prev) =>
+        prev.map((m) =>
+          m.id === recordId
+            ? {
+                ...m,
+                folderSyncedAt: null,
+                items: m.items.map((it) =>
+                  it.id === itemId ? { ...it, status: "loading", error: null } : it
+                ),
+              }
+            : m
+        )
+      );
+      await runChatItem(recordId, itemId, record.prompt, item.image);
+    },
+    [chatMessages, proxyUrl, runChatItem]
+  );
+
+  // 复用：把整条记录的提示词 + 全部输入图回填到输入框。
+  const reuseChatMessage = useCallback(
+    (recordId) => {
+      const target = chatMessages.find((m) => m.id === recordId);
+      if (!target) return;
+      chatEditor.resetText(target.prompt || "");
+      const imgs = Array.isArray(target.items)
+        ? target.items.map((it) => it.image).filter((img) => typeof img === "string" && img)
+        : [];
+      setChatImages(imgs);
+      setActivePage("chat");
+      requestAnimationFrame(() => {
+        chatInputRef.current?.focus?.({ end: true, preventScroll: true });
+      });
+    },
+    [chatMessages, chatEditor]
+  );
+
+  const chatSavingRef = useRef(new Set());
+
+  const deleteChatMessage = useCallback(
+    async (id) => {
+      const target = chatMessages.find((m) => m.id === id);
+      setChatMessages((prev) => prev.filter((m) => m.id !== id));
+      chatSavingRef.current.delete(id);
+      if (!historyDirHandle || !target) return;
+      try {
+        const canWrite = await ensureDirectoryPermission(historyDirHandle, true);
+        if (!canWrite) {
+          setHistoryFolderMsg(t("history.folderWriteDeniedDelete"));
+          return;
+        }
+        const chatRoot = await historyDirHandle.getDirectoryHandle(CHAT_HISTORY_FOLDER_NAME);
+        await chatRoot.removeEntry(getChatDirName(target), { recursive: true });
+        setHistoryFolderMsg(t("history.deletedLocal", { seq: target.seq }));
+      } catch (err) {
+        // 文件夹里本来就没有该记录（从未落盘）时 NotFoundError 属正常，忽略。
+        if (err?.name !== "NotFoundError") {
+          setHistoryFolderMsg(t("history.deleteLocalFailed", { seq: target?.seq || "?", error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t) }));
+        }
+      }
+    },
+    [chatMessages, historyDirHandle, t]
+  );
+
+  // 对话记录自动落盘：所有小组都不在 loading（已 done/error）且未同步的记录写进 chat-history/。
+  useEffect(() => {
+    if (!historyDirHandle) return;
+    const pending = chatMessages.filter(
+      (m) =>
+        Array.isArray(m.items) &&
+        m.items.length > 0 &&
+        m.items.every((it) => it.status !== "loading") &&
+        !m.folderSyncedAt &&
+        !chatSavingRef.current.has(m.id)
+    );
+    if (!pending.length) return;
+    pending.forEach((m) => chatSavingRef.current.add(m.id));
+    (async () => {
+      const canWrite = await ensureDirectoryPermission(historyDirHandle, true);
+      if (!canWrite) {
+        pending.forEach((m) => chatSavingRef.current.delete(m.id));
+        return;
+      }
+      for (const m of pending) {
+        try {
+          const saved = await saveChatToLocalFolder(historyDirHandle, m);
+          setChatMessages((prev) =>
+            prev.map((item) => (item.id === m.id ? { ...item, folderSyncedAt: saved.folderSyncedAt } : item))
+          );
+        } catch {
+          // 保留 folderSyncedAt=null，下次重试。
+        } finally {
+          chatSavingRef.current.delete(m.id);
+        }
+      }
+    })();
+  }, [chatMessages, historyDirHandle]);
+
+  // 检测模版自动落盘。
+  useEffect(() => {
+    if (!historyDirHandle) return;
+    (async () => {
+      const canWrite = await ensureDirectoryPermission(historyDirHandle, true);
+      if (!canWrite) return;
+      try {
+        await saveDetectionTemplatesToLocalFolder(historyDirHandle, detectTemplates, activeDetectTemplateId);
+      } catch {}
+    })();
+  }, [historyDirHandle, detectTemplates, activeDetectTemplateId]);
+
   useEffect(() => {
     if (!historyDirHandle) return;
     (async () => {
@@ -2841,12 +3254,49 @@ export default function App() {
     () => [activeTurn, ...visibleHistory].filter(Boolean).flatMap((turn) => buildTurnPreviewItems(turn)),
     [activeTurn, visibleHistory]
   );
+  // 每个检测模版的错误率 = 红标数 / 该模版下总检测数（含未标/绿标）。
+  const detectTemplateStats = useMemo(() => {
+    const stats = {};
+    for (const tpl of detectTemplates) stats[tpl.id] = { total: 0, red: 0, green: 0 };
+    for (const m of chatMessages) {
+      const key = m.templateId;
+      if (!key || !stats[key]) continue;
+      for (const it of m.items || []) {
+        stats[key].total += 1;
+        if (it.rating === "red") stats[key].red += 1;
+        else if (it.rating === "green") stats[key].green += 1;
+      }
+    }
+    return stats;
+  }, [detectTemplates, chatMessages]);
+  // 检测看板汇总：全部检测记录的总数/红/绿/待判 + 运行中，以及当前选中模版单独一列。
+  const detectOverview = useMemo(() => {
+    const all = { total: 0, red: 0, green: 0, pending: 0, running: 0 };
+    for (const m of chatMessages) {
+      for (const it of m.items || []) {
+        all.total += 1;
+        if (it.status === "loading") all.running += 1;
+        if (it.rating === "red") all.red += 1;
+        else if (it.rating === "green") all.green += 1;
+        else all.pending += 1;
+      }
+    }
+    const activeStat = activeDetectTemplateId
+      ? detectTemplateStats[activeDetectTemplateId] || { total: 0, red: 0, green: 0 }
+      : null;
+    return { all, activeStat };
+  }, [chatMessages, activeDetectTemplateId, detectTemplateStats]);
   const queueCount = visibleTurns.filter((t) => t.status === "queued").length;
   const runningCount = visibleTurns.filter((t) => t.status === "running").length;
   const hasAnySuccess = visibleTurns.some((t) => t.results?.some((r) => r.status === "success" && r.images?.length));
   const folderSupported = supportsFileSystemAccess();
   const templatesEnabled = !!historyDirHandle;
-  const composerPromptVariants = getComposerPromptVariants(taskMode, prompt, comparePrompts, styleThemes);
+  const composerPromptVariants = getComposerPromptVariants(
+    taskMode,
+    prompt,
+    taskMode === "compare" ? comparePrompts.slice(0, compareCount) : comparePrompts,
+    styleThemes
+  );
   const hasPromptInput = composerPromptVariants.some((variant) => variant.prompt.trim());
   const hasImageInput = inputImageList.length > 0 || (taskMode === "style" && styleReferenceImages.length > 0);
   const hasPlaceholderInComposer =
@@ -3045,6 +3495,13 @@ export default function App() {
             >
               {t("nav.split")}
             </button>
+            <button
+              type="button"
+              style={{ ...S.modeTab, ...(activePage === "chat" ? S.modeTabActive : null) }}
+              onClick={() => setActivePage("chat")}
+            >
+              {t("nav.chat")}
+            </button>
             {SHOW_CANVAS_TAB && (
               <button
                 type="button"
@@ -3134,6 +3591,227 @@ export default function App() {
             {...splitConsoleProps}
           />
         </div>
+        <div style={activePage === "chat" ? undefined : { display: "none" }}>
+          {/* 输入区：左侧检测指令输入框（复用 workspace 输入框样式），右侧检测模版面板 */}
+          <section style={{ marginBottom: 24 }}>
+            <div style={S.inputGrid}>
+              <div style={{ minWidth: 0 }}>
+                <div style={S.promptHead}>
+                  <label style={{ ...S.label, marginBottom: 0 }}>{t("chat.placeholder")}</label>
+                  <div style={S.promptHeadActions}>
+                    {activeDetectTemplateId && (
+                      <button
+                        type="button"
+                        style={{ ...S.zipBtn, padding: "6px 12px", fontSize: 12 }}
+                        onClick={saveDetectTemplateBody}
+                      >
+                        {t("detect.saveTemplateBody")}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <TokenPromptInput
+                  value={chatEditor.value}
+                  onChange={(next) => chatEditor.setText(next)}
+                  onKeyDown={chatEditor.handleKeyDown}
+                  editorRef={chatInputRef}
+                  placeholder={t("chat.placeholder")}
+                  rows={4}
+                />
+              </div>
+              <div style={S.refColumn}>
+                <div style={S.uploadPairTopLabel}>{t("detect.images")} ({chatImages.length}/{MAX_DETECT_IMAGES_PER_BATCH})</div>
+                <div
+                  style={S.uploadPairBox}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => chatImageInputRef.current?.click()}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      chatImageInputRef.current?.click();
+                    }
+                  }}
+                >
+                  {chatImages.length > 0 && <span style={S.inputCountBadge}>{chatImages.length}</span>}
+                  {chatImages.length > 0 && (
+                    <button
+                      type="button"
+                      style={S.inputEditBtn}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setShowChatImageModal(true);
+                      }}
+                    >
+                      {t("common.edit")}
+                    </button>
+                  )}
+                  {chatImages.length > 0 && (
+                    <button
+                      type="button"
+                      style={S.inputDrawBtn}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openChatImageEditor(0);
+                      }}
+                      title={t("imageEditor.title")}
+                    >
+                      ✎
+                    </button>
+                  )}
+                  {chatImages.length > 0 && (
+                    <button
+                      type="button"
+                      style={S.inputClearBtn}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setChatImages([]);
+                      }}
+                      title={t("chat.clearImages")}
+                    >
+                      ✕
+                    </button>
+                  )}
+                  <div style={S.uploadPairBody}>
+                    {chatImages[0] ? (
+                      <img src={chatImages[0]} alt="Input" style={S.uploadPairMainThumb} />
+                    ) : (
+                      <div style={S.inputImagesEmpty}>+</div>
+                    )}
+                  </div>
+                </div>
+                <input
+                  ref={chatImageInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  style={{ display: "none" }}
+                  onChange={async (event) => {
+                    const files = Array.from(event.target.files || []);
+                    if (files.length) await appendChatImageFiles(files);
+                    event.target.value = "";
+                  }}
+                />
+              </div>
+            </div>
+          </section>
+
+          {/* 模型行 + 统计看板（左） 与 模版面板（右） */}
+          <section style={{ marginBottom: 24 }}>
+            <div style={S.modelTemplateGrid}>
+              <div style={S.modelsPanel}>
+                <div style={S.modelsHeadRow}>
+                  <label style={{ ...S.label, marginBottom: 0 }}>{t("workspace.models")}</label>
+                  <span style={{ fontFamily: mono, fontSize: 12, color: "#c4c4cc" }}>{DEFAULT_CHAT_MODEL}</span>
+                </div>
+                {/* 统计看板：填满模型行下方的空白 */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8, marginTop: 4 }}>
+                  {[
+                    { label: t("detect.statTotal"), value: detectOverview.all.total, color: "#e4e4e7" },
+                    { label: t("detect.statGreen"), value: detectOverview.all.green, color: "#86efac" },
+                    { label: t("detect.statRed"), value: detectOverview.all.red, color: "#fca5a5" },
+                    { label: t("detect.statPending"), value: detectOverview.all.pending, color: "#a1a1aa" },
+                  ].map((cell) => (
+                    <div key={cell.label} style={{ border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "10px 12px", background: "rgba(255,255,255,0.02)" }}>
+                      <div style={{ fontFamily: mono, fontSize: 22, fontWeight: 700, color: cell.color, lineHeight: 1.1 }}>{cell.value}</div>
+                      <div style={{ fontFamily: mono, fontSize: 10, letterSpacing: 1, textTransform: "uppercase", color: "#71717a", marginTop: 4 }}>{cell.label}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ ...S.imageSizePanel, marginTop: "auto" }}>
+                  {(() => {
+                    const rated = detectOverview.all.red + detectOverview.all.green;
+                    const overallRate = rated ? Math.round((detectOverview.all.red / rated) * 100) : null;
+                    return (
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                        <span style={{ fontFamily: mono, fontSize: 12, color: "#a1a1aa" }}>
+                          {t("detect.overallRate")}: {overallRate === null ? "—" : `${overallRate}% (${detectOverview.all.red}/${rated})`}
+                        </span>
+                        {detectOverview.activeStat && (
+                          <span style={{ fontFamily: mono, fontSize: 12, color: "#a1a1aa" }}>
+                            {t("detect.activeTemplate")}: {(() => {
+                              const s = detectOverview.activeStat;
+                              const r = s.total ? Math.round((s.red / s.total) * 100) : null;
+                              return r === null ? "—" : `${r}% (${s.red}/${s.total})`;
+                            })()}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+              <aside style={S.templatePanel}>
+                <div style={S.templatePanelHead}>
+                  <label style={{ ...S.label, marginBottom: 0 }}>{t("detect.templates")}</label>
+                </div>
+                <div style={S.templateList}>
+                  {detectTemplates.map((tpl) => {
+                    const stat = detectTemplateStats[tpl.id] || { total: 0, red: 0 };
+                    const rate = stat.total ? Math.round((stat.red / stat.total) * 100) : null;
+                    const active = activeDetectTemplateId === tpl.id;
+                    return (
+                      <div
+                        key={tpl.id}
+                        onClick={() => selectDetectTemplate(tpl.id)}
+                        title={tpl.body ? tpl.body.slice(0, 120) : t("detect.emptyTemplate")}
+                        style={{ ...S.templateItem, ...(active ? S.templateItemActive : null) }}
+                      >
+                        <span style={S.templateItemTitle}>{tpl.title}</span>
+                        <span style={S.templateActions}>
+                          <span style={{ fontFamily: mono, fontSize: 10, color: rate === null ? "#52525b" : rate > 0 ? "#fca5a5" : "#86efac", flexShrink: 0 }}>
+                            {rate === null ? "—" : `${rate}%`}
+                          </span>
+                          <button
+                            type="button"
+                            style={S.templateEditBtn}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openDetectTemplateEditor(tpl.id);
+                            }}
+                            title={t("template.edit")}
+                          >
+                            ✎
+                          </button>
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p style={{ fontFamily: mono, fontSize: 11, color: "#71717a", marginTop: 10, lineHeight: 1.5 }}>
+                  {t("detect.templateHint")}
+                </p>
+              </aside>
+            </div>
+          </section>
+
+          {/* 检测触发按钮 */}
+          <div style={S.genRow}>
+            <button
+              style={{ ...S.genBtn, opacity: chatSending ? 0.5 : 1 }}
+              disabled={chatSending}
+              onClick={handleChatSend}
+            >
+              {chatSending
+                ? <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={S.btnSpin} /> {t("chat.thinking")}</span>
+                : (chatImages.length > 1 ? t("detect.runBatch", { count: chatImages.length }) : t("chat.send"))}
+            </button>
+          </div>
+
+          {/* 检测结果卡片 */}
+          <div>
+            {chatMessages.map((message) => (
+              <ChatMessageCard
+                key={message.id}
+                record={message}
+                onRateItem={rateChatItem}
+                onRerunItem={rerunChatItem}
+                onReuse={reuseChatMessage}
+                onDelete={deleteChatMessage}
+              />
+            ))}
+          </div>
+        </div>
         <div style={activePage === "workspace" ? undefined : { display: "none" }}>
         <section ref={composerSectionRef} style={{ marginBottom: 24 }}>
           <div style={taskMode === "style" ? S.inputGridStyle : S.inputGrid}>
@@ -3142,6 +3820,16 @@ export default function App() {
                 <label style={{ ...S.label, marginBottom: 0 }}>{taskMode === "compare" ? t("workspace.prompts") : t("workspace.prompt")}</label>
                 <div style={S.promptHeadActions}>
                   {taskMode === "compare" && <span style={S.inputHint}>{t("workspace.compareHint")}</span>}
+                  {taskMode === "compare" && (
+                    <button
+                      type="button"
+                      style={S.placeholderBtn}
+                      onClick={pasteComparePromptsJson}
+                      title={t("workspace.pastePromptsJson")}
+                    >
+                      {"{ }"}
+                    </button>
+                  )}
                   <button
                     type="button"
                     style={S.placeholderBtn}
@@ -3164,7 +3852,7 @@ export default function App() {
               {taskMode === "compare" ? (
                 <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(compareCount, 2)}, minmax(0, 1fr))`, gap: 12 }}>
                   {Array.from({ length: compareCount }, (_, i) => {
-                    const placeholderKeys = ["workspace.promptAPlaceholder", "workspace.promptBPlaceholder", "workspace.promptCPlaceholder", "workspace.promptDPlaceholder"];
+                    const placeholderKeys = ["workspace.promptAPlaceholder", "workspace.promptBPlaceholder", "workspace.promptCPlaceholder", "workspace.promptDPlaceholder", "workspace.promptEPlaceholder", "workspace.promptFPlaceholder", "workspace.promptGPlaceholder", "workspace.promptHPlaceholder"];
                     return (
                       <div key={i} style={{ position: "relative" }}>
                         {compareCount > 2 && (
@@ -3198,13 +3886,16 @@ export default function App() {
                   {compareCount < MAX_COMPARE_PROMPTS && (
                     <button
                       type="button"
-                      onClick={() => setCompareCount(MAX_COMPARE_PROMPTS)}
+                      onClick={() => setCompareCount((c) => Math.min(MAX_COMPARE_PROMPTS, c + 2))}
                       style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", justifyContent: "center", height: 32, borderRadius: 8, border: "1px dashed rgba(255,255,255,0.18)", background: "rgba(255,255,255,0.02)", color: "rgba(255,255,255,0.35)", fontSize: 20, lineHeight: 1, cursor: "pointer", transition: "border-color 0.15s, color 0.15s" }}
                       onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.4)"; e.currentTarget.style.color = "rgba(255,255,255,0.7)"; }}
                       onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.18)"; e.currentTarget.style.color = "rgba(255,255,255,0.35)"; }}
                     >
                       +
                     </button>
+                  )}
+                  {comparePasteMsg && (
+                    <div style={{ ...S.inputHint, gridColumn: "1 / -1", color: "rgba(255,255,255,0.55)" }}>{comparePasteMsg}</div>
                   )}
                 </div>
               ) : (
@@ -3672,7 +4363,7 @@ export default function App() {
               retryingImageKeys={retryingImageKeys}
               splittingImageKeys={splittingImageKeys}
               compactStyleHistory={false}
-              truncatePromptText={false}
+              truncatePromptText={true}
               showModelSummary={true}
               enableInlineReferenceViewer={true}
             />
@@ -3767,6 +4458,14 @@ export default function App() {
         onSave={saveStyleTemplateDraft}
         canSave={!!styleTemplateDraft.title.trim() || !!styleTemplateDraft.body.trim()}
       />
+      <DetectTemplateEditorModal
+        show={showDetectTemplateModal}
+        onClose={() => setShowDetectTemplateModal(false)}
+        draft={detectTemplateDraft}
+        setDraft={setDetectTemplateDraft}
+        onSave={saveDetectTemplateDraft}
+        canSave={!!detectTemplateDraft.title.trim() || !!detectTemplateDraft.body.trim()}
+      />
       <InputImagesModal
         show={showInputImageModal}
         onClose={() => setShowInputImageModal(false)}
@@ -3791,6 +4490,22 @@ export default function App() {
         maxCount={MAX_STYLE_REFERENCE_IMAGES}
         onUploadFiles={appendStyleReferenceFiles}
         onRemoveAt={removeStyleReferenceAt}
+      />
+      <InputImagesModal
+        show={showChatImageModal}
+        onClose={() => setShowChatImageModal(false)}
+        title={t("detect.images")}
+        images={chatImages}
+        maxCount={MAX_DETECT_IMAGES_PER_BATCH}
+        onUploadFiles={appendChatImageFiles}
+        onRemoveAt={removeChatImageAt}
+      />
+      <PromptImageEditorModal
+        show={showChatImageEditor}
+        onClose={() => setShowChatImageEditor(false)}
+        images={chatImages}
+        initialIndex={chatImageEditorIndex}
+        onConfirm={confirmChatImageEditor}
       />
       <SelectionLimitModal
         show={showSelectionLimitModal}

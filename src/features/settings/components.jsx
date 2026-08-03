@@ -376,6 +376,44 @@ export function StyleTemplateEditorModal({ show, onClose, draft, setDraft, onSav
   );
 }
 
+export function DetectTemplateEditorModal({ show, onClose, draft, setDraft, onSave, canSave }) {
+  const { t } = useI18n();
+  if (!show) return null;
+  return (
+    <div style={S.modalOverlay} onClick={onClose}>
+      <div style={S.settingsModal} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>{t("detect.editTitle")}</h2>
+          <button onClick={onClose} style={S.closeBtn}>✕</button>
+        </div>
+        <label style={S.fieldLabel}>{t("common.title")}</label>
+        <input
+          style={S.proxyInput}
+          value={draft.title}
+          onChange={(e) => setDraft((prev) => ({ ...prev, title: e.target.value }))}
+          placeholder={t("detect.titlePlaceholder")}
+        />
+        <label style={{ ...S.fieldLabel, marginTop: 14 }}>{t("common.body")}</label>
+        <textarea
+          style={{ ...S.proxyInput, minHeight: 180, resize: "vertical", fontFamily: "inherit", lineHeight: 1.5 }}
+          value={draft.body}
+          onChange={(e) => setDraft((prev) => ({ ...prev, body: e.target.value }))}
+          placeholder={t("detect.bodyPlaceholder")}
+        />
+        <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
+          <button
+            style={{ ...S.apiSaveBtn, opacity: canSave ? 1 : 0.5, cursor: canSave ? "pointer" : "not-allowed" }}
+            onClick={onSave}
+            disabled={!canSave}
+          >
+            {t("common.save")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function InputImagesModal({ show, onClose, title, images, maxCount, onUploadFiles, onRemoveAt }) {
   const { t } = useI18n();
   const fileInputRef = useRef(null);

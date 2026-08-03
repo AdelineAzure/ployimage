@@ -1401,6 +1401,8 @@ export function TurnPanel({
   const isCompareMode = turnMode === "compare";
   const isStyleMode = turnMode === "style";
   const isMultiPromptMode = promptVariants.length > 1;
+  // compare 结果/提示词按组排布：最多 4 组一行，超过就自动换行（8 组 → 两排）
+  const compareColumns = Math.min(4, Math.max(2, promptVariants.length));
   const styleBasePrompt =
     typeof turn?.styleBasePrompt === "string"
       ? turn.styleBasePrompt
@@ -1568,7 +1570,7 @@ export function TurnPanel({
             <div
               style={{
                 ...S.turnPromptCards,
-                gridTemplateColumns: isCompareMode ? "repeat(2, minmax(0, 1fr))" : "1fr",
+                gridTemplateColumns: isCompareMode ? `repeat(${compareColumns}, minmax(0, 1fr))` : "1fr",
                 ...(expandPromptPreview ? S.turnPromptCardsExpanded : null),
               }}
             >
@@ -1817,7 +1819,7 @@ export function TurnPanel({
             <div
               style={
                 isCompareMode
-                  ? { ...S.turnCompareResultsGrid, gridTemplateColumns: "repeat(2, minmax(0, 1fr))" }
+                  ? { ...S.turnCompareResultsGrid, gridTemplateColumns: `repeat(${compareColumns}, minmax(0, 1fr))` }
                   : undefined
               }
             >
