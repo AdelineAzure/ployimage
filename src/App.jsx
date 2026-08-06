@@ -251,6 +251,8 @@ const {
   loadApiConfigFromLocalFolder,
   saveApiConfigToLocalFolder,
   downloadAllAsZip,
+  downloadSplitItemsAsZip,
+  downloadSplitItemsAsFiles,
   callTextAssistAPI,
   callThemeAssistAPI,
   callTextAssistWithFallback,
@@ -2097,78 +2099,27 @@ export default function App() {
       setSplitStatusText(t("split.exportNoItems"));
       return;
     }
-    if (!supportsFileSystemAccess()) {
-      setSplitStatusTone("error");
-      setSplitStatusText(t("split.unsupported"));
-      return;
-    }
     setSplitExporting(true);
     setSplitStatusTone("info");
     setSplitStatusText("");
     try {
-      const dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
-      const stem = safeName(splitContext.fileStem || "image");
-      const folderName = `split-${stem}-${Date.now()}`;
-      const splitDir = await dirHandle.getDirectoryHandle(folderName, { create: true });
-      const sourceData = dataUrlToBytes(splitContext.originalImage || splitContext.sourceImage);
-      if (sourceData) {
-        await writeBinaryFile(splitDir, `original.${sourceData.ext}`, sourceData.bytes);
-      }
-      const removedData = dataUrlToBytes(splitContext.removedImage);
-      if (removedData) {
-        await writeBinaryFile(splitDir, `removed_background.${removedData.ext}`, removedData.bytes);
-      }
-      const manifestItems = [];
-      for (let index = 0; index < Math.min(items.length, MAX_SPLIT_EXPORT_ITEMS); index += 1) {
-        const item = items[index];
-        const exportDataUrl = item.image;
-        const data = dataUrlToBytes(exportDataUrl);
-        if (!data) continue;
-        const fileName = `${String(index + 1).padStart(3, "0")}_subject.${data.ext}`;
-        await writeBinaryFile(splitDir, fileName, data.bytes);
-        manifestItems.push({
-          index: index + 1,
-          file: fileName,
-          x: item.x,
-          y: item.y,
-          width: item.width,
-          height: item.height,
-          area: item.area || 0,
-        });
-      }
-      await writeTextFile(
-        splitDir,
-        "manifest.json",
-        JSON.stringify(
-          {
-            createdAt: Date.now(),
-            source: {
-              width: splitContext.width || 0,
-              height: splitContext.height || 0,
-              file: sourceData ? `original.${sourceData.ext}` : "",
-            },
-            splitSource: splitUseRemovedSource ? "removed-background" : "original",
-            groupMode: splitGroupMode,
-            renderMode: splitRenderMode,
-            shapeMode: splitShapeMode,
-            backgroundColor: splitBackgroundColor,
-            enhanced: splitEnhanceEnabled,
-            itemCount: manifestItems.length,
-            items: manifestItems,
-          },
-          null,
-          2
-        )
-      );
-      const successText = t("split.exported", { folder: folderName, count: manifestItems.length });
+      const { count, fileName } = await downloadSplitItemsAsZip(splitContext, {
+        maxItems: MAX_SPLIT_EXPORT_ITEMS,
+        splitSource: splitUseRemovedSource ? "removed-background" : "original",
+        groupMode: splitGroupMode,
+        renderMode: splitRenderMode,
+        shapeMode: splitShapeMode,
+        backgroundColor: splitBackgroundColor,
+        enhanced: splitEnhanceEnabled,
+      });
+      const successText = t("split.exportedZip", { file: fileName, count });
       setSplitStatusTone("info");
       setSplitStatusText(successText);
       setHistoryFolderMsg(successText);
     } catch (err) {
-      if (String(err?.name || "") === "AbortError") return;
       setSplitStatusTone("error");
       setSplitStatusText(
-        t("split.pickFolderFailed", {
+        t("split.exportFailed", {
           error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t),
         })
       );
@@ -2176,6 +2127,36 @@ export default function App() {
       setSplitExporting(false);
     }
   }, [splitContext, splitUseRemovedSource, splitGroupMode, splitRenderMode, splitShapeMode, splitBackgroundColor, splitEnhanceEnabled, t]);
+
+  const exportSplitItemsAsFiles = useCallback(async () => {
+    const items = Array.isArray(splitContext.items) ? splitContext.items : [];
+    if (!items.length) {
+      setSplitStatusTone("error");
+      setSplitStatusText(t("split.exportNoItems"));
+      return;
+    }
+    setSplitExporting(true);
+    setSplitStatusTone("info");
+    setSplitStatusText("");
+    try {
+      const { count } = await downloadSplitItemsAsFiles(splitContext, {
+        maxItems: MAX_SPLIT_EXPORT_ITEMS,
+      });
+      const successText = t("split.exportedFiles", { count });
+      setSplitStatusTone("info");
+      setSplitStatusText(successText);
+      setHistoryFolderMsg(successText);
+    } catch (err) {
+      setSplitStatusTone("error");
+      setSplitStatusText(
+        t("split.exportFailed", {
+          error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t),
+        })
+      );
+    } finally {
+      setSplitExporting(false);
+    }
+  }, [splitContext, t]);
 
   const buildCurrentSplitHistoryRecord = useCallback((createdAt = Date.now()) => {
     const items = Array.isArray(splitContext.items) ? splitContext.items : [];
@@ -3443,6 +3424,7 @@ export default function App() {
     onDeleteItem: deleteSplitItem,
     onUndoDelete: undoDeleteSplitItem,
     onExport: exportSplitItems,
+    onExportFiles: exportSplitItemsAsFiles,
     onPreview: openPreviewImage,
     onUploadImageDataUrl: uploadSplitImageFromModal,
     onPickHistoryFolder: () => handlePickHistoryFolder({ source: "manual" }),

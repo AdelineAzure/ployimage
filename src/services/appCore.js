@@ -4776,6 +4776,105 @@ export async function downloadAllAsZip(turns) {
   URL.revokeObjectURL(url);
 }
 
+// Bundle a split/cluster export into a single zip and trigger a browser
+// download — no directory picker, so it works anywhere (including sandboxed
+// hosts where showDirectoryPicker is unavailable).
+export async function downloadSplitItemsAsZip(context, options = {}) {
+  const items = Array.isArray(context?.items) ? context.items : [];
+  if (!items.length) return { count: 0, fileName: "" };
+  const maxItems = Number.isFinite(options.maxItems) ? options.maxItems : items.length;
+  const zip = new JSZip();
+  const stem = safeName(context.fileStem || "image");
+
+  const sourceData = dataUrlToBytes(context.originalImage || context.sourceImage);
+  if (sourceData) zip.file(`original.${sourceData.ext}`, sourceData.bytes);
+  const removedData = dataUrlToBytes(context.removedImage);
+  if (removedData) zip.file(`removed_background.${removedData.ext}`, removedData.bytes);
+
+  const manifestItems = [];
+  for (let index = 0; index < Math.min(items.length, maxItems); index += 1) {
+    const item = items[index];
+    const data = dataUrlToBytes(item.image);
+    if (!data) continue;
+    const fileName = `${String(index + 1).padStart(3, "0")}_subject.${data.ext}`;
+    zip.file(fileName, data.bytes);
+    manifestItems.push({
+      index: index + 1,
+      file: fileName,
+      x: item.x,
+      y: item.y,
+      width: item.width,
+      height: item.height,
+      area: item.area || 0,
+    });
+  }
+
+  zip.file(
+    "manifest.json",
+    JSON.stringify(
+      {
+        source: {
+          width: context.width || 0,
+          height: context.height || 0,
+          file: sourceData ? `original.${sourceData.ext}` : "",
+        },
+        splitSource: options.splitSource || "original",
+        groupMode: options.groupMode || "",
+        renderMode: options.renderMode || "",
+        shapeMode: options.shapeMode || "",
+        backgroundColor: options.backgroundColor || "",
+        enhanced: !!options.enhanced,
+        itemCount: manifestItems.length,
+        items: manifestItems,
+      },
+      null,
+      2
+    )
+  );
+
+  const fileName = `split-${stem}.zip`;
+  const blob = await zip.generateAsync({ type: "blob" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  return { count: manifestItems.length, fileName };
+}
+
+// Download each split/cluster subject as its own image file — no zip, no
+// folder picker. Fires one browser download per subject (spaced out so the
+// browser doesn't drop rapid-fire clicks). Works on sandboxed hosts too.
+export async function downloadSplitItemsAsFiles(context, options = {}) {
+  const items = Array.isArray(context?.items) ? context.items : [];
+  if (!items.length) return { count: 0 };
+  const maxItems = Number.isFinite(options.maxItems) ? options.maxItems : items.length;
+  const stem = safeName(context.fileStem || "image");
+  const limit = Math.min(items.length, maxItems);
+  let count = 0;
+  for (let index = 0; index < limit; index += 1) {
+    const data = dataUrlToBytes(items[index].image);
+    if (!data) continue;
+    const fileName = `${stem}_${String(index + 1).padStart(3, "0")}.${data.ext}`;
+    const blob = new Blob([data.bytes], { type: data.mime || "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    count += 1;
+    // Space downloads so browsers don't collapse the burst into a single hit.
+    if (index < limit - 1) await new Promise((resolve) => setTimeout(resolve, 120));
+  }
+  return { count };
+}
+
 // ─── Image API Call Functions ───
 
 export async function callTextAssistAPI(proxyUrl, sourcePrompt, imageBase64, assistPrompt, options = {}) {

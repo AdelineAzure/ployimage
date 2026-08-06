@@ -83,6 +83,7 @@ export function SpriteSplitModal({
   onDeleteItem,
   onUndoDelete,
   onExport,
+  onExportFiles,
   onPreview,
   onUploadImageDataUrl,
   onPickHistoryFolder,
@@ -448,6 +449,14 @@ export function SpriteSplitModal({
             disabled={!hasItems || busy || exporting || enhancing}
           >
             {exporting ? t("split.exporting") : t("split.export")}
+          </button>
+          <button
+            type="button"
+            style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: hasItems && !busy ? 1 : 0.5, cursor: hasItems && !busy ? "pointer" : "not-allowed" }}
+            onClick={onExportFiles}
+            disabled={!hasItems || busy || exporting || enhancing}
+          >
+            {exporting ? t("split.exporting") : t("split.exportFiles")}
           </button>
         </div>
       </div>
@@ -991,6 +1000,14 @@ export function SpriteSplitModal({
                   disabled={!hasItems || busy || exporting || enhancing}
                 >
                   {exporting ? t("split.exporting") : t("split.export")}
+                </button>
+                <button
+                  type="button"
+                  style={{ ...S.zipBtn, padding: "8px 12px", fontSize: 12, opacity: hasItems && !busy ? 1 : 0.5, cursor: hasItems && !busy ? "pointer" : "not-allowed" }}
+                  onClick={onExportFiles}
+                  disabled={!hasItems || busy || exporting || enhancing}
+                >
+                  {exporting ? t("split.exporting") : t("split.exportFiles")}
                 </button>
               </div>
             </div>
