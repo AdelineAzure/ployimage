@@ -482,7 +482,7 @@ export function PreviewInfoPanel({ meta, onClose, onCopyPrompt, docked = false }
   );
 }
 
-export function ImagePreviewModal({ src, onClose }) {
+export function ImagePreviewModal({ src, onClose, onSplit }) {
   const { t } = useI18n();
   const modalPanelRef = useRef(null);
   const stageRef = useRef(null);
@@ -743,6 +743,17 @@ export function ImagePreviewModal({ src, onClose }) {
         <div ref={stageRef} style={{ position: "relative", flex: 1, minWidth: 0, height: "100%" }}>
         <button onClick={onClose} style={{ ...S.closeBtn, position: "absolute", top: 12, right: 12, zIndex: 10 }}>✕</button>
         <div style={S.viewerColorPickerBar}>
+          {!!onSplit && (
+            <button
+              type="button"
+              style={S.viewerColorPickerBtn}
+              onClick={() => onSplit(outputSrc)}
+              title={t("split.open")}
+              aria-label={t("split.open")}
+            >
+              ✂
+            </button>
+          )}
           {!!meta && (
             <button
               type="button"

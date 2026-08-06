@@ -485,6 +485,7 @@ export default function App() {
   const [retryingImageKeys, setRetryingImageKeys] = useState(new Set());
   const [splittingImageKeys, setSplittingImageKeys] = useState(new Set());
   const [showSplitModal, setShowSplitModal] = useState(false);
+  const [splitFromViewer, setSplitFromViewer] = useState(false);
   const [splitBusy, setSplitBusy] = useState(false);
   const [splitExporting, setSplitExporting] = useState(false);
   const [splitEnhancing, setSplitEnhancing] = useState(false);
@@ -1636,6 +1637,24 @@ export default function App() {
       resetUndo: true,
     });
   }, [runSplitForImage, splitGroupMode]);
+
+  const openSplitFromViewer = useCallback((outputSrc) => {
+    if (!outputSrc) return;
+    setSplitFromViewer(true);
+    openSplitModalForImage({
+      key: `viewer-split-${Date.now()}`,
+      image: outputSrc,
+      fileStem: "viewer-image",
+      turnId: "",
+      turnSeq: 0,
+      modelId: "",
+      modelName: "",
+      promptKey: "single",
+      promptText: "",
+      theme: "",
+      index: 1,
+    });
+  }, [openSplitModalForImage]);
 
   const openSplitModalForCanvasNode = useCallback((node) => {
     if (!node?.image) return;
@@ -4514,14 +4533,16 @@ export default function App() {
       />
       <SpriteSplitModal
         show={showSplitModal && activePage !== "split"}
+        elevated={splitFromViewer}
         onClose={() => {
           setShowSplitModal(false);
+          setSplitFromViewer(false);
           setSplitStatusText("");
           setSplitStatusTone("info");
         }}
         {...splitConsoleProps}
       />
-      <ImagePreviewModal src={previewImage} onClose={() => setPreviewImage(null)} />
+      <ImagePreviewModal src={previewImage} onClose={() => setPreviewImage(null)} onSplit={openSplitFromViewer} />
 
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&family=Noto+Sans+SC:wght@300;400;500&display=swap');

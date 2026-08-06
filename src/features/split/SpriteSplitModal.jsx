@@ -84,6 +84,7 @@ export function SpriteSplitModal({
   onUndoDelete,
   onExport,
   onExportFiles,
+  elevated = false,
   onPreview,
   onUploadImageDataUrl,
   onPickHistoryFolder,
@@ -1089,7 +1090,7 @@ export function SpriteSplitModal({
       </div>
   );
   return embedded ? content : (
-    <div style={S.modalOverlay} onClick={onClose}>
+    <div style={{ ...S.modalOverlay, ...(elevated ? { zIndex: 1100 } : null) }} onClick={onClose}>
       {content}
     </div>
   );
