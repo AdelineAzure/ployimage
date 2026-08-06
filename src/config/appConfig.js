@@ -124,8 +124,8 @@ export const ASPECT_RATIO_OPTIONS = [
   { value: "21:9", label: "21:9" },
 ];
 export const DEFAULT_TASK_MODE = "single";
-export const MAX_COMPARE_PROMPTS = 8;
-export const DEFAULT_COMPARE_PROMPTS = ["", "", "", "", "", "", "", ""];
+export const MAX_COMPARE_PROMPTS = 12;
+export const DEFAULT_COMPARE_PROMPTS = ["", "", "", "", "", "", "", "", "", "", "", ""];
 export const DEFAULT_LAST_EDITED_COUNT = 1;
 export const DEFAULT_ASPECT_RATIO = "auto";
 export const DEFAULT_QWEN_PROMPT_EXTEND = true;

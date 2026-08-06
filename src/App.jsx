@@ -388,7 +388,11 @@ export default function App() {
   const compareFEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[5]);
   const compareGEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[6]);
   const compareHEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[7]);
-  const compareEditors = [compareAEditor, compareBEditor, compareCEditor, compareDEditor, compareEEditor, compareFEditor, compareGEditor, compareHEditor];
+  const compareIEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[8]);
+  const compareJEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[9]);
+  const compareKEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[10]);
+  const compareLEditor = useUndoRedoText(DEFAULT_COMPARE_PROMPTS[11]);
+  const compareEditors = [compareAEditor, compareBEditor, compareCEditor, compareDEditor, compareEEditor, compareFEditor, compareGEditor, compareHEditor, compareIEditor, compareJEditor, compareKEditor, compareLEditor];
   const [compareCount, setCompareCount] = useState(2);
   const prompt = promptEditor.value;
   const comparePrompts = useMemo(
@@ -536,7 +540,11 @@ export default function App() {
   const compareFInputRef = useRef(null);
   const compareGInputRef = useRef(null);
   const compareHInputRef = useRef(null);
-  const compareInputRefs = [compareAInputRef, compareBInputRef, compareCInputRef, compareDInputRef, compareEInputRef, compareFInputRef, compareGInputRef, compareHInputRef];
+  const compareIInputRef = useRef(null);
+  const compareJInputRef = useRef(null);
+  const compareKInputRef = useRef(null);
+  const compareLInputRef = useRef(null);
+  const compareInputRefs = [compareAInputRef, compareBInputRef, compareCInputRef, compareDInputRef, compareEInputRef, compareFInputRef, compareGInputRef, compareHInputRef, compareIInputRef, compareJInputRef, compareKInputRef, compareLInputRef];
   const seqRef = useRef(1);
   const isPickingHistoryFolderRef = useRef(false);
   const hasAutoPromptedHistoryFolderRef = useRef(false);
@@ -3852,7 +3860,7 @@ export default function App() {
               {taskMode === "compare" ? (
                 <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(compareCount, 2)}, minmax(0, 1fr))`, gap: 12 }}>
                   {Array.from({ length: compareCount }, (_, i) => {
-                    const placeholderKeys = ["workspace.promptAPlaceholder", "workspace.promptBPlaceholder", "workspace.promptCPlaceholder", "workspace.promptDPlaceholder", "workspace.promptEPlaceholder", "workspace.promptFPlaceholder", "workspace.promptGPlaceholder", "workspace.promptHPlaceholder"];
+                    const placeholderKeys = ["workspace.promptAPlaceholder", "workspace.promptBPlaceholder", "workspace.promptCPlaceholder", "workspace.promptDPlaceholder", "workspace.promptEPlaceholder", "workspace.promptFPlaceholder", "workspace.promptGPlaceholder", "workspace.promptHPlaceholder", "workspace.promptIPlaceholder", "workspace.promptJPlaceholder", "workspace.promptKPlaceholder", "workspace.promptLPlaceholder"];
                     return (
                       <div key={i} style={{ position: "relative" }}>
                         {compareCount > 2 && (
