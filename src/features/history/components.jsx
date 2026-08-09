@@ -82,7 +82,7 @@ export function ImageActionBar({
           disabled={busy}
           title={t("action.addToCanvas")}
         >
-          <span style={iconStyle}>□</span>
+          <span style={iconStyle}>⬆</span>
         </button>
       )}
     </div>

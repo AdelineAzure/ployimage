@@ -3370,27 +3370,17 @@ export default function App() {
 
   const addImageToCanvas = useCallback((payload) => {
     const image = typeof payload?.image === "string" ? payload.image.trim() : "";
-    if (!image) return;
-    const modelName = typeof payload?.modelName === "string" ? payload.modelName.trim() : "";
-    const fileStem = typeof payload?.fileStem === "string" ? payload.fileStem.trim() : "";
-    const index = Number(payload?.index) || 0;
-    const titleBase = fileStem || modelName || t("canvas.imageNode");
-    const requestId = `canvas-import-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    setCanvasImportQueue((prev) => [
-      ...prev.slice(-47),
-      {
-        requestId,
-        image,
-        title: index > 0 ? `${titleBase} ${index}` : titleBase,
-        sourceType: "workspace",
-        sourceLabel: "Workspace",
-        modelName,
-        promptText: typeof payload?.promptText === "string" ? payload.promptText : "",
-        turnId: payload?.turnId || "",
-        turnSeq: Number(payload?.turnSeq) || 0,
-      },
-    ]);
-    setHistoryFolderMsg(t("workspace.addedToCanvas"));
+    if (!image || !image.startsWith("data:image/")) return;
+    setUploadedInputImages((prev) => {
+      const base = (Array.isArray(prev) ? prev : []).filter((item) => typeof item === "string" && item);
+      if (base.includes(image)) return base;
+      const next = [...base, image].slice(0, MAX_INPUT_IMAGES_PER_BATCH);
+      setUploadedImage(next[0] || null);
+      setUploadedPreview(next[0] || null);
+      return next;
+    });
+    setActivePage("workspace");
+    setHistoryFolderMsg(t("workspace.addedToInput"));
   }, [t]);
 
   useEffect(() => {
