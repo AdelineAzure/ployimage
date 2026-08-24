@@ -987,6 +987,8 @@ export function getLocalizedTemplateTitle(title, templateId, uiLanguage, isStyle
 export function getLocalizedPromptLabel(label, key, uiLanguage) {
   if (key === "a" || label === "PROMPT A") return uiLanguage === "zh" ? "提示词 A" : "PROMPT A";
   if (key === "b" || label === "PROMPT B") return uiLanguage === "zh" ? "提示词 B" : "PROMPT B";
+  if (key === "c" || label === "PROMPT C") return uiLanguage === "zh" ? "提示词 C" : "PROMPT C";
+  if (key === "d" || label === "PROMPT D") return uiLanguage === "zh" ? "提示词 D" : "PROMPT D";
   if (key === "single" || label === "PROMPT") return uiLanguage === "zh" ? "提示词" : "PROMPT";
   return label;
 }

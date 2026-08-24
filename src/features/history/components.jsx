@@ -108,6 +108,8 @@ export function normalizePreviewItem(value) {
       imageKey: "",
       modelName: "",
       promptText: "",
+      promptKey: "",
+      promptLabel: "",
     };
   }
   if (typeof value === "string") {
@@ -118,6 +120,8 @@ export function normalizePreviewItem(value) {
       imageKey: "",
       modelName: "",
       promptText: "",
+      promptKey: "",
+      promptLabel: "",
     };
   }
   const outputSrc = normalizeImageValue(value?.outputSrc ?? value?.src ?? value?.image ?? "");
@@ -129,6 +133,8 @@ export function normalizePreviewItem(value) {
     imageKey: typeof value?.imageKey === "string" ? value.imageKey : "",
     modelName: typeof value?.modelName === "string" ? value.modelName.trim() : "",
     promptText: typeof value?.promptText === "string" ? value.promptText.trim() : "",
+    promptKey: typeof value?.promptKey === "string" ? value.promptKey.trim() : "",
+    promptLabel: typeof value?.promptLabel === "string" ? value.promptLabel.trim() : "",
     meta: value?.meta && typeof value.meta === "object" ? value.meta : null,
   };
 }
@@ -360,6 +366,8 @@ export function buildTurnPreviewItems(turn) {
           inputTokens,
           modelName: getPreviewModelName(result?.modelId, result?.modelName),
           promptText,
+          promptKey,
+          promptLabel: result?.promptLabel || promptLookup.get(promptKey)?.label || "",
           meta,
         }));
       })
@@ -396,6 +404,8 @@ export function buildTurnPreviewItems(turn) {
             inputTokens,
             modelName: getPreviewModelName(result?.modelId, result?.modelName),
             promptText,
+            promptKey: variant.key,
+            promptLabel: result?.promptLabel || promptLookup.get(variant.key)?.label || "",
             meta,
           }));
         })
@@ -483,7 +493,7 @@ export function PreviewInfoPanel({ meta, onClose, onCopyPrompt, docked = false }
 }
 
 export function ImagePreviewModal({ src, onClose, onSplit }) {
-  const { t } = useI18n();
+  const { uiLanguage, t } = useI18n();
   const modalPanelRef = useRef(null);
   const stageRef = useRef(null);
   const viewportRef = useRef(null);
@@ -502,6 +512,9 @@ export function ImagePreviewModal({ src, onClose, onSplit }) {
   const inputTokens = activePreview.inputTokens;
   const modelName = activePreview.modelName;
   const promptText = activePreview.promptText;
+  const comparePromptLabel = ["a", "b", "c", "d"].includes(activePreview.promptKey)
+    ? getLocalizedPromptLabel(activePreview.promptLabel || activePreview.promptKey, activePreview.promptKey, uiLanguage)
+    : "";
   const meta = activePreview.meta || null;
   const isComparePreview = !!inputSrc && !!outputSrc;
   const hasGallery = galleryItems.length > 1;
@@ -898,6 +911,7 @@ export function ImagePreviewModal({ src, onClose, onSplit }) {
               <div style={S.previewComparePane}>
                 <div style={S.previewCompareLabel}>
                   <span>{t("viewer.compareInput")}</span>
+                  {comparePromptLabel && <span style={S.previewCompareToken}>{comparePromptLabel}</span>}
                   {inputTokens.length > 0 && (
                     <span style={S.previewCompareTokens}>
                       {inputTokens.map((token, index) => (
