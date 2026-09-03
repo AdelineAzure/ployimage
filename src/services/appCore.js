@@ -29,6 +29,11 @@ import {
   DEFAULT_STYLE_THEMES,
   DEFAULT_STYLE_THEME_ASSIST_PROMPT,
   DEFAULT_TEMPLATES,
+  DEFAULT_AGENT_SKILL,
+  DEFAULT_AGENT_PROMPT_COUNT,
+  DEFAULT_AGENT_SEND_IMAGE,
+  AGENT_SKILL_FILE_NAME,
+  MAX_COMPARE_PROMPTS,
   GPT_ASSIST_FILE_NAME,
   mapModelIdForLumina,
   MAX_ATLAS_SELECTED_IMAGES,
@@ -491,6 +496,18 @@ export function normalizeStyleThemeAssistPrompt(value) {
   return next || DEFAULT_STYLE_THEME_ASSIST_PROMPT;
 }
 
+export function normalizeAgentSkill(value) {
+  if (typeof value !== "string") return DEFAULT_AGENT_SKILL;
+  const next = value.trim();
+  return next || DEFAULT_AGENT_SKILL;
+}
+
+export function normalizeAgentPromptCount(value) {
+  const next = Number(value);
+  if (!Number.isFinite(next)) return DEFAULT_AGENT_PROMPT_COUNT;
+  return Math.max(2, Math.min(MAX_COMPARE_PROMPTS, Math.round(next)));
+}
+
 export function extractPlaceholderTokens(input = "") {
   const text = typeof input === "string" ? input : "";
   const matches = [];
@@ -582,6 +599,58 @@ export function parseJsonFromText(rawText = "") {
     } catch {}
   }
   return null;
+}
+
+// Agent 模式返回的多条提示词。优先按 JSON 数组解析（含 ```json 围栏和裸数组），
+// 失败则退回按编号/项目符号行提取，容忍模型不守 JSON 契约的情况。
+export function parseAgentPrompts(rawText = "", limit = MAX_COMPARE_PROMPTS) {
+  const raw = String(rawText || "").trim();
+  const max = Math.max(1, Math.min(MAX_COMPARE_PROMPTS, Number(limit) || MAX_COMPARE_PROMPTS));
+  if (!raw) return [];
+
+  const fromJson = (() => {
+    const candidates = [];
+    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced?.[1]) candidates.push(fenced[1].trim());
+    candidates.push(raw);
+    const arrayLike = raw.match(/\[[\s\S]*\]/);
+    if (arrayLike?.[0]) candidates.push(arrayLike[0].trim());
+    const objectLike = raw.match(/\{[\s\S]*\}/);
+    if (objectLike?.[0]) candidates.push(objectLike[0].trim());
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate);
+        const list = Array.isArray(parsed)
+          ? parsed
+          : Array.isArray(parsed?.prompts)
+          ? parsed.prompts
+          : Array.isArray(parsed?.items)
+          ? parsed.items
+          : [];
+        if (list.length) return list;
+      } catch {}
+    }
+    return [];
+  })();
+
+  // 编号行兜底：只认「行首编号/项目符号」，避免把正文里的换行切碎。
+  const fromLines = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^(?:[-*•]|\d+[.)、])\s*/.test(line))
+    .map((line) => line.replace(/^(?:[-*•]|\d+[.)、])\s*/, "").trim());
+
+  const source = fromJson.length ? fromJson : fromLines;
+  const seen = new Set();
+  const out = [];
+  for (const item of source) {
+    const text = typeof item === "string" ? item.trim() : String(item?.prompt ?? item?.text ?? "").trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    out.push(text);
+    if (out.length >= max) break;
+  }
+  return out;
 }
 
 export function parseThemeSuggestions(rawText = "") {
@@ -4596,6 +4665,42 @@ export async function saveGptAssistToLocalFolder(rootHandle, prompt, styleThemeP
   );
 }
 
+export async function loadAgentSkillFromLocalFolder(rootHandle) {
+  const fallback = {
+    skill: DEFAULT_AGENT_SKILL,
+    count: DEFAULT_AGENT_PROMPT_COUNT,
+    sendImage: DEFAULT_AGENT_SEND_IMAGE,
+  };
+  try {
+    const fileHandle = await rootHandle.getFileHandle(AGENT_SKILL_FILE_NAME);
+    const file = await fileHandle.getFile();
+    const raw = JSON.parse(await file.text());
+    return {
+      skill: normalizeAgentSkill(raw?.skill),
+      count: normalizeAgentPromptCount(raw?.count),
+      sendImage: normalizeGptAssistFlag(raw?.sendImage, DEFAULT_AGENT_SEND_IMAGE),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+export async function saveAgentSkillToLocalFolder(rootHandle, skill, count, sendImage) {
+  await writeTextFile(
+    rootHandle,
+    AGENT_SKILL_FILE_NAME,
+    JSON.stringify(
+      {
+        skill: normalizeAgentSkill(skill),
+        count: normalizeAgentPromptCount(count),
+        sendImage: normalizeGptAssistFlag(sendImage, DEFAULT_AGENT_SEND_IMAGE),
+      },
+      null,
+      2
+    )
+  );
+}
+
 export async function loadApiConfigFromLocalFolder(rootHandle) {
   async function recoverApiKeysFromTurns() {
     let bestSeq = -1;
@@ -4996,6 +5101,78 @@ export async function callThemeAssistAPI(proxyUrl, seedText, assistPrompt, optio
 
   const rawText = assistantMessageToText(data?.choices?.[0]?.message?.content);
   return parseThemeSuggestions(rawText);
+}
+
+// Agent 模式：把 skill 文本当 system prompt，让模型看图产出多条独立提示词。
+// 与 callTextAssistAPI 的区别是它不改写占位符，而是整条生成，结果落到 compare 各槽。
+export async function callAgentAssistAPI(proxyUrl, options = {}) {
+  const { signal } = options;
+  const apiPlatform = normalizeApiPlatform(options.apiPlatform);
+  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl, apiPlatform);
+  const apiKey = normalizeApiKey(options.apiKey);
+  const targetPath = resolveTextAssistTargetPath(apiPlatform);
+  const skill = normalizeAgentSkill(options.skill);
+  const count = normalizeAgentPromptCount(options.count);
+  const imageBase64 = typeof options.imageBase64 === "string" ? options.imageBase64 : "";
+  const sendImage = options.sendImage !== false && !!imageBase64;
+
+  const instructionLines = [`请生成 ${count} 条提示词。`];
+  if (sendImage) {
+    instructionLines.push("请参考随附的图片内容。");
+  } else {
+    instructionLines.push("本次没有参考图，请只依据上面的 skill 指令生成。");
+  }
+  instructionLines.push(
+    `只输出 JSON 数组，形如 ["提示词1", "提示词2"]，数组长度必须为 ${count}，不要输出任何解释文字。`
+  );
+
+  const userContent = [{ type: "text", text: instructionLines.join("\n") }];
+  if (sendImage) {
+    userContent.push({ type: "image_url", image_url: { url: imageBase64 } });
+  }
+
+  const body = {
+    model: resolveTextAssistModelId(apiPlatform),
+    stream: false,
+    temperature: 1.1,
+    messages: [
+      { role: "system", content: skill },
+      { role: "user", content: userContent },
+    ],
+  };
+
+  const data = await postJsonWithRetry(proxyUrl, targetPath, body, {
+    signal,
+    maxAttempts: 3,
+    baseDelayMs: 900,
+    apiBaseUrl,
+    apiKey,
+    apiPlatform,
+  });
+
+  const rawText = assistantMessageToText(data?.choices?.[0]?.message?.content);
+  const prompts = parseAgentPrompts(rawText, count);
+  if (!prompts.length) {
+    throw new Error("Agent 返回格式错误，请检查 skill 指令。");
+  }
+  return prompts;
+}
+
+export async function callAgentAssistWithFallback(proxyUrl, options = {}) {
+  const apiKeys = normalizeApiKeys(options.apiKeys);
+  const platformOrder = getAssistPlatformOrder(apiKeys);
+  let lastError = null;
+  for (const platform of platformOrder) {
+    try {
+      return await callAgentAssistAPI(proxyUrl, {
+        ...options,
+        ...getApiConfigForPlatform(platform, apiKeys),
+      });
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error("Agent assist request failed");
 }
 
 export async function callTextAssistWithFallback(proxyUrl, sourcePrompt, imageBase64, assistPrompt, options = {}) {

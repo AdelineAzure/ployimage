@@ -1,9 +1,11 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { CF_WORKER_CODE } from "../../config/cloudflareWorkerCode";
 import {
+  DEFAULT_AGENT_SEND_IMAGE,
   DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE,
   DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT,
   INPUT_IMAGE_EDITOR_COLORS,
+  MAX_COMPARE_PROMPTS,
   MAX_INPUT_IMAGES_PER_BATCH,
   MODEL_GROUPS,
 } from "../../config/appConfig";
@@ -20,6 +22,8 @@ import {
   normalizeGptAssistPrompt,
   normalizeEditorRect,
   normalizeStyleThemeAssistPrompt,
+  normalizeAgentSkill,
+  normalizeAgentPromptCount,
 } from "../../services/appCore";
 import { S } from "../../styles/appStyles";
 import { TokenPromptInput } from "../workspace/promptControls";
@@ -173,21 +177,188 @@ export function GptAssistModal({
   onSave,
   saveStateText,
   canSave,
+  agentSkill,
+  draftAgentSkill,
+  setDraftAgentSkill,
+  agentCount,
+  draftAgentCount,
+  setDraftAgentCount,
+  agentSendImage,
+  draftAgentSendImage,
+  setDraftAgentSendImage,
+  agentResults,
+  setAgentResults,
+  agentBusy,
+  agentMsg,
+  onRunAgent,
+  onFillCompare,
+  hasInputImage,
 }) {
   const { uiLanguage, t } = useI18n();
+  const [tab, setTab] = useState("user");
+  const skillFileRef = useRef(null);
+
+  const loadSkillFile = useCallback(async (event) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      try {
+        const text = await file.text();
+        if (text.trim()) setDraftAgentSkill(text.trim());
+      } catch {
+        /* ignore unreadable file */
+      }
+    }
+    if (skillFileRef.current) skillFileRef.current.value = "";
+  }, [setDraftAgentSkill]);
+
   if (!show) return null;
   const isDirty =
     normalizeGptAssistPrompt(draftPrompt) !== normalizeGptAssistPrompt(prompt) ||
     normalizeStyleThemeAssistPrompt(draftStyleThemePrompt) !== normalizeStyleThemeAssistPrompt(styleThemePrompt) ||
     normalizeGptAssistFlag(draftSendPromptText, DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT) !== normalizeGptAssistFlag(sendPromptText, DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT) ||
-    normalizeGptAssistFlag(draftSendPromptImage, DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE) !== normalizeGptAssistFlag(sendPromptImage, DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE);
+    normalizeGptAssistFlag(draftSendPromptImage, DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE) !== normalizeGptAssistFlag(sendPromptImage, DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE) ||
+    normalizeAgentSkill(draftAgentSkill) !== normalizeAgentSkill(agentSkill) ||
+    normalizeAgentPromptCount(draftAgentCount) !== normalizeAgentPromptCount(agentCount) ||
+    normalizeGptAssistFlag(draftAgentSendImage, DEFAULT_AGENT_SEND_IMAGE) !== normalizeGptAssistFlag(agentSendImage, DEFAULT_AGENT_SEND_IMAGE);
+  const isAgent = tab === "agent";
   return (
     <div style={S.modalOverlay} onClick={onClose}>
-      <div style={S.settingsModal} onClick={(e) => e.stopPropagation()}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>👤 {t("gpt.title")}</h2>
+      <div
+        style={{ ...S.settingsModal, ...(isAgent ? S.inputImagesModal : null) }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, gap: 12 }}>
+          <div style={S.splitToggleGroup}>
+            <button
+              type="button"
+              style={{ ...S.splitToggleBtn, ...(tab === "user" ? S.splitToggleBtnActive : null) }}
+              onClick={() => setTab("user")}
+            >
+              👤 {t("gpt.tabUser")}
+            </button>
+            <button
+              type="button"
+              style={{ ...S.splitToggleBtn, ...(isAgent ? S.splitToggleBtnActive : null) }}
+              onClick={() => setTab("agent")}
+            >
+              🤖 {t("gpt.tabAgent")}
+            </button>
+          </div>
           <button onClick={onClose} style={S.closeBtn}>✕</button>
         </div>
+        {isAgent ? (
+          <>
+            <label style={S.fieldLabel}>{t("gpt.skillLabel")}</label>
+            <textarea
+              style={{ ...S.textarea, fontFamily: "ui-monospace, monospace", fontSize: 13 }}
+              value={draftAgentSkill}
+              onChange={(event) => setDraftAgentSkill(event.target.value)}
+              placeholder={uiLanguage === "zh" ? "粘贴 skill 指令文本，或点下方上传 .md / .txt..." : "Paste skill instructions, or upload a .md / .txt below..."}
+              rows={9}
+            />
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+              <button type="button" style={S.splitToggleBtn} onClick={() => skillFileRef.current?.click()}>
+                📎 {t("gpt.uploadSkill")}
+              </button>
+              <input
+                ref={skillFileRef}
+                type="file"
+                accept=".md,.txt,.json,text/plain,text/markdown"
+                style={{ display: "none" }}
+                onChange={loadSkillFile}
+              />
+              <label style={{ ...S.fieldLabel, margin: 0 }}>{t("gpt.agentCount")}</label>
+              <input
+                type="range"
+                min={2}
+                max={MAX_COMPARE_PROMPTS}
+                step={1}
+                value={normalizeAgentPromptCount(draftAgentCount)}
+                onChange={(event) => setDraftAgentCount(Number(event.target.value))}
+                style={{ flex: "1 1 160px", minWidth: 120, accentColor: "#10b981" }}
+              />
+              <span style={{ ...S.apiModalState, minWidth: 24, textAlign: "right" }}>
+                {normalizeAgentPromptCount(draftAgentCount)}
+              </span>
+            </div>
+            <div style={{ ...S.settingToggleList, marginTop: 14 }}>
+              <div style={S.settingToggleRow}>
+                <div style={S.settingToggleTextWrap}>
+                  <div style={S.settingToggleTitle}>{t("gpt.agentSendImageLabel")}</div>
+                  <div style={S.settingToggleHint}>
+                    {hasInputImage ? t("gpt.agentSendImageHint") : t("gpt.agentNoImageHint")}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  style={{ ...S.settingToggleBtn, ...(draftAgentSendImage ? S.settingToggleBtnActive : null) }}
+                  onClick={() => setDraftAgentSendImage((prev) => !prev)}
+                >
+                  {draftAgentSendImage ? t("common.on") : t("common.off")}
+                </button>
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                style={{ ...S.apiSaveBtn, opacity: agentBusy ? 0.5 : 1, cursor: agentBusy ? "not-allowed" : "pointer" }}
+                onClick={onRunAgent}
+                disabled={agentBusy}
+              >
+                {agentBusy ? t("gpt.agentRunning") : `🚀 ${t("gpt.agentRun")}`}
+              </button>
+              <span style={S.apiModalState}>{agentMsg}</span>
+            </div>
+            {agentResults.length > 0 && (
+              <>
+                <label style={{ ...S.fieldLabel, marginTop: 18 }}>
+                  {t("gpt.agentResults", { count: agentResults.length })}
+                </label>
+                <div style={{ display: "grid", gap: 8 }}>
+                  {agentResults.map((item, index) => (
+                    <div key={index} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                      <span style={{ ...S.apiModalState, paddingTop: 12, minWidth: 20, flexShrink: 0 }}>
+                        {index + 1}.
+                      </span>
+                      <textarea
+                        style={{ ...S.textarea, fontSize: 13, padding: "10px 12px" }}
+                        value={item}
+                        onChange={(event) =>
+                          setAgentResults((prev) =>
+                            prev.map((v, i) => (i === index ? event.target.value : v))
+                          )
+                        }
+                        rows={2}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div style={{ ...S.apiModalActions, marginTop: 14 }}>
+                  <span style={S.apiModalState}>{t("gpt.agentFillHint")}</span>
+                  <button type="button" style={S.apiSaveBtn} onClick={onFillCompare}>
+                    ✅ {t("gpt.agentFill")}
+                  </button>
+                </div>
+              </>
+            )}
+            <div style={S.apiModalActions}>
+              <span style={S.apiModalState}>{saveStateText}</span>
+              <button
+                style={{ ...S.apiSaveBtn, opacity: isDirty && canSave ? 1 : 0.5, cursor: isDirty && canSave ? "pointer" : "not-allowed" }}
+                onClick={onSave}
+                disabled={!isDirty || !canSave}
+              >
+                {t("common.save")}
+              </button>
+            </div>
+            <p style={S.hint}>
+              {uiLanguage === "zh"
+                ? "skill 指令会作为 system prompt 发给模型，并存到历史文件夹。生成结果填入 compare 各槽后，仍需你手动点发送任务。"
+                : "The skill text is sent as the system prompt and stored in the history folder. After filling the compare slots you still send the task manually."}
+            </p>
+          </>
+        ) : (
+          <>
         <label style={S.fieldLabel}>{t("gpt.rewriteLabel")}</label>
         <textarea
           style={S.textarea}
@@ -248,6 +419,8 @@ export function GptAssistModal({
             ? "两套提示词都会存到历史文件夹（与模板相同），不会保存输入图。"
             : "Both prompts are stored in the selected history folder, while input images are not saved."}
         </p>
+          </>
+        )}
       </div>
     </div>
   );

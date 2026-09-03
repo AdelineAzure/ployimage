@@ -143,7 +143,7 @@ export const DEFAULT_API_KEYS = {
   bailian: DEFAULT_API_KEY,
   lumina: DEFAULT_API_KEY,
 };
-export const DEFAULT_GPT_ASSIST_MODEL = "gpt-5.4";
+export const DEFAULT_GPT_ASSIST_MODEL = "gpt-5.6-sol";
 export const DEFAULT_BAILIAN_ASSIST_MODEL = "qwen-plus";
 // ─── 对话（Chat）Tab ───
 // 百炼（DashScope）的 Qwen3-VL 视觉语言模型（能读图 + 输出文字）。
@@ -163,6 +163,10 @@ export const DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT = true;
 export const DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE = true;
 export const DEFAULT_STYLE_THEME_ASSIST_PROMPT =
   "你是主题联想助手。用户会给你一个主题词，请输出12个可用于视觉创作的相关元素，要求具体、可见、彼此有区分。只输出JSON：{\"themes\":[\"...\", \"...\"]}，数组长度必须为12。";
+// Agent 模式默认 skill：用户可整段替换成自己的 skill 文本。
+export const DEFAULT_AGENT_SKILL = "你是提示词生成助手。用户会给你一张参考图，请根据图片内容生成多条可直接用于文生图的提示词，每条聚焦一个不同的方向（构图 / 光线 / 风格 / 材质等），彼此有明显区分。";
+export const DEFAULT_AGENT_PROMPT_COUNT = 4;
+export const DEFAULT_AGENT_SEND_IMAGE = true;
 export const PROMPT_EDITOR_MIN_HEIGHT = 104;
 export const MAX_TEMPLATES = 12;
 export const MAX_STYLE_TEMPLATES = 2;
@@ -183,6 +187,8 @@ export const DEFAULT_SPLIT_BG_COLOR = "#ffffff";
 export const TEMPLATE_FILE_NAME = "templates.json";
 export const STYLE_TEMPLATE_FILE_NAME = "style-templates.json";
 export const GPT_ASSIST_FILE_NAME = "gpt-assist.json";
+// Agent 模式：skill 指令文本 + 生成条数，独立存盘，与 gpt-assist.json 平级。
+export const AGENT_SKILL_FILE_NAME = "agent-skill.json";
 export const API_CONFIG_FILE_NAME = "api-config.json";
 export const DEFAULT_TEMPLATES = Array.from({ length: MAX_TEMPLATES }, (_, index) => ({
   id: `template-${index + 1}`,

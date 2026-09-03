@@ -54,6 +54,9 @@ const {
   DEFAULT_GPT_ASSIST_PROMPT,
   DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT,
   DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE,
+  DEFAULT_AGENT_SKILL,
+  DEFAULT_AGENT_PROMPT_COUNT,
+  DEFAULT_AGENT_SEND_IMAGE,
   DEFAULT_STYLE_THEME_ASSIST_PROMPT,
   PROMPT_EDITOR_MIN_HEIGHT,
   MAX_TEMPLATES,
@@ -248,6 +251,11 @@ const {
   saveStyleTemplatesToLocalFolder,
   loadGptAssistFromLocalFolder,
   saveGptAssistToLocalFolder,
+  loadAgentSkillFromLocalFolder,
+  saveAgentSkillToLocalFolder,
+  callAgentAssistWithFallback,
+  normalizeAgentSkill,
+  normalizeAgentPromptCount,
   loadApiConfigFromLocalFolder,
   saveApiConfigToLocalFolder,
   downloadAllAsZip,
@@ -435,6 +443,16 @@ export default function App() {
   const [gptAssistSavedAt, setGptAssistSavedAt] = useState(null);
   const [showGptAssistModal, setShowGptAssistModal] = useState(false);
   const [gptAssistBusy, setGptAssistBusy] = useState(false);
+  // Agent 模式：skill 文本 + 生成条数 + 生成结果（结果只在内存里，不落盘）。
+  const [agentSkill, setAgentSkill] = useState(DEFAULT_AGENT_SKILL);
+  const [draftAgentSkill, setDraftAgentSkill] = useState(DEFAULT_AGENT_SKILL);
+  const [agentPromptCount, setAgentPromptCount] = useState(DEFAULT_AGENT_PROMPT_COUNT);
+  const [draftAgentPromptCount, setDraftAgentPromptCount] = useState(DEFAULT_AGENT_PROMPT_COUNT);
+  const [agentSendImage, setAgentSendImage] = useState(DEFAULT_AGENT_SEND_IMAGE);
+  const [draftAgentSendImage, setDraftAgentSendImage] = useState(DEFAULT_AGENT_SEND_IMAGE);
+  const [agentResults, setAgentResults] = useState([]);
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentMsg, setAgentMsg] = useState("");
   const [styleThemeAssistBusy, setStyleThemeAssistBusy] = useState(false);
   const [styleThemeSeedInput, setStyleThemeSeedInput] = useState("");
   const [templates, setTemplates] = useState(normalizeTemplates(DEFAULT_TEMPLATES));
@@ -729,9 +747,18 @@ export default function App() {
     setDraftStyleThemeAssistPrompt(nextStyleThemePrompt);
     setDraftGptAssistSendPromptText(nextSendPromptText);
     setDraftGptAssistSendPromptImage(nextSendPromptImage);
+    const nextAgentSkill = normalizeAgentSkill(draftAgentSkill);
+    const nextAgentCount = normalizeAgentPromptCount(draftAgentPromptCount);
+    const nextAgentSendImage = normalizeGptAssistFlag(draftAgentSendImage, DEFAULT_AGENT_SEND_IMAGE);
+    setAgentSkill(nextAgentSkill);
+    setAgentPromptCount(nextAgentCount);
+    setAgentSendImage(nextAgentSendImage);
+    setDraftAgentSkill(nextAgentSkill);
+    setDraftAgentPromptCount(nextAgentCount);
+    setDraftAgentSendImage(nextAgentSendImage);
     setGptAssistSavedAt(Date.now());
     setShowGptAssistModal(false);
-  }, [draftGptAssistPrompt, draftGptAssistSendPromptImage, draftGptAssistSendPromptText, draftStyleThemeAssistPrompt, historyDirHandle, t]);
+  }, [draftGptAssistPrompt, draftGptAssistSendPromptImage, draftGptAssistSendPromptText, draftStyleThemeAssistPrompt, draftAgentSkill, draftAgentPromptCount, draftAgentSendImage, historyDirHandle, t]);
 
   const openTemplateEditor = useCallback((templateId) => {
     if (!historyDirHandle) return;
@@ -930,6 +957,49 @@ export default function App() {
       setGptAssistBusy(false);
     }
   }, [gptAssistBusy, proxyUrl, taskMode, comparePrompts, compareCount, compareEditors, prompt, uploadedImage, gptAssistPrompt, gptAssistSendPromptImage, gptAssistSendPromptText, apiKeys, promptEditor, t]);
+
+  // Agent 模式：按 skill 指令看图生成多条提示词，只写进 agentResults 供预览。
+  const runAgentAssist = useCallback(async () => {
+    if (agentBusy) return;
+    if (!proxyUrl.trim()) {
+      setShowSettings(true);
+      return;
+    }
+    const count = normalizeAgentPromptCount(draftAgentPromptCount);
+    setAgentBusy(true);
+    setAgentMsg(t("gpt.agentRunning"));
+    try {
+      const prompts = await callAgentAssistWithFallback(proxyUrl, {
+        skill: draftAgentSkill,
+        count,
+        imageBase64: uploadedImage || "",
+        sendImage: draftAgentSendImage,
+        apiKeys,
+      });
+      setAgentResults(prompts);
+      setAgentMsg(t("gpt.agentDone", { count: prompts.length }));
+    } catch (err) {
+      if (!isAbortError(err)) {
+        setAgentMsg(t("gpt.agentFailed", { error: localizeRuntimeMessage(err?.message || t("common.unknownError"), t) }));
+      }
+    } finally {
+      setAgentBusy(false);
+    }
+  }, [agentBusy, proxyUrl, draftAgentSkill, draftAgentPromptCount, draftAgentSendImage, uploadedImage, apiKeys, t]);
+
+  // 把生成结果灌进 compare 各槽，并切到 compare 模式；发送仍由用户手动触发。
+  const fillCompareFromAgent = useCallback(() => {
+    const values = agentResults.map((item) => (typeof item === "string" ? item.trim() : "")).filter(Boolean);
+    if (!values.length) return;
+    const nextCount = Math.max(2, Math.min(MAX_COMPARE_PROMPTS, values.length));
+    // 与 compare 导航按钮一致：页面和模式一起切，否则从别的 tab 填完看不到结果。
+    setActivePage("workspace");
+    setTaskMode("compare");
+    compareEditors.forEach((ed, i) => ed.resetText(values[i] ?? ""));
+    setCompareCount(nextCount);
+    setAgentMsg(t("gpt.agentFilled", { count: nextCount }));
+    setHistoryFolderMsg(t("gpt.agentFilled", { count: nextCount }));
+  }, [agentResults, compareEditors, t]);
 
   const clearAllStyleThemes = useCallback(() => {
     setStyleThemes(Array.from({ length: STYLE_THEME_SLOTS }, () => ""));
@@ -2589,6 +2659,13 @@ export default function App() {
     setStyleThemeAssistPrompt(loadedGptAssistConfig.styleThemePrompt);
     setDraftStyleThemeAssistPrompt(loadedGptAssistConfig.styleThemePrompt);
     setGptAssistSavedAt(Date.now());
+    const loadedAgentConfig = await loadAgentSkillFromLocalFolder(dirHandle);
+    setAgentSkill(loadedAgentConfig.skill);
+    setDraftAgentSkill(loadedAgentConfig.skill);
+    setAgentPromptCount(loadedAgentConfig.count);
+    setDraftAgentPromptCount(loadedAgentConfig.count);
+    setAgentSendImage(loadedAgentConfig.sendImage);
+    setDraftAgentSendImage(loadedAgentConfig.sendImage);
     const templatePayload = await loadTemplatesFromLocalFolder(dirHandle);
     if (templatePayload) {
       setTemplates(templatePayload.templates);
@@ -3237,6 +3314,17 @@ export default function App() {
       } catch {}
     })();
   }, [historyDirHandle, gptAssistPrompt, styleThemeAssistPrompt, gptAssistSendPromptText, gptAssistSendPromptImage]);
+
+  useEffect(() => {
+    if (!historyDirHandle) return;
+    (async () => {
+      const canWrite = await ensureDirectoryPermission(historyDirHandle, true);
+      if (!canWrite) return;
+      try {
+        await saveAgentSkillToLocalFolder(historyDirHandle, agentSkill, agentPromptCount, agentSendImage);
+      } catch {}
+    })();
+  }, [historyDirHandle, agentSkill, agentPromptCount, agentSendImage]);
 
   useEffect(() => {
     if (!historyDirHandle) return;
@@ -4440,6 +4528,22 @@ export default function App() {
         onSave={handleSaveGptAssistPrompt}
         saveStateText={gptAssistSaveStateText}
         canSave={canSaveGptAssistPrompt}
+        agentSkill={agentSkill}
+        draftAgentSkill={draftAgentSkill}
+        setDraftAgentSkill={setDraftAgentSkill}
+        agentCount={agentPromptCount}
+        draftAgentCount={draftAgentPromptCount}
+        setDraftAgentCount={setDraftAgentPromptCount}
+        agentSendImage={agentSendImage}
+        draftAgentSendImage={draftAgentSendImage}
+        setDraftAgentSendImage={setDraftAgentSendImage}
+        agentResults={agentResults}
+        setAgentResults={setAgentResults}
+        agentBusy={agentBusy}
+        agentMsg={agentMsg}
+        onRunAgent={runAgentAssist}
+        onFillCompare={fillCompareFromAgent}
+        hasInputImage={!!uploadedImage}
       />
       <TemplateEditorModal
         show={showTemplateModal}
