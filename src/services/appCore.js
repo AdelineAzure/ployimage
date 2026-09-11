@@ -25,6 +25,8 @@ import {
   CHAT_HISTORY_FOLDER_NAME,
   DETECTION_TEMPLATE_FILE_NAME,
   DEFAULT_DETECTION_TEMPLATES,
+  DEFAULT_DETECT_RESULT_FIELD,
+  MAX_DETECT_TEXT_CASES,
   DEFAULT_STYLE_TEMPLATES,
   DEFAULT_STYLE_THEMES,
   DEFAULT_STYLE_THEME_ASSIST_PROMPT,
@@ -599,6 +601,271 @@ export function parseJsonFromText(rawText = "") {
     } catch {}
   }
   return null;
+}
+
+// ─── 批量文本检测：期望结果比对 ───
+// 注意与上面 parseJsonFromText 的分工：那个函数是「宽容地救模型输出」，
+// 下面 parseDetectionTextCases 是「严格地校用户手写输入」，两者刻意不共用实现。
+
+// 比对用的归一化。顺序有讲究：NFKC 先把全角 Ａ 折成 A，再去零宽、trim、折叠内部空白、转小写。
+// 零宽字符必须清 —— TokenPromptInput 自己就会往内容里插 ​，模型也会照抄回来。
+// 刻意不去尾部标点：「归一化后完全相等」是既定规则，「是。」和「是」判不等是预期行为，
+// 所以卡片上必须把两边都显示出来，用户才知道差在哪。
+export function normalizeCompareText(input = "") {
+  return String(input ?? "")
+    .normalize("NFKC")
+    .replace(/[​-‍﻿]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+// 解析用户粘贴/上传的检测用例 JSON。
+// 标准格式：[{"text": "...", "expected": "..."}]
+// 另外容忍两种无歧义的写法：{"items": [...]} 外壳，以及纯字符串数组（没有 expected ⇒ 不自动判定）。
+// 刻意不做字段别名（input/content/expect/answer）：格式是我们自己定的，多认几种写法
+// 只是多几个静默失败面 —— 字段名写错时报错比默默跑一批空用例有用。
+export function parseDetectionTextCases(rawText = "", limit = MAX_DETECT_TEXT_CASES) {
+  const raw = String(rawText || "").trim();
+  const max = Math.max(1, Number(limit) || MAX_DETECT_TEXT_CASES);
+  if (!raw) return { cases: [], compare: [], error: null };
+
+  // 只剥一层 ```json 围栏（应付从对话里整段复制的情况），其余一律走朴素 JSON.parse，
+  // 把原始报错位置透出去 —— 比贪婪正则悄悄解析出一个截断片段、只跑了 40 条里的 3 条有用得多。
+  const fenced = raw.match(/^```(?:json)?\s*([\s\S]*?)```$/i);
+  const source = fenced?.[1]?.trim() || raw;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(source);
+  } catch (err) {
+    return { cases: [], compare: [], error: err?.message || "Invalid JSON" };
+  }
+
+  const list = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.items)
+    ? parsed.items
+    : null;
+  if (!list) {
+    return { cases: [], compare: [], error: "EXPECTED_ARRAY" };
+  }
+  if (!list.length) {
+    return { cases: [], compare: [], error: "EMPTY_ARRAY" };
+  }
+  if (list.length > max) {
+    return { cases: [], compare: [], error: `TOO_MANY:${list.length}:${max}` };
+  }
+
+  // compare 声明「只判这几个字段」，其余字段并排显示但不参与判定。
+  // 放在评测集里而不是做成设置项：判哪个字段是评测集自己的属性，
+  // 贴一份就能跑，不必先去别处配置（配置项藏在别处 = 一定有人跑出全错）。
+  const compare = Array.isArray(parsed?.compare)
+    ? parsed.compare.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
+    : [];
+
+  const cases = [];
+  const badIndexes = [];
+  list.forEach((entry, index) => {
+    // 纯字符串 = 只有待检测文本、没有期望结果，跑完保持待判由人工点。
+    if (typeof entry === "string") {
+      const text = entry.trim();
+      if (!text) {
+        badIndexes.push(index);
+        return;
+      }
+      cases.push({ text, expected: "", note: "" });
+      return;
+    }
+    const text = typeof entry?.text === "string" ? entry.text.trim() : "";
+    if (!text) {
+      badIndexes.push(index);
+      return;
+    }
+    // note 只用于显示（多语言用例的中文翻译等），绝不进请求 ——
+    // 拼进 prompt 会让模型看到译文，等于悄悄改了被测输入。
+    const note = typeof entry?.note === "string" ? entry.note.trim() : "";
+    // expected 支持三种形状：
+    // - 对象：评测集直接给完整期望输出（{"name":"Walk","tag":"Basic"}），逐字段比对；
+    //         其中某字段的值可以是数组，表示「任一个对就算对」
+    // - 数组：单字段的多个可接受值
+    // - 字符串：单值比对
+    const rawExpected = entry?.expected;
+    let expected = "";
+    if (Array.isArray(rawExpected)) {
+      expected = rawExpected;
+    } else if (rawExpected && typeof rawExpected === "object") {
+      expected = rawExpected;
+    } else if (typeof rawExpected === "string") {
+      expected = rawExpected.trim();
+    } else if (typeof rawExpected === "number" || typeof rawExpected === "boolean") {
+      expected = String(rawExpected);
+    }
+    cases.push({ text, expected, note });
+  });
+
+  if (badIndexes.length) {
+    return { cases: [], compare: [], error: `BAD_ENTRIES:${badIndexes.join(",")}` };
+  }
+
+  // compare 声明的字段在所有 expected 里都不存在 —— 通常是字段名拼错，
+  // 会导致整批「无字段可判」而静默全部待判，所以当场报错。
+  if (compare.length) {
+    // 只看「字段映射」形状的 expected：数组形状（多个可接受值）没有字段名，
+    // 拿它去查 compare 字段会误报 COMPARE_NOT_FOUND。
+    const objectCases = cases.filter(
+      (c) => c.expected && typeof c.expected === "object" && !Array.isArray(c.expected)
+    );
+    if (objectCases.length) {
+      const missing = compare.filter(
+        (field) => !objectCases.some((c) => Object.prototype.hasOwnProperty.call(c.expected, field))
+      );
+      if (missing.length) {
+        return { cases: [], compare: [], error: `COMPARE_NOT_FOUND:${missing.join(",")}` };
+      }
+    }
+  }
+  return { cases, compare, error: null };
+}
+
+// 比对值统一转字符串：评测集里字段可能是布尔/数字，输出里也一样。
+function stringifyCompareValue(value) {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) return value.map((v) => stringifyCompareValue(v)).join(" | ");
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+// 期望值是数组 ⇒「任一个对就算对」（多个 tag 都合理的情况）。
+// 这让 expected 能表达「可接受集合」，而不是被迫为一个多解的 case 挑一个标准答案 ——
+// 挑一个会把模型另一个同样合理的回答判成错，错误率就不再可信。
+// 代价：无法再字面匹配一个真的是 JSON 数组的输出值。评测场景里「多个可接受答案」
+// 远比「期望值本身是数组」常见，所以按前者解释。
+function matchesExpectedValue(actual, expectedValue) {
+  const normalizedActual = normalizeCompareText(actual);
+  if (Array.isArray(expectedValue)) {
+    // 空数组不表达任何期望，当作无法判定（而不是「永远错」）。
+    if (!expectedValue.length) return null;
+    return expectedValue.some(
+      (candidate) => normalizeCompareText(stringifyCompareValue(candidate)) === normalizedActual
+    );
+  }
+  return normalizeCompareText(stringifyCompareValue(expectedValue)) === normalizedActual;
+}
+
+// 拿模型输出里约定的字段跟期望结果比对，返回该字段的值和自动评级。
+// parseFailed 表示「契约没兑现」（不是 JSON，或约定字段不存在），必须与「答错了」区分开：
+// 契约写错时判红会把「我模版写错了」混进错误率，毁掉这个工具唯一的产出。
+export function judgeDetectionOutput(outputText = "", expected = "", options = {}) {
+  // options 兼容旧调用形式（第三参传字符串 = 单字段名）。
+  const opts = typeof options === "string" ? { resultField: options } : options || {};
+  const compare = Array.isArray(opts.compare)
+    ? opts.compare.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
+    : [];
+  const fallbackField =
+    String(opts.resultField || DEFAULT_DETECT_RESULT_FIELD).trim() || DEFAULT_DETECT_RESULT_FIELD;
+
+  const parsed = parseJsonFromText(outputText);
+  const parsedIsObject = parsed && typeof parsed === "object" && !Array.isArray(parsed);
+
+  // expected 是对象 ⇒ 逐字段比对（评测集直接给完整期望输出）。
+  // 只有 compare 声明的字段参与判定，其余字段并排显示供肉眼扫。
+  if (expected && typeof expected === "object" && !Array.isArray(expected)) {
+    const expectedKeys = Object.keys(expected);
+    // compare 为空则默认全判：评测集给了完整期望却没说判哪个，
+    // 最保守的解释是「都算」，而不是静默一个都不判。
+    const judgedFields = compare.length ? compare.filter((f) => f in expected) : expectedKeys;
+    if (!parsedIsObject) {
+      return {
+        resultValue: "",
+        rating: null,
+        parseFailed: true,
+        fields: expectedKeys.map((key) => ({
+          key,
+          expected: stringifyCompareValue(expected[key]),
+          actual: "",
+          judged: judgedFields.includes(key),
+          match: null,
+        })),
+      };
+    }
+    let anyMissing = false;
+    const fields = expectedKeys.map((key) => {
+      const judged = judgedFields.includes(key);
+      const has = Object.prototype.hasOwnProperty.call(parsed, key);
+      const actual = has ? stringifyCompareValue(parsed[key]) : "";
+      if (judged && !has) anyMissing = true;
+      // 期望值是数组时任一个对即可（见 matchesExpectedValue）。
+      const match = judged && has ? matchesExpectedValue(actual, expected[key]) : null;
+      return {
+        key,
+        expected: stringifyCompareValue(expected[key]),
+        // 供卡片显示「这个字段接受几个值」，判错时能看出是多解还是单解。
+        accepts: Array.isArray(expected[key]) ? expected[key].length : 1,
+        actual,
+        judged,
+        match,
+      };
+    });
+    // 被判定的字段在输出里缺失 = 契约未兑现（模型没按格式答），不是答错。
+    if (anyMissing) {
+      return { resultValue: "", rating: null, parseFailed: true, fields };
+    }
+    const judged = fields.filter((f) => f.judged);
+    if (!judged.length) {
+      return { resultValue: "", rating: null, parseFailed: false, fields };
+    }
+    // match 为 null = 该字段没表达任何期望（空数组），不参与结论；
+    // 全都是 null 就没什么可判的，保持待判而不是判红。
+    const decidable = judged.filter((f) => f.match !== null);
+    if (!decidable.length) {
+      return { resultValue: judged.map((f) => f.actual).join(" / "), rating: null, parseFailed: false, fields };
+    }
+    // 所有可判字段都对才算绿 —— 一条用例是一个整体结论。
+    const rating = decidable.every((f) => f.match === true) ? "green" : "red";
+    // resultValue 供卡片紧凑显示：判定字段的值，多字段用 / 连。
+    const resultValue = judged.map((f) => f.actual).join(" / ");
+    return { resultValue, rating, parseFailed: false, fields };
+  }
+
+  // expected 是字符串或数组 ⇒ 单字段比对（数组同样表示「任一个对就算对」）。
+  const field = compare.length === 1 ? compare[0] : fallbackField;
+  if (!parsedIsObject) {
+    return { resultValue: "", rating: null, parseFailed: true, fields: [] };
+  }
+  if (!Object.prototype.hasOwnProperty.call(parsed, field)) {
+    return { resultValue: "", rating: null, parseFailed: true, fields: [] };
+  }
+  const rawValue = parsed[field];
+  // 用户自己写契约，字段完全可能是布尔或数字，强转成字符串再比。
+  // 但对象/数组说明契约理解错了，算契约未兑现。
+  if (rawValue !== null && typeof rawValue === "object") {
+    return { resultValue: "", rating: null, parseFailed: true, fields: [] };
+  }
+  // 字段存在但是空串 ⇒ 是一个真实的（会判错的）答案，不是契约失败。
+  const resultValue = rawValue === null ? "" : String(rawValue);
+  const expectedIsList = Array.isArray(expected);
+  const wanted = expectedIsList ? expected : String(expected ?? "").trim();
+  if (expectedIsList ? !wanted.length : !wanted) {
+    return { resultValue, rating: null, parseFailed: false, fields: [] };
+  }
+  const match = matchesExpectedValue(resultValue, wanted);
+  const rating = match === null ? null : match ? "green" : "red";
+  return {
+    resultValue,
+    rating,
+    parseFailed: false,
+    fields: [
+      {
+        key: field,
+        expected: stringifyCompareValue(wanted),
+        accepts: expectedIsList ? wanted.length : 1,
+        actual: resultValue,
+        judged: true,
+        match,
+      },
+    ],
+  };
 }
 
 // Agent 模式返回的多条提示词。优先按 JSON 数组解析（含 ```json 围栏和裸数组），
@@ -4133,6 +4400,64 @@ export async function callChatCompletion(proxyUrl, options = {}) {
   return assistantMessageToText(data?.choices?.[0]?.message?.content);
 }
 
+// 把一条检测记录导出成可喂给 AI 分析的 JSON。
+// 只导「用户输入 + 模型输出」这一层，不含检测指令本身 —— 指令是常量，
+// 100 条里重复 100 遍纯属噪声，真正要分析的是输入和输出的对应关系。
+// onlyWrong: 只导判红的（100 条里错的可能就几条，聚焦分析更有用）。
+export function buildDetectionExport(record = {}, { onlyWrong = false } = {}) {
+  const allItems = Array.isArray(record.items) ? record.items : [];
+  // 只导文本用例：图片小组的「输入」是 base64，塞进 JSON 既无法阅读又会撑爆体积。
+  const textItems = allItems.filter((it) => typeof it?.text === "string" && it.text);
+  const picked = onlyWrong ? textItems.filter((it) => it.rating === "red") : textItems;
+
+  // 只给分析必需的字段。刻意不导：
+  // - note：那是给人看的译文，模型不需要，中文还会把每行撑得很长
+  // - compared：expected + output 已含全部信息，顶层 compare 又说了判哪个字段，纯重复
+  const items = picked.map((it) => {
+    const out = { input: it.text };
+    if (it.expected !== "" && it.expected !== undefined && it.expected !== null) {
+      out.expected = it.expected;
+    }
+    out.output = typeof it.outputText === "string" ? it.outputText : "";
+    if (it.status === "error") out.error = it.error || "request failed";
+    out.rating = it.rating || (it.parseFailed ? "contract-error" : "unrated");
+    return out;
+  });
+
+  const redCount = textItems.filter((it) => it.rating === "red").length;
+  const greenCount = textItems.filter((it) => it.rating === "green").length;
+  const rated = redCount + greenCount;
+  return {
+    // 提示词整体给一次，供分析方理解任务；不在每条里重复。
+    prompt: typeof record.prompt === "string" ? record.prompt : "",
+    model: record.model || DEFAULT_CHAT_MODEL,
+    compare: Array.isArray(record.compareFields) ? record.compareFields : [],
+    summary: {
+      total: textItems.length,
+      correct: greenCount,
+      wrong: redCount,
+      // 错误率按已判定的算，跟看板一致（契约未兑现/未判的不进分母）。
+      wrongRate: rated ? Math.round((redCount / rated) * 100) : 0,
+      exported: items.length,
+      exportedOnlyWrong: !!onlyWrong,
+    },
+    items,
+  };
+}
+
+// 批量文本检测的请求正文：待检测用例在上，检测指令在下。
+// 抽成纯函数是为了让这个顺序有单测盯着 —— 它是肉眼看不出对错的那类约定，
+// 一旦被顺手改掉，只会表现成模型答得变差，很难归因。
+// 刻意不做 {{text}} 占位符替换：{{}} 已经是全应用的占位符 token（见 splitPromptByPlaceholders），
+// 检测输入框是 TokenPromptInput，会把它渲染成可编辑的蓝色 chip 让用户误改误删。
+export function buildDetectionRequestText(promptText = "", caseText = "") {
+  const prompt = String(promptText ?? "").trim();
+  const body = String(caseText ?? "").trim();
+  if (!body) return prompt;
+  if (!prompt) return body;
+  return `${body}\n\n${prompt}`;
+}
+
 // 把一条对话记录里的文本 + 输入图片组装成一个 OpenAI user message。
 export function buildChatUserMessage(promptText, images = []) {
   const cleanImages = normalizeImageInputs("", images);
@@ -4166,7 +4491,26 @@ export async function saveChatToLocalFolder(rootHandle, record = {}) {
       imageFile = await writeDataUrlImageFile(chatDir, `input_${String(index + 1).padStart(2, "0")}`, image);
     }
     manifestItems.push({
+      // id 必须落盘：不写的话载入回来每个 item 的 id 都是 undefined，
+      // 评级/重跑按 id 匹配就会命中整条记录的所有小组。
+      id: typeof item.id === "string" || typeof item.id === "number" ? String(item.id) : null,
       imageFile: imageFile || null,
+      // 批量文本检测：待检测文本 + 期望结果 + 参与比对的字段值 + 是否机器判定/契约未兑现。
+      text: typeof item.text === "string" ? item.text : "",
+      // note 只用于显示（多语言用例的译文/备注），不进请求。
+      note: typeof item.note === "string" ? item.note : "",
+      // expected 可能是字符串（单值比对）或对象（评测集直接给完整期望输出），两种都照原样存。
+      // 三种形状都照原样存：字符串（单值）、数组（多个可接受值）、对象（字段映射）。
+      expected:
+        item.expected && typeof item.expected === "object"
+          ? item.expected
+          : typeof item.expected === "string"
+          ? item.expected
+          : "",
+      resultValue: typeof item.resultValue === "string" ? item.resultValue : "",
+      fields: Array.isArray(item.fields) ? item.fields : [],
+      autoRated: item.autoRated === true,
+      parseFailed: item.parseFailed === true,
       outputText: typeof item.outputText === "string" ? item.outputText : "",
       status: item.status || "done",
       error: typeof item.error === "string" ? item.error : null,
@@ -4181,6 +4525,12 @@ export async function saveChatToLocalFolder(rootHandle, record = {}) {
     model: record.model || DEFAULT_CHAT_MODEL,
     templateId: typeof record.templateId === "string" ? record.templateId : null,
     templateTitle: typeof record.templateTitle === "string" ? record.templateTitle : "",
+    // 比对字段名随记录快照，重跑时按记录里的值判定，不受之后改模版影响。
+    resultField: typeof record.resultField === "string" && record.resultField
+      ? record.resultField
+      : DEFAULT_DETECT_RESULT_FIELD,
+    // compare 声明随记录快照，重跑/复用时按记录里的值判定。
+    compareFields: Array.isArray(record.compareFields) ? record.compareFields : [],
     prompt: typeof record.prompt === "string" ? record.prompt : "",
     items: manifestItems,
   };
@@ -4207,14 +4557,32 @@ export async function loadChatFromLocalFolder(rootHandle) {
       const manifestFile = await manifestHandle.getFile();
       const meta = JSON.parse(await manifestFile.text());
       let items = [];
+      // 磁盘上已有的记录没写 item.id，缺失时按下标派生（不能用随机值，
+      // 否则每次载入 id 都变，评级/重跑就跟不上同一个小组）。
+      const recordId = meta.id || entryName;
+      const fallbackItemId = (index) => `${recordId}-${index}`;
       if (Array.isArray(meta.items)) {
         // v2：每个 item 一张图 + 一段输出。
-        for (const rawItem of meta.items) {
+        for (let index = 0; index < meta.items.length; index += 1) {
+          const rawItem = meta.items[index];
           const image = rawItem?.imageFile
             ? await readSplitHistoryImageFile(entryHandle, rawItem.imageFile)
             : "";
           items.push({
+            id: rawItem?.id ? String(rawItem.id) : fallbackItemId(index),
             image: image || "",
+            text: typeof rawItem?.text === "string" ? rawItem.text : "",
+            note: typeof rawItem?.note === "string" ? rawItem.note : "",
+            expected:
+              rawItem?.expected && typeof rawItem.expected === "object"
+                ? rawItem.expected
+                : typeof rawItem?.expected === "string"
+                ? rawItem.expected
+                : "",
+            resultValue: typeof rawItem?.resultValue === "string" ? rawItem.resultValue : "",
+            fields: Array.isArray(rawItem?.fields) ? rawItem.fields : [],
+            autoRated: rawItem?.autoRated === true,
+            parseFailed: rawItem?.parseFailed === true,
             outputText: typeof rawItem?.outputText === "string" ? rawItem.outputText : "",
             status: rawItem?.status || "done",
             error: typeof rawItem?.error === "string" ? rawItem.error : null,
@@ -4226,6 +4594,7 @@ export async function loadChatFromLocalFolder(rootHandle) {
         const files = Array.isArray(meta.inputImageFiles) ? meta.inputImageFiles : [];
         const image = files.length ? await readSplitHistoryImageFile(entryHandle, files[0]) : "";
         items.push({
+          id: fallbackItemId(0),
           image: image || "",
           outputText: typeof meta.outputText === "string" ? meta.outputText : "",
           status: meta.status || "done",
@@ -4234,12 +4603,16 @@ export async function loadChatFromLocalFolder(rootHandle) {
         });
       }
       records.push({
-        id: meta.id || entryName,
+        id: recordId,
         seq: Number(meta.seq) || 0,
         createdAt: Number(meta.createdAt) || 0,
         model: meta.model || DEFAULT_CHAT_MODEL,
         templateId: typeof meta.templateId === "string" ? meta.templateId : null,
         templateTitle: typeof meta.templateTitle === "string" ? meta.templateTitle : "",
+        resultField: typeof meta.resultField === "string" && meta.resultField
+          ? meta.resultField
+          : DEFAULT_DETECT_RESULT_FIELD,
+        compareFields: Array.isArray(meta.compareFields) ? meta.compareFields : [],
         prompt: typeof meta.prompt === "string" ? meta.prompt : "",
         items,
         folderName: entryName,
@@ -4259,10 +4632,15 @@ export function normalizeDetectionTemplate(input, index = 0) {
   const title = typeof input?.title === "string" && input.title.trim()
     ? input.title.trim()
     : `检测模版 ${index + 1}`;
+  // resultField = 批量文本检测时拿模型输出里哪个字段跟期望结果比对。
+  // 挂在模版上而不是做全局设置：检测 tab 的前提是各模版错误率可比，
+  // 全局字段名会让改一个模版静默改变其余模版的含义。默认 result，没动过的模版直接可用。
+  const rawResultField = typeof input?.resultField === "string" ? input.resultField.trim() : "";
   return {
     id,
     title,
     body: typeof input?.body === "string" ? input.body : "",
+    resultField: rawResultField || DEFAULT_DETECT_RESULT_FIELD,
   };
 }
 

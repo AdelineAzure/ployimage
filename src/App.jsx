@@ -10,7 +10,7 @@ import { AtlasThumbnailModal } from "./features/atlas/AtlasThumbnailModal";
 import { CanvasPage } from "./features/canvas/CanvasPage";
 import { HelpPage } from "./features/help/HelpPage";
 import { ImagePreviewModal, TurnPanel, buildTurnPreviewItems, normalizePreviewPayload } from "./features/history/components";
-import { ApiKeyModal, DetectTemplateEditorModal, GptAssistModal, InputImagesModal, PromptImageEditorModal, SelectionLimitModal, SettingsModal, StyleTemplateEditorModal, TemplateEditorModal } from "./features/settings/components";
+import { ApiKeyModal, DetectTemplateEditorModal, DetectTextCasesModal, GptAssistModal, InputImagesModal, PromptImageEditorModal, SelectionLimitModal, SettingsModal, StyleTemplateEditorModal, TemplateEditorModal } from "./features/settings/components";
 import { SpriteSplitModal } from "./features/split/SpriteSplitModal";
 import { useTaskQueue } from "./features/tasks/useTaskQueue";
 import { ModelChip } from "./features/workspace/ModelChip";
@@ -51,6 +51,8 @@ const {
   DEFAULT_DETECTION_TEMPLATES,
   MAX_DETECTION_TEMPLATES,
   MAX_DETECT_IMAGES_PER_BATCH,
+  MAX_DETECT_TEXT_CASES,
+  DEFAULT_DETECT_RESULT_FIELD,
   DEFAULT_GPT_ASSIST_PROMPT,
   DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT,
   DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE,
@@ -237,6 +239,8 @@ const {
   loadSplitHistoryFromLocalFolder,
   callChatCompletion,
   buildChatUserMessage,
+  buildDetectionRequestText,
+  judgeDetectionOutput,
   saveChatToLocalFolder,
   loadChatFromLocalFolder,
   getChatDirName,
@@ -419,6 +423,17 @@ export default function App() {
   const [showChatImageModal, setShowChatImageModal] = useState(false);
   const [showChatImageEditor, setShowChatImageEditor] = useState(false);
   const [chatImageEditorIndex, setChatImageEditorIndex] = useState(0);
+  // 批量文本检测用例（与 chatImages 互斥）。chatTextCasesRaw 留着原文，
+  // 便于再次打开弹窗时接着改。与 chatImages 一样刻意不进 localStorage。
+  const [chatTextCases, setChatTextCases] = useState([]);
+  const [chatTextCasesRaw, setChatTextCasesRaw] = useState("");
+  const [showChatTextModal, setShowChatTextModal] = useState(false);
+  // 比对字段名在检测 tab 内联可改：模版编辑器 gate 在「已连接历史文件夹」上，
+  // 把唯一入口放那儿会让没连文件夹的人根本改不了字段名（只能用默认 result）。
+  // 选中模版时用模版的值回填，但随时可覆盖。
+  const [chatResultField, setChatResultField] = useState(DEFAULT_DETECT_RESULT_FIELD);
+  // 评测集用 top-level "compare": ["tag"] 声明只判哪些字段（零配置的来源）。
+  const [chatCompareFields, setChatCompareFields] = useState([]);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatSending, setChatSending] = useState(false);
   const chatSeqRef = useRef(1);
@@ -467,7 +482,7 @@ export default function App() {
   const [styleTemplateDraft, setStyleTemplateDraft] = useState({ title: "", body: "" });
   const [showDetectTemplateModal, setShowDetectTemplateModal] = useState(false);
   const [editingDetectTemplateId, setEditingDetectTemplateId] = useState(null);
-  const [detectTemplateDraft, setDetectTemplateDraft] = useState({ title: "", body: "" });
+  const [detectTemplateDraft, setDetectTemplateDraft] = useState({ title: "", body: "", resultField: DEFAULT_DETECT_RESULT_FIELD });
   const [styleThemes, setStyleThemes] = useState(normalizeStyleThemes(DEFAULT_STYLE_THEMES));
   const [uploadedInputImages, setUploadedInputImages] = useState([]);
   const [uploadedImage, setUploadedImage] = useState(null);
@@ -2956,10 +2971,13 @@ export default function App() {
   }, [apiKeys, compareEditors, promptEditor, t]);
 
   // ─── 对话（Chat）：发送 / 评级 / 复现 ───
-  // 用一条记录的 prompt + 图片跑一次补全，把结果写回该记录。
-  // 检测单个「图片+输出」小组：把结果打补丁进 record.items[itemIndex]，并把整条记录标记为待落盘。
+  // 用一条记录的 prompt + 输入（图或文本）跑一次补全，把结果写回该记录。
+  // 检测单个「输入+输出」小组：把结果打补丁进 record.items[itemIndex]，并把整条记录标记为待落盘。
+  // payload 是显式的请求规格 {image, text, expected, resultField}，刻意不传整个 item —— 否则
+  // 以后容易有人从这个闭包快照里读 rating/status，拿到的是发起时的旧值。
   const runChatItem = useCallback(
-    async (recordId, itemId, promptText, image) => {
+    async (recordId, itemId, promptText, payload = {}) => {
+      const { image = "", text = "", expected = "", resultField = DEFAULT_DETECT_RESULT_FIELD, compare = [] } = payload;
       const patchItem = (patch) =>
         setChatMessages((prev) =>
           prev.map((m) =>
@@ -2978,12 +2996,14 @@ export default function App() {
         patchItem({ status: "error", error: t("chat.missingKey") });
         return;
       }
+      // 用例在上、检测指令在下（顺序见 buildDetectionRequestText，有单测盯着）。
+      const requestText = buildDetectionRequestText(promptText, text);
       // 批量并发时上游偶发把"第一个"请求判成 401/invalid token（冷启动或突发限流），
       // 而同批其余请求正常。这类瞬时鉴权错误不是真的坏 Key，客户端重试一次即可恢复。
       const callOnce = () =>
         callChatCompletion(proxyUrl.trim(), {
           model: DEFAULT_CHAT_MODEL,
-          messages: [buildChatUserMessage(promptText, image ? [image] : [])],
+          messages: [buildChatUserMessage(requestText, image ? [image] : [])],
           apiKey: chatKey,
           apiPlatform: CHAT_API_PLATFORM,
           apiBaseUrl: CHAT_API_BASE_URL,
@@ -2999,7 +3019,32 @@ export default function App() {
             throw firstErr;
           });
         }
-        patchItem({ status: "done", outputText, error: null });
+        // 自动判定必须跟 status:"done" 同一次原子写入。若拆成批量跑完后单独一趟：
+        // 最后一个 item 落 done 会让整条记录变成「全部非 loading」，落盘 effect 立刻拿
+        // 没有评级的快照开始写盘，等评级补上后那次 save 的回调又会给当前记录盖上
+        // truthy 的 folderSyncedAt —— 磁盘没评级、内存标记已同步，评级就丢了。
+        // 只有「文本用例 + 有期望结果」才判定。没有 expected 的用例（纯字符串数组）
+        // 本来就不参与自动判定，对它标契约未兑现只会画出一个没有解释的琥珀边框。
+        // 数组（多个可接受值）和对象（字段映射）都按长度判断有没有表达期望。
+        const hasExpected = expected
+          && (Array.isArray(expected)
+            ? expected.length > 0
+            : typeof expected === "object"
+            ? Object.keys(expected).length > 0
+            : true);
+        const judged = text && hasExpected
+          ? judgeDetectionOutput(outputText, expected, { compare, resultField })
+          : { resultValue: "", rating: null, parseFailed: false, fields: [] };
+        patchItem({
+          status: "done",
+          outputText,
+          error: null,
+          resultValue: judged.resultValue,
+          parseFailed: judged.parseFailed,
+          fields: Array.isArray(judged.fields) ? judged.fields : [],
+          // 只有拿到期望结果时才自动判定；没有 expected 的用例和图片小组保持待判，由人工点。
+          ...(judged.rating ? { rating: judged.rating, autoRated: true } : {}),
+        });
       } catch (err) {
         patchItem({ status: "error", error: err?.message || t("chat.error") });
       }
@@ -3007,28 +3052,50 @@ export default function App() {
     [apiKeys, proxyUrl, t]
   );
 
-  // 批量检测：一次发送 = 一条记录（同一提示词），每张图 = 记录里的一个「图片+输出」小组。
+  // 批量检测：一次发送 = 一条记录（同一提示词），每个输入（一张图 / 一条文本用例）
+  // = 记录里的一个「输入+输出」小组。图片与文本用例互斥，不会同时存在。
   const handleChatSend = useCallback(async () => {
     if (chatSending) return;
     if (!proxyUrl.trim()) { setShowSettings(true); return; }
     const promptText = (chatEditor.value || "").trim();
     const images = chatImages.filter((img) => typeof img === "string" && img);
+    const textCases = Array.isArray(chatTextCases) ? chatTextCases.filter((c) => c?.text) : [];
     if (!promptText) return;
     const activeTemplate = detectTemplates.find((tpl) => tpl.id === activeDetectTemplateId) || null;
     const templateId = activeTemplate?.id || null;
     const templateTitle = activeTemplate?.title || "";
+    // 比对字段名快照到记录上，不在重跑时再去读当前模版 —— 记录已经快照了
+    // prompt/templateId/templateTitle 就是为了自描述；否则改过模版后重跑一条，
+    // 同一记录里就会出现「一部分按 result 判、一部分按 verdict 判」。
+    const resultField = (chatResultField || "").trim() || DEFAULT_DETECT_RESULT_FIELD;
+    // compare 随记录快照，重跑时按记录里的值判定。
+    const compareFields = Array.isArray(chatCompareFields) ? chatCompareFields : [];
     const baseTime = Date.now();
-    // 无图时也建一个纯文本小组；有图时每张图一个小组。
-    const groupImages = images.length ? images : [""];
     const recordId = baseTime + Math.floor(Math.random() * 1000);
-    const items = groupImages.map((img, index) => ({
+    const makeItem = (index, extra) => ({
       id: `${recordId}-${index}-${Math.floor(Math.random() * 100000)}`,
-      image: img || "",
+      image: "",
+      text: "",
+      expected: "",
+      note: "",
       outputText: "",
+      resultValue: "",
       status: "loading",
       error: null,
       rating: null,
-    }));
+      autoRated: false,
+      parseFailed: false,
+      fields: [],
+      ...extra,
+    });
+    // 三路分支，「只有指令」的兜底放最后（无图无用例时仍跑一个纯文本小组）。
+    const items = textCases.length
+      ? textCases.map((c, index) =>
+          makeItem(index, { text: c.text, expected: c.expected || "", note: c.note || "" })
+        )
+      : images.length
+      ? images.map((img, index) => makeItem(index, { image: img }))
+      : [makeItem(0)];
     const record = {
       id: recordId,
       seq: chatSeqRef.current,
@@ -3036,6 +3103,8 @@ export default function App() {
       model: DEFAULT_CHAT_MODEL,
       templateId,
       templateTitle,
+      resultField,
+      compareFields,
       prompt: promptText,
       items,
       folderSyncedAt: null,
@@ -3053,14 +3122,20 @@ export default function App() {
         while (cursor < items.length) {
           const it = items[cursor];
           cursor += 1;
-          await runChatItem(recordId, it.id, promptText, it.image);
+          await runChatItem(recordId, it.id, promptText, {
+            image: it.image,
+            text: it.text,
+            expected: it.expected,
+            resultField,
+            compare: compareFields,
+          });
         }
       };
       await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, runNext));
     } finally {
       setChatSending(false);
     }
-  }, [chatSending, proxyUrl, chatEditor, chatImages, detectTemplates, activeDetectTemplateId, runChatItem]);
+  }, [chatSending, proxyUrl, chatEditor, chatImages, chatTextCases, chatResultField, chatCompareFields, detectTemplates, activeDetectTemplateId, runChatItem]);
 
   // 检测图片上传/删除/编辑：复用 workspace 的 InputImagesModal / PromptImageEditorModal。
   const appendChatImageFiles = useCallback(async (files) => {
@@ -3111,6 +3186,8 @@ export default function App() {
     }
     setActiveDetectTemplateId(templateId);
     chatEditor.resetText(template.body || "");
+    // 模版带的字段名回填到内联输入框（之后仍可随时覆盖）。
+    setChatResultField(template.resultField || DEFAULT_DETECT_RESULT_FIELD);
   }, [detectTemplates, activeDetectTemplateId, chatEditor]);
 
   // 编辑当前选中检测模版的正文（把输入框内容存回模版）。
@@ -3127,7 +3204,11 @@ export default function App() {
     const template = detectTemplates.find((tpl) => tpl.id === templateId);
     if (!template) return;
     setEditingDetectTemplateId(template.id);
-    setDetectTemplateDraft({ title: template.title || "", body: template.body || "" });
+    setDetectTemplateDraft({
+      title: template.title || "",
+      body: template.body || "",
+      resultField: template.resultField || DEFAULT_DETECT_RESULT_FIELD,
+    });
     setShowDetectTemplateModal(true);
   }, [detectTemplates]);
 
@@ -3135,8 +3216,9 @@ export default function App() {
     if (!editingDetectTemplateId) return;
     const title = detectTemplateDraft.title.trim() || editingDetectTemplateId;
     const body = detectTemplateDraft.body || "";
+    const resultField = (detectTemplateDraft.resultField || "").trim() || DEFAULT_DETECT_RESULT_FIELD;
     setDetectTemplates((prev) =>
-      prev.map((tpl) => (tpl.id === editingDetectTemplateId ? { ...tpl, title, body } : tpl))
+      prev.map((tpl) => (tpl.id === editingDetectTemplateId ? { ...tpl, title, body, resultField } : tpl))
     );
     // 若正在编辑的正是当前选中模版，把正文同步回输入框。
     if (activeDetectTemplateId === editingDetectTemplateId) {
@@ -3145,7 +3227,9 @@ export default function App() {
     setShowDetectTemplateModal(false);
   }, [detectTemplateDraft, editingDetectTemplateId, activeDetectTemplateId, chatEditor]);
 
-  // 评级作用于单个「图片+输出」小组。
+  // 评级作用于单个「输入+输出」小组。
+  // autoRated 置 false：人工点过之后要能和机器判定区分开，否则卡片上无从显示、
+  // 也无法判断某个评级是不是该被重跑覆盖。
   const rateChatItem = useCallback((recordId, itemId, rating) => {
     setChatMessages((prev) =>
       prev.map((m) =>
@@ -3153,7 +3237,7 @@ export default function App() {
           ? {
               ...m,
               folderSyncedAt: null,
-              items: m.items.map((it) => (it.id === itemId ? { ...it, rating } : it)),
+              items: m.items.map((it) => (it.id === itemId ? { ...it, rating, autoRated: false } : it)),
             }
           : m
       )
@@ -3180,7 +3264,15 @@ export default function App() {
             : m
         )
       );
-      await runChatItem(recordId, itemId, record.prompt, item.image);
+      // 重跑会覆盖旧评级（含人工覆盖）：重跑本身就是「要一个新结论」。
+      // 没重跑的人工覆盖天然保留 —— 除此之外没有别的地方写 rating。
+      await runChatItem(recordId, itemId, record.prompt, {
+        image: item.image,
+        text: item.text,
+        expected: item.expected,
+        resultField: record.resultField || DEFAULT_DETECT_RESULT_FIELD,
+        compare: Array.isArray(record.compareFields) ? record.compareFields : [],
+      });
     },
     [chatMessages, proxyUrl, runChatItem]
   );
@@ -3191,10 +3283,31 @@ export default function App() {
       const target = chatMessages.find((m) => m.id === recordId);
       if (!target) return;
       chatEditor.resetText(target.prompt || "");
-      const imgs = Array.isArray(target.items)
-        ? target.items.map((it) => it.image).filter((img) => typeof img === "string" && img)
-        : [];
-      setChatImages(imgs);
+      const items = Array.isArray(target.items) ? target.items : [];
+      const imgs = items.map((it) => it.image).filter((img) => typeof img === "string" && img);
+      const cases = items
+        .filter((it) => typeof it?.text === "string" && it.text)
+        .map((it) => ({
+          text: it.text,
+          expected: it.expected ?? "",
+          ...(it.note ? { note: it.note } : {}),
+        }));
+      const recordCompare = Array.isArray(target.compareFields) ? target.compareFields : [];
+      // 两边都还原，并清掉另一边 —— 图片与文本用例互斥。
+      if (cases.length) {
+        setChatTextCases(cases);
+        setChatCompareFields(recordCompare);
+        // 带上 compare 外壳，否则复用后「只判 tag」的声明会丢。
+        setChatTextCasesRaw(
+          JSON.stringify(recordCompare.length ? { compare: recordCompare, items: cases } : cases, null, 2)
+        );
+        setChatImages([]);
+      } else {
+        setChatImages(imgs);
+        setChatTextCases([]);
+        setChatTextCasesRaw("");
+        setChatCompareFields([]);
+      }
       setActivePage("chat");
       requestAnimationFrame(() => {
         chatInputRef.current?.focus?.({ end: true, preventScroll: true });
@@ -3382,6 +3495,11 @@ export default function App() {
       : null;
     return { all, activeStat };
   }, [chatMessages, activeDetectTemplateId, detectTemplateStats]);
+  // 图片与文本用例互斥：一边有内容就禁用另一边（视觉 + handler 都 gate）。
+  const imagesEntryDisabled = chatTextCases.length > 0;
+  const textsEntryDisabled = chatImages.length > 0;
+  // 没指令时 handleChatSend 会静默 return；多一种输入模式后这个死点击更难解释，所以真正 disable。
+  const canDetect = !chatSending && !!(chatEditor.value || "").trim();
   const queueCount = visibleTurns.filter((t) => t.status === "queued").length;
   const runningCount = visibleTurns.filter((t) => t.status === "running").length;
   const hasAnySuccess = visibleTurns.some((t) => t.results?.some((r) => r.status === "success" && r.images?.length));
@@ -3705,68 +3823,148 @@ export default function App() {
                   placeholder={t("chat.placeholder")}
                   rows={4}
                 />
+                {/* 比对字段名内联可改：模版编辑器 gate 在历史文件夹上，
+                    只放那里会让没连文件夹的人卡在默认 result。 */}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                  <label style={{ ...S.uploadPairTopLabel, whiteSpace: "nowrap" }}>
+                    {t("detect.resultFieldLabel")}
+                  </label>
+                  <input
+                    style={{ ...S.proxyInput, width: 160, marginBottom: 0, padding: "6px 10px", fontSize: 12 }}
+                    value={chatResultField}
+                    onChange={(event) => setChatResultField(event.target.value)}
+                    placeholder={DEFAULT_DETECT_RESULT_FIELD}
+                  />
+                  <span style={{ ...S.uploadPairTopLabel, textTransform: "none", letterSpacing: 0 }}>
+                    {t("detect.resultFieldInlineHint")}
+                  </span>
+                </div>
               </div>
-              <div style={S.refColumn}>
-                <div style={S.uploadPairTopLabel}>{t("detect.images")} ({chatImages.length}/{MAX_DETECT_IMAGES_PER_BATCH})</div>
-                <div
-                  style={S.uploadPairBox}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => chatImageInputRef.current?.click()}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
+              {/* 上下两个互斥入口：上=批量图片，下=批量文本用例。
+                  两个都保持可见、一亮一灰，互斥才读得出来是设计而不是 bug；
+                  body 压到 48px 好让整列高度对齐左边 rows={4} 的指令输入框。 */}
+              <div style={{ ...S.refColumn, gap: 10 }}>
+                <div>
+                  <div style={S.uploadPairTopLabel}>
+                    {t("detect.images")} ({chatImages.length}/{MAX_DETECT_IMAGES_PER_BATCH})
+                  </div>
+                  <div
+                    style={{ ...S.uploadPairBox, ...(imagesEntryDisabled ? S.templateItemDisabled : null) }}
+                    role="button"
+                    tabIndex={imagesEntryDisabled ? -1 : 0}
+                    aria-disabled={imagesEntryDisabled}
+                    title={imagesEntryDisabled ? t("detect.exclusiveTextsBusy") : undefined}
+                    onClick={() => {
+                      // 变灰了还能打开文件选择器，比没有禁用态更糟 —— handler 也要 gate。
+                      if (imagesEntryDisabled) return;
                       chatImageInputRef.current?.click();
-                    }
-                  }}
-                >
-                  {chatImages.length > 0 && <span style={S.inputCountBadge}>{chatImages.length}</span>}
-                  {chatImages.length > 0 && (
-                    <button
-                      type="button"
-                      style={S.inputEditBtn}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setShowChatImageModal(true);
-                      }}
-                    >
-                      {t("common.edit")}
-                    </button>
-                  )}
-                  {chatImages.length > 0 && (
-                    <button
-                      type="button"
-                      style={S.inputDrawBtn}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        openChatImageEditor(0);
-                      }}
-                      title={t("imageEditor.title")}
-                    >
-                      ✎
-                    </button>
-                  )}
-                  {chatImages.length > 0 && (
-                    <button
-                      type="button"
-                      style={S.inputClearBtn}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setChatImages([]);
-                      }}
-                      title={t("chat.clearImages")}
-                    >
-                      ✕
-                    </button>
-                  )}
-                  <div style={S.uploadPairBody}>
-                    {chatImages[0] ? (
-                      <img src={chatImages[0]} alt="Input" style={S.uploadPairMainThumb} />
-                    ) : (
-                      <div style={S.inputImagesEmpty}>+</div>
+                    }}
+                    onKeyDown={(event) => {
+                      if (imagesEntryDisabled) return;
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        chatImageInputRef.current?.click();
+                      }
+                    }}
+                  >
+                    {chatImages.length > 0 && <span style={S.inputCountBadge}>{chatImages.length}</span>}
+                    {chatImages.length > 0 && (
+                      <button
+                        type="button"
+                        style={S.inputEditBtn}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setShowChatImageModal(true);
+                        }}
+                      >
+                        {t("common.edit")}
+                      </button>
                     )}
+                    {chatImages.length > 0 && (
+                      <button
+                        type="button"
+                        style={S.inputClearBtn}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setChatImages([]);
+                        }}
+                        title={t("chat.clearImages")}
+                      >
+                        ✕
+                      </button>
+                    )}
+                    <div style={{ ...S.uploadPairBody, minHeight: 48 }}>
+                      {chatImages[0] ? (
+                        <img src={chatImages[0]} alt="Input" style={{ ...S.uploadPairMainThumb, height: 48 }} />
+                      ) : (
+                        <div style={{ ...S.inputImagesEmpty, minHeight: 48 }}>+</div>
+                      )}
+                    </div>
                   </div>
                 </div>
+
+                <div>
+                  <div style={S.uploadPairTopLabel}>
+                    {t("detect.texts")} ({chatTextCases.length}/{MAX_DETECT_TEXT_CASES})
+                  </div>
+                  <div
+                    style={{ ...S.uploadPairBox, ...(textsEntryDisabled ? S.templateItemDisabled : null) }}
+                    role="button"
+                    tabIndex={textsEntryDisabled ? -1 : 0}
+                    aria-disabled={textsEntryDisabled}
+                    title={textsEntryDisabled ? t("detect.exclusiveImagesBusy") : undefined}
+                    onClick={() => {
+                      if (textsEntryDisabled) return;
+                      setShowChatTextModal(true);
+                    }}
+                    onKeyDown={(event) => {
+                      if (textsEntryDisabled) return;
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setShowChatTextModal(true);
+                      }
+                    }}
+                  >
+                    {chatTextCases.length > 0 && <span style={S.inputCountBadge}>{chatTextCases.length}</span>}
+                    {chatTextCases.length > 0 && (
+                      <button
+                        type="button"
+                        style={S.inputClearBtn}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setChatTextCases([]);
+                          setChatTextCasesRaw("");
+                        }}
+                        title={t("detect.clearTexts")}
+                      >
+                        ✕
+                      </button>
+                    )}
+                    <div style={{ ...S.uploadPairBody, minHeight: 48, padding: chatTextCases.length ? "6px 8px" : 0 }}>
+                      {chatTextCases.length ? (
+                        <div
+                          style={{
+                            fontFamily: mono,
+                            fontSize: 10,
+                            lineHeight: 1.4,
+                            color: "#a1a1aa",
+                            display: "-webkit-box",
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: "vertical",
+                            overflow: "hidden",
+                            // 右下角是清除按钮、右上角是条数角标，给预览文字让出位置。
+                            paddingRight: 28,
+                          }}
+                        >
+                          {chatTextCases[0].text}
+                        </div>
+                      ) : (
+                        <div style={{ ...S.inputImagesEmpty, minHeight: 48 }}>+</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
                 <input
                   ref={chatImageInputRef}
                   type="file"
@@ -3875,13 +4073,17 @@ export default function App() {
           {/* 检测触发按钮 */}
           <div style={S.genRow}>
             <button
-              style={{ ...S.genBtn, opacity: chatSending ? 0.5 : 1 }}
-              disabled={chatSending}
+              style={{ ...S.genBtn, opacity: canDetect ? 1 : 0.5, cursor: canDetect ? "pointer" : "not-allowed" }}
+              disabled={!canDetect}
               onClick={handleChatSend}
             >
               {chatSending
                 ? <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={S.btnSpin} /> {t("chat.thinking")}</span>
-                : (chatImages.length > 1 ? t("detect.runBatch", { count: chatImages.length }) : t("chat.send"))}
+                : chatTextCases.length > 1
+                ? t("detect.runBatchTexts", { count: chatTextCases.length })
+                : chatImages.length > 1
+                ? t("detect.runBatch", { count: chatImages.length })
+                : t("chat.send")}
             </button>
           </div>
 
@@ -4609,6 +4811,19 @@ export default function App() {
         images={chatImages}
         initialIndex={chatImageEditorIndex}
         onConfirm={confirmChatImageEditor}
+      />
+      <DetectTextCasesModal
+        show={showChatTextModal}
+        onClose={() => setShowChatTextModal(false)}
+        initialRaw={chatTextCasesRaw}
+        onConfirm={(cases, raw, compare) => {
+          setChatTextCases(cases);
+          setChatTextCasesRaw(raw);
+          setChatCompareFields(Array.isArray(compare) ? compare : []);
+          // 互斥：确认文本用例即清空图片。
+          setChatImages([]);
+          setShowChatTextModal(false);
+        }}
       />
       <SelectionLimitModal
         show={showSelectionLimitModal}

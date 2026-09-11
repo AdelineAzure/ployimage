@@ -158,6 +158,11 @@ export const CHAT_HISTORY_FOLDER_NAME = "chat-history";
 export const DETECTION_TEMPLATE_FILE_NAME = "detection-templates.json";
 export const MAX_DETECTION_TEMPLATES = 12;
 export const MAX_DETECT_IMAGES_PER_BATCH = 50;
+// 批量文本检测：一次粘贴几百条只需一次按键，图片入口自带的「上传很费劲」限速在这里消失了，
+// 所以在解析阶段就卡住条数上限。
+export const MAX_DETECT_TEXT_CASES = 100;
+// 模型按检测模版正文里约定的格式输出两个字段，工具只需知道拿哪个字段跟期望结果比对。
+export const DEFAULT_DETECT_RESULT_FIELD = "result";
 export const DEFAULT_GPT_ASSIST_PROMPT = "你是一个提示词优化助手。你只改写 {{ }} 里的内容，保持用户原有写作风格、长度和随机感，不要改动大括号外的任何字符。";
 export const DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT = true;
 export const DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE = true;
@@ -207,6 +212,7 @@ export const DEFAULT_DETECTION_TEMPLATES = Array.from({ length: MAX_DETECTION_TE
   id: `detect-template-${index + 1}`,
   title: `检测模版 ${index + 1}`,
   body: "",
+  resultField: DEFAULT_DETECT_RESULT_FIELD,
 }));
 export const NANO_PRO_OFFICIAL_MODEL_ID = "gemini-3-pro-image";
 export const NANO_PRO_LEGACY_MODEL_IDS = ["nano-banana-pro-all", "gemini-3-pro-preview"];

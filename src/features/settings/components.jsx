@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { CF_WORKER_CODE } from "../../config/cloudflareWorkerCode";
 import {
   DEFAULT_AGENT_SEND_IMAGE,
+  DEFAULT_DETECT_RESULT_FIELD,
   DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE,
   DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT,
   INPUT_IMAGE_EDITOR_COLORS,
@@ -24,6 +25,7 @@ import {
   normalizeStyleThemeAssistPrompt,
   normalizeAgentSkill,
   normalizeAgentPromptCount,
+  parseDetectionTextCases,
 } from "../../services/appCore";
 import { S } from "../../styles/appStyles";
 import { TokenPromptInput } from "../workspace/promptControls";
@@ -573,10 +575,156 @@ export function DetectTemplateEditorModal({ show, onClose, draft, setDraft, onSa
           onChange={(e) => setDraft((prev) => ({ ...prev, body: e.target.value }))}
           placeholder={t("detect.bodyPlaceholder")}
         />
+        {/* 紧跟正文：批量文本检测时拿输出里哪个字段跟期望结果比对。格式约定写在上面正文里，
+            这里只告诉工具字段名，所以它属于契约的一部分而不是一个独立设置。 */}
+        <label style={{ ...S.fieldLabel, marginTop: 14 }}>{t("detect.resultFieldLabel")}</label>
+        <input
+          style={S.proxyInput}
+          value={draft.resultField ?? ""}
+          onChange={(e) => setDraft((prev) => ({ ...prev, resultField: e.target.value }))}
+          placeholder={DEFAULT_DETECT_RESULT_FIELD}
+        />
+        <p style={S.hint}>{t("detect.resultFieldHint")}</p>
         <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
           <button
             style={{ ...S.apiSaveBtn, opacity: canSave ? 1 : 0.5, cursor: canSave ? "pointer" : "not-allowed" }}
             onClick={onSave}
+            disabled={!canSave}
+          >
+            {t("common.save")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 批量文本检测用例：粘贴或上传一份 JSON，边输入边解析，把「解析到 N 条」或报错位置
+// 显示在确认按钮上方 —— 粘 500 条只要一次按键，这里是提交前唯一的闸门。
+export function DetectTextCasesModal({ show, onClose, initialRaw, onConfirm }) {
+  const { t } = useI18n();
+  const [raw, setRaw] = useState("");
+  const fileInputRef = useRef(null);
+
+  // 每次打开都从当前用例的原文重新起草，避免上次的编辑残留。
+  useEffect(() => {
+    if (show) setRaw(typeof initialRaw === "string" ? initialRaw : "");
+  }, [show, initialRaw]);
+
+  const parsed = useMemo(() => parseDetectionTextCases(raw), [raw]);
+  // 兜底：解析结果里 compare 可能缺失（早期返回路径），UI 不该因此崩掉。
+  const compareFields = Array.isArray(parsed.compare) ? parsed.compare : [];
+
+  // 把 parseDetectionTextCases 的错误码翻成人话（它刻意返回码而不是文案，好让文案留在 i18n）。
+  const errorText = useMemo(() => {
+    const code = parsed.error;
+    if (!code) return "";
+    if (code === "EXPECTED_ARRAY") return t("detect.parseErrorExpectedArray");
+    if (code === "EMPTY_ARRAY") return t("detect.parseErrorEmpty");
+    if (code.startsWith("BAD_ENTRIES:")) {
+      return t("detect.parseErrorBadEntries", { indexes: code.slice("BAD_ENTRIES:".length) });
+    }
+    if (code.startsWith("COMPARE_NOT_FOUND:")) {
+      return t("detect.compareNotFound", { fields: code.slice("COMPARE_NOT_FOUND:".length) });
+    }
+    if (code.startsWith("TOO_MANY:")) {
+      const [, count, max] = code.split(":");
+      return t("detect.tooManyCases", { count, max });
+    }
+    return t("detect.parseError", { message: code });
+  }, [parsed.error, t]);
+
+  const loadJsonFile = useCallback(async (event) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      try {
+        setRaw(await file.text());
+      } catch {
+        // 读不出来就保持原内容，用户可以直接粘贴。
+      }
+    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }, []);
+
+  if (!show) return null;
+
+  const canSave = parsed.cases.length > 0 && !parsed.error;
+
+  return (
+    <div style={S.modalOverlay} onClick={onClose}>
+      <div style={{ ...S.settingsModal, ...S.inputImagesModal }} onClick={(event) => event.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <h2 style={{ margin: 0, fontSize: 20, fontFamily: "mono", letterSpacing: -0.5 }}>{t("detect.textCasesTitle")}</h2>
+          <button onClick={onClose} style={S.closeBtn}>✕</button>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 6 }}>
+          <label style={{ ...S.fieldLabel, marginBottom: 0 }}>{t("detect.pasteJson")}</label>
+          <button type="button" style={S.splitToggleBtn} onClick={() => fileInputRef.current?.click()}>
+            {t("detect.uploadJson")}
+          </button>
+        </div>
+        <textarea
+          style={{ ...S.proxyInput, minHeight: 200, resize: "vertical", lineHeight: 1.5 }}
+          value={raw}
+          onChange={(event) => setRaw(event.target.value)}
+          placeholder={'[{"text": "…", "expected": "…"}]'}
+        />
+        <p style={S.hint}>{t("detect.textCasesHint")}</p>
+        {compareFields.length > 0 && (
+          <p style={{ ...S.hint, color: "#7dd3fc" }}>
+            {t("detect.compareSummary", { fields: compareFields.join(", ") })}
+          </p>
+        )}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".json,application/json"
+          style={{ display: "none" }}
+          onChange={loadJsonFile}
+        />
+
+        {/* 解析成功后逐条列出，可删 —— 提交前能看清到底要跑什么。 */}
+        {parsed.cases.length > 0 && (
+          <div style={{ ...S.settingToggleList, marginTop: 14, maxHeight: 260, overflow: "auto" }}>
+            {parsed.cases.map((item, index) => (
+              <div key={`detect-case-${index}`} style={S.settingToggleRow}>
+                <div style={S.settingToggleTextWrap}>
+                  <div style={S.settingToggleTitle}>
+                    {index + 1}. {item.text.length > 80 ? `${item.text.slice(0, 80)}…` : item.text}
+                  </div>
+                  {item.note ? (
+                    <div style={{ ...S.settingToggleHint, color: "#9fc7de" }}>{item.note}</div>
+                  ) : null}
+                  <div style={S.settingToggleHint}>
+                    {Array.isArray(item.expected)
+                      ? `${t("detect.expectedLabel")}: ${item.expected.join(" | ")}`
+                      : item.expected && typeof item.expected === "object"
+                      ? Object.entries(item.expected)
+                          .map(([k, v]) => {
+                            // compare 声明的字段标 ✓，其余只展示不判
+                            const judged = !compareFields.length || compareFields.includes(k);
+                            // 数组 = 多个可接受值，用 | 分隔（跟卡片上的显示保持一致）
+                            const shown = Array.isArray(v) ? v.join(" | ") : v;
+                            return `${k}${judged ? " ✓" : ""}: ${shown}`;
+                          })
+                          .join("   ")
+                      : item.expected
+                      ? `${t("detect.expectedLabel")}: ${item.expected}`
+                      : t("detect.statPending")}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={S.apiModalActions}>
+          <span style={{ ...S.apiModalState, ...(errorText ? { color: "#fca5a5" } : null) }}>
+            {errorText || (parsed.cases.length ? t("detect.parsedCount", { count: parsed.cases.length }) : "")}
+          </span>
+          <button
+            style={{ ...S.apiSaveBtn, opacity: canSave ? 1 : 0.5, cursor: canSave ? "pointer" : "not-allowed" }}
+            onClick={() => onConfirm(parsed.cases, raw, compareFields)}
             disabled={!canSave}
           >
             {t("common.save")}
