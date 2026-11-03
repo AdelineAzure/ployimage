@@ -7,7 +7,7 @@ import {
   getModelPlatformCandidates,
   buildDetectionExport,
   buildDetectionRequestText,
-  getQwen3ImageEditSize,
+  getQwen3ImageSize,
   judgeDetectionOutput,
   mapAspectRatioToLuminaRatio,
   mergeApiKeys,
@@ -369,7 +369,7 @@ describe("image API platform routing", () => {
     });
   });
 
-  it.each(["wan2.7-image", "qwen-image-2.0", "qwen-image-invite-beta-v1"])(
+  it.each(["wan2.7-image", "qwen-image-invite-beta-v1", "qwen-image-3.0-pro"])(
     "keeps %s on Bailian",
     (modelId) => {
       expect(
@@ -397,16 +397,17 @@ describe("image API platform routing", () => {
     }
   );
 
-  it("keeps Seedream 4.0 on Comet even with a Lumina key (Lumina lacks that model)", () => {
+  it("routes qwen 3 pro through Bailian even when Lumina and Comet keys exist", () => {
     expect(
-      getApiConfigForModel(findModel("doubao-seedream-4-0-250828"), {
+      getApiConfigForModel(findModel("qwen-image-3.0-pro"), {
         comet: "comet-key",
+        bailian: "bailian-key",
         lumina: "lumina-key",
       })
     ).toEqual({
-      apiPlatform: "comet",
-      apiBaseUrl: "https://api.cometapi.com",
-      apiKey: "comet-key",
+      apiPlatform: "bailian",
+      apiBaseUrl: "https://dashscope.aliyuncs.com",
+      apiKey: "bailian-key",
     });
   });
 
@@ -566,7 +567,7 @@ describe("callBailianImageAPI", () => {
     expect(body.parameters.prompt_extend).toBe(true);
   });
 
-  it("sends Qwen3 with its invite model id, automatic resolution, and APE mode", async () => {
+  it("sends Qwen Image 3.0 Pro with automatic resolution and APE mode", async () => {
     const fetchMock = vi.fn(async () =>
       new Response(
         JSON.stringify({
@@ -580,25 +581,37 @@ describe("callBailianImageAPI", () => {
 
     await callBailianImageAPI(
       "https://proxy.example",
-      { id: "qwen-image-invite-beta-v1", apiType: "bailian", platforms: ["bailian"] },
+      { id: "qwen-image-3.0-pro", apiType: "bailian", platforms: ["bailian"] },
       "warm outdoor portrait",
       null,
       { apiPlatform: "bailian", aspectRatio: "auto", promptExtend: true, promptExtendMode: "agent" },
     );
 
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(body.model).toBe("qwen-image-invite-beta-v1");
+    expect(body.model).toBe("qwen-image-3.0-pro");
     expect(body.parameters).toEqual({
+      n: 1,
       watermark: false,
       prompt_extend: true,
       prompt_extend_mode: "agent",
     });
   });
 
-  it("runs multiple Qwen3 outputs as separate requests", async () => {
+  it("requests multiple Qwen Image 3.0 Pro outputs in one call", async () => {
     const fetchMock = vi.fn(async () =>
       new Response(
-        JSON.stringify({ output: { choices: [{ message: { content: [{ image: "data:image/png;base64,b3V0" }] } }] } }),
+        JSON.stringify({
+          output: {
+            choices: [{
+              message: {
+                content: [
+                  { image: "data:image/png;base64,b3V0MQ==" },
+                  { image: "data:image/png;base64,b3V0Mg==" },
+                ],
+              },
+            }],
+          },
+        }),
         { status: 200, headers: { "content-type": "application/json" } },
       ),
     );
@@ -606,33 +619,32 @@ describe("callBailianImageAPI", () => {
 
     const images = await generateImage(
       "https://proxy.example",
-      { id: "qwen-image-invite-beta-v1", name: "Qwen3", apiType: "bailian", platforms: ["bailian"] },
+      { id: "qwen-image-3.0-pro", name: "qwen 3 pro", apiType: "bailian", platforms: ["bailian"] },
       "editorial portrait",
       null,
       { apiPlatform: "bailian", count: 2, promptExtend: true, promptExtendMode: "direct" },
     );
 
     expect(images).toHaveLength(2);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    fetchMock.mock.calls.forEach(([, request]) => {
-      expect(JSON.parse(request.body).parameters).not.toHaveProperty("n");
-    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).parameters.n).toBe(2);
   });
 
   it.each([
-    ["1:1", "1500*1500"],
-    ["16:9", "2000*1125"],
-    ["9:16", "1125*2000"],
-    ["21:9", "2044*876"],
-  ])("keeps Qwen3 image-edit size within the documented area for %s", (aspectRatio, expected) => {
-    const size = getQwen3ImageEditSize(aspectRatio);
+    ["1:1", "2048*2048"],
+    ["16:9", "2688*1536"],
+    ["9:16", "1536*2688"],
+    ["4:3", "2368*1728"],
+  ])("uses the documented Qwen Image 3.0 Pro size for %s", (aspectRatio, expected) => {
+    const size = getQwen3ImageSize(aspectRatio);
     expect(size).toBe(expected);
     const [width, height] = size.split("*").map(Number);
     expect(width * height).toBeGreaterThanOrEqual(512 * 512);
-    expect(width * height).toBeLessThanOrEqual(1500 * 1500);
+    expect(width * height).toBeLessThanOrEqual(2048 * 2048);
+    expect(Math.max(width, height) / Math.min(width, height)).toBeLessThanOrEqual(8);
   });
 
-  it("uses the capped Qwen3 size for an explicit image-edit ratio", async () => {
+  it("uses the same Qwen Image 3.0 Pro size for text and image editing", async () => {
     const fetchMock = vi.fn(async () =>
       new Response(
         JSON.stringify({ output: { choices: [{ message: { content: [{ image: "data:image/png;base64,aTJp" }] } }] } }),
@@ -643,14 +655,15 @@ describe("callBailianImageAPI", () => {
 
     await callBailianImageAPI(
       "https://proxy.example",
-      { id: "qwen-image-invite-beta-v1", apiType: "bailian", platforms: ["bailian"] },
+      { id: "qwen-image-3.0-pro", apiType: "bailian", platforms: ["bailian"] },
       "keep the subject",
       "data:image/png;base64,aW5wdXQ=",
-      { apiPlatform: "bailian", aspectRatio: "1:1" },
+      { apiPlatform: "bailian", aspectRatio: "1:1", promptExtend: true, promptExtendMode: "agent" },
     );
 
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(body.parameters.size).toBe("1500*1500");
+    expect(body.parameters.size).toBe("2048*2048");
+    expect(body.parameters).not.toHaveProperty("prompt_extend_mode");
   });
 });
 

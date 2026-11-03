@@ -15,7 +15,7 @@ describe("Cloudflare Worker Bailian forwarding", () => {
     );
     vi.stubGlobal("fetch", upstreamFetch);
     const payload = {
-      model: "qwen-image-invite-beta-v1",
+      model: "qwen-image-3.0-pro",
       input: { messages: [{ role: "user", content: [{ text: "paper-cut city" }] }] },
       parameters: { prompt_extend: true, prompt_extend_mode: "agent", watermark: false },
     };

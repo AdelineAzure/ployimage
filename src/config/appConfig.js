@@ -1,9 +1,7 @@
 // ─── Model Registry ───
 // Each model has its own apiType defining which upstream endpoint/format to use.
 const SEEDREAM_MODELS = [
-  // Seedream — /v1/images/generations (豆包生图)
-  // Lumina 网关未提供 Seedream 4.0（该 key 仅有 4.5 / 5.0），保留 Comet-only。
-  { id: "doubao-seedream-4-0-250828", name: "Seedream 4.0", shortName: "Seed 4.0", provider: "ByteDance", apiType: "images", platforms: ["comet"] },
+  // Seedream — /v1/images/generations (豆包生图)，单独一行。
   { id: "doubao-seedream-4-5-251128", name: "Seedream 4.5", shortName: "Seed 4.5", provider: "ByteDance", apiType: "images", badge: "NEW", platforms: ["comet", "lumina"] },
   { id: "doubao-seedream-5-0-260128", name: "Seedream 5.0 Lite", shortName: "Seed 5", provider: "ByteDance", apiType: "images", badge: "NEW", platforms: ["comet", "lumina"] },
 ];
@@ -15,29 +13,28 @@ const NANO_MODELS = [
   { id: "gemini-3-pro-image", name: "NanoBanana Pro", shortName: "Nano Pro", provider: "Google", apiType: "gemini", badge: "PRO", platforms: ["comet", "lumina"] },
 ];
 
-const GPT_WAN_MODELS = [
+const GPT_MODELS = [
   // GPT Image 系列 — 文生图走 /v1/images/generations；带输入图优先走 JSON 兼容路径，
   // gpt-image-1 / gpt-image-1-mini 才使用 /v1/images/edits (multipart)
   { id: "gpt-image-1.5", name: "GPT‑1.5 Image", shortName: "GPT-1.5", provider: "OpenAI", apiType: "images", badge: "HOT", platforms: ["comet", "lumina"] },
   { id: "gpt-image-2", name: "GPT‑2 Image", shortName: "GPT-2", provider: "OpenAI", apiType: "images", badge: "NEW", platforms: ["comet", "lumina"] },
-  // Bailian Wan 2.7 系列
-  { id: "wan2.7-image", name: "wan", shortName: "wan", provider: "Alibaba", apiType: "bailian", badge: "NEW", platforms: ["bailian"] },
-  { id: "wan2.7-image-pro", name: "wanpro", shortName: "wanpro", provider: "Alibaba", apiType: "bailian", badge: "PRO", platforms: ["bailian"] },
 ];
 
-const QWEN_MODELS = [
-  // 百炼 Qwen Image 2.0：同一模型支持文生图和 1-3 张参考图编辑。
-  { id: "qwen-image-2.0", name: "qwen", shortName: "qwen", provider: "Alibaba", apiType: "bailian", badge: "NEW", platforms: ["bailian"] },
-  { id: "qwen-image-2.0-pro", name: "qwen pro", shortName: "qwen pro", provider: "Alibaba", apiType: "bailian", badge: "PRO", platforms: ["bailian"] },
+const BAILIAN_IMAGE_MODELS = [
+  // Wan 2.7 与 Qwen Image 3 同一行；Qwen Image 2.0 系列已从选择列表下线。
+  { id: "wan2.7-image", name: "wan", shortName: "wan", provider: "Alibaba", apiType: "bailian", badge: "NEW", platforms: ["bailian"] },
+  { id: "wan2.7-image-pro", name: "wanpro", shortName: "wanpro", provider: "Alibaba", apiType: "bailian", badge: "PRO", platforms: ["bailian"] },
   // Qwen Image 3.0 邀测模型：复用百炼 Key，支持 DPE / APE 提示词加强模式。
   { id: "qwen-image-invite-beta-v1", name: "Qwen3", shortName: "Qwen3", provider: "Alibaba", apiType: "bailian", badge: "BETA", platforms: ["bailian"] },
+  // Qwen Image 3.0 Pro：公开模型，文生图和 1-3 张参考图编辑，单次最多 6 张。
+  { id: "qwen-image-3.0-pro", name: "qwen 3 pro", shortName: "qwen 3 pro", provider: "Alibaba", apiType: "bailian", badge: "PRO", platforms: ["bailian"] },
 ];
 
 export const IMAGE_MODEL_ROWS = [
   SEEDREAM_MODELS,
   NANO_MODELS,
-  GPT_WAN_MODELS,
-  QWEN_MODELS,
+  GPT_MODELS,
+  BAILIAN_IMAGE_MODELS,
 ];
 export const IMAGE_MODELS = IMAGE_MODEL_ROWS.flat();
 
@@ -105,7 +102,7 @@ export const PROVIDER_COLORS = {
 export const LOCAL_STATE_KEY = "polyimage_local_state_v1";
 export const DEFAULT_PROXY_URL = "https://polyimage.adelineazures.workers.dev";
 export const DEFAULT_SELECTED_MODELS = [
-  "doubao-seedream-4-0-250828",
+  "qwen-image-3.0-pro",
   "doubao-seedream-4-5-251128",
   "gemini-2.5-flash-image",
   "gemini-3-pro-image",

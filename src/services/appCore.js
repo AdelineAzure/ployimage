@@ -287,9 +287,9 @@ export function normalizeAspectRatio(value) {
 export function normalizeModelId(id) {
   if (typeof id !== "string") return id;
   if (NANO_PRO_LEGACY_MODEL_IDS.includes(id)) return NANO_PRO_OFFICIAL_MODEL_ID;
-  if (id === "qwen-image-3.0" || id === "qwen-image-3.0-pro") return "qwen-image-invite-beta-v1";
-  if (id === "qwen-image-plus") return "qwen-image-2.0";
-  if (id === "qwen-image-max") return "qwen-image-2.0-pro";
+  if (id === "qwen-image-3.0" || id === "doubao-seedream-4-0-250828") return "qwen-image-3.0-pro";
+  if (id === "qwen-image-plus" || id === "qwen-image-2.0") return "qwen-image-3.0-pro";
+  if (id === "qwen-image-max" || id === "qwen-image-2.0-pro") return "qwen-image-3.0-pro";
   return id;
 }
 
@@ -362,8 +362,13 @@ export function isQwenImage2Model(model) {
   return /^qwen-image-2\.0(?:-pro)?(?:-|$)/.test(String(model?.id || ""));
 }
 
+export function isQwenImage3ProModel(model) {
+  return String(model?.id || "") === "qwen-image-3.0-pro";
+}
+
 export function isQwenImage3Model(model) {
-  return String(model?.id || "") === "qwen-image-invite-beta-v1";
+  const id = String(model?.id || "");
+  return id === "qwen-image-3.0-pro" || id === "qwen-image-invite-beta-v1";
 }
 
 export function normalizeQwenPromptExtendMode(value) {
@@ -438,6 +443,13 @@ export function getQwen3ImageEditSize(aspectRatio = DEFAULT_ASPECT_RATIO) {
   return `${widthRatio * scale}*${heightRatio * scale}`;
 }
 
+export function getQwen3ImageSize(aspectRatio = DEFAULT_ASPECT_RATIO) {
+  const normalizedRatio = normalizeAspectRatio(aspectRatio);
+  if (normalizedRatio === DEFAULT_ASPECT_RATIO) return null;
+  // 3.0 文生图和图生图共用同一套分辨率：总像素 512²–2048²，比例 1:8–8:1。
+  return getBailianAspectRatioSize(normalizedRatio);
+}
+
 export function getBailianImageInputLimit(model) {
   if (isQwenImageModel(model)) return 3;
   if (/^wan2\.7-image(?:-pro)?(?:-|$)/.test(String(model?.id || ""))) return 9;
@@ -447,12 +459,16 @@ export function getBailianImageInputLimit(model) {
 export function getBailianImageSize(model, aspectRatio = DEFAULT_ASPECT_RATIO, hasImageInputs = false) {
   const isQwen2Model = isQwenImage2Model(model);
   const isQwen3Model = isQwenImage3Model(model);
+  const isQwen3ProModel = isQwenImage3ProModel(model);
   const fallbackSize = isQwen2Model ? "2048*2048" : "2K";
   const normalizedRatio = normalizeAspectRatio(aspectRatio);
   if (normalizedRatio === DEFAULT_ASPECT_RATIO) {
     // Qwen3 auto-selects resolution from the prompt; Qwen 2.0 editing follows the last input ratio.
     if (isQwen3Model || (isQwen2Model && hasImageInputs)) return null;
     return fallbackSize;
+  }
+  if (isQwen3ProModel) {
+    return getQwen3ImageSize(normalizedRatio);
   }
   if (isQwen3Model && hasImageInputs) {
     return getQwen3ImageEditSize(normalizedRatio);
@@ -5837,6 +5853,7 @@ export async function callBailianImageAPI(proxyUrl, model, prompt, imageBase64, 
   const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
   const isQwenModel = isQwenImageModel(model);
   const isQwen3Model = isQwenImage3Model(model);
+  const isQwen3ProModel = isQwenImage3ProModel(model);
   const promptExtend = options.promptExtend !== false;
   const promptExtendMode = normalizeQwenPromptExtendMode(options.promptExtendMode);
   const effectiveImageInputs = imageInputs
@@ -5865,11 +5882,13 @@ export async function callBailianImageAPI(proxyUrl, model, prompt, imageBase64, 
       ],
     },
     parameters: {
-      ...(!isQwen3Model ? { n: Math.min(Math.max(1, Number(count) || 1), isQwenModel ? 6 : 4) } : {}),
+      ...(!isQwen3Model || isQwen3ProModel ? { n: Math.min(Math.max(1, Number(count) || 1), isQwenModel ? 6 : 4) } : {}),
       ...(imageSize ? { size: imageSize } : {}),
       watermark: false,
       ...(isQwenModel ? { prompt_extend: promptExtend } : {}),
-      ...(isQwen3Model && promptExtend ? { prompt_extend_mode: promptExtendMode } : {}),
+      ...(isQwen3Model && promptExtend && !(isQwen3ProModel && promptExtendMode === "agent" && effectiveImageInputs.length)
+        ? { prompt_extend_mode: promptExtendMode }
+        : {}),
       ...(!isQwenModel && !effectiveImageInputs.length && model?.id === "wan2.7-image-pro" ? { thinking_mode: true } : {}),
     },
   };
@@ -6281,7 +6300,7 @@ export async function generateImage(proxyUrl, model, prompt, imageBase64, option
     case "images":
       return callImagesAPI(proxyUrl, model, promptWithAspectRatio, primaryImage, { ...nextOptions, count: requested });
     case "bailian": {
-      if (isQwenImage3Model(model) && requested > 1) {
+      if (isQwenImage3Model(model) && !isQwenImage3ProModel(model) && requested > 1) {
         const all = [];
         for (let index = 0; index < requested; index += 1) {
           const one = await callBailianImageAPI(proxyUrl, model, promptWithAspectRatio, primaryImage, { ...nextOptions, count: 1 });

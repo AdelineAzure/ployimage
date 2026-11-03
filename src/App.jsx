@@ -629,15 +629,24 @@ export default function App() {
           if (typeof migratedCounts["gemini-3-pro-preview"] === "number" && typeof migratedCounts[NANO_PRO_OFFICIAL_MODEL_ID] !== "number") {
             migratedCounts[NANO_PRO_OFFICIAL_MODEL_ID] = migratedCounts["gemini-3-pro-preview"];
           }
-          const legacyQwen3Count = migratedCounts["qwen-image-3.0"] ?? migratedCounts["qwen-image-3.0-pro"];
-          if (typeof legacyQwen3Count === "number" && typeof migratedCounts["qwen-image-invite-beta-v1"] !== "number") {
-            migratedCounts["qwen-image-invite-beta-v1"] = legacyQwen3Count;
+          if (
+            typeof migratedCounts["qwen-image-3.0"] === "number" &&
+            typeof migratedCounts["qwen-image-3.0-pro"] !== "number"
+          ) {
+            migratedCounts["qwen-image-3.0-pro"] = migratedCounts["qwen-image-3.0"];
           }
-          if (typeof migratedCounts["qwen-image-plus"] === "number" && typeof migratedCounts["qwen-image-2.0"] !== "number") {
-            migratedCounts["qwen-image-2.0"] = migratedCounts["qwen-image-plus"];
+          if (
+            typeof migratedCounts["doubao-seedream-4-0-250828"] === "number" &&
+            typeof migratedCounts["qwen-image-3.0-pro"] !== "number"
+          ) {
+            migratedCounts["qwen-image-3.0-pro"] = migratedCounts["doubao-seedream-4-0-250828"];
           }
-          if (typeof migratedCounts["qwen-image-max"] === "number" && typeof migratedCounts["qwen-image-2.0-pro"] !== "number") {
-            migratedCounts["qwen-image-2.0-pro"] = migratedCounts["qwen-image-max"];
+          const retiredQwenCount = migratedCounts["qwen-image-2.0"]
+            ?? migratedCounts["qwen-image-2.0-pro"]
+            ?? migratedCounts["qwen-image-plus"]
+            ?? migratedCounts["qwen-image-max"];
+          if (typeof retiredQwenCount === "number" && typeof migratedCounts["qwen-image-3.0-pro"] !== "number") {
+            migratedCounts["qwen-image-3.0-pro"] = retiredQwenCount;
           }
           setModelCounts((prev) => ({ ...prev, ...migratedCounts }));
         }
