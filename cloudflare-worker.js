@@ -113,12 +113,19 @@ export default {
             ? "DASHSCOPE_API_KEY"
             : apiPlatform === "lumina"
             ? "LUMINA_API_KEY"
+            : apiPlatform === "litellm"
+            ? "LITELLM_API_KEY"
             : "COMETAPI_KEY";
         return json({ error: `API key missing. Provide X-Api-Key or configure ${envName}.` }, 400);
       }
 
       const isGemini = targetPath.includes("/v1beta/");
-      const prefersBearer = apiPlatform === "bailian" || apiPlatform === "comet" || apiPlatform === "lumina" || !isGemini;
+      const prefersBearer =
+        apiPlatform === "bailian" ||
+        apiPlatform === "comet" ||
+        apiPlatform === "lumina" ||
+        apiPlatform === "litellm" ||
+        !isGemini;
       const primaryAuth = prefersBearer ? `Bearer ${apiKey}` : apiKey;
       const fallbackAuth = prefersBearer ? apiKey : `Bearer ${apiKey}`;
       const baseHeaders = {
@@ -188,12 +195,16 @@ function normalizeApiPlatform(value) {
   if (value === "bailian") return "bailian";
   if (value === "comet") return "comet";
   if (value === "lumina") return "lumina";
+  if (value === "litellm") return "litellm";
   return "comet";
 }
 
 function inferApiPlatformFromBase(value) {
   if (/dashscope\.aliyuncs\.com/i.test(value || "")) return "bailian";
   if (/cometapi\.com/i.test(value || "")) return "comet";
+  // litellm 要排在 tripo3d 之前：中继域名是 vast-internal.com，但别的
+  // vast 网关以后也可能挂 tripo3d 后缀，先精确匹配中继名字更稳。
+  if (/litellm-business-relay/i.test(value || "")) return "litellm";
   if (/tripo3d\.com/i.test(value || "")) return "lumina";
   return "comet";
 }
@@ -204,6 +215,9 @@ function getFallbackApiKey(env, apiPlatform) {
   }
   if (apiPlatform === "lumina") {
     return normalizeApiKey(env.LUMINA_API_KEY || "");
+  }
+  if (apiPlatform === "litellm") {
+    return normalizeApiKey(env.LITELLM_API_KEY || env.RELAY_API_KEY || "");
   }
   return normalizeApiKey(env.COMETAPI_KEY || env.COMET_API_KEY || "");
 }

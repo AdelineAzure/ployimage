@@ -45,9 +45,11 @@ const {
   DEFAULT_GPT_ASSIST_MODEL,
   DEFAULT_BAILIAN_ASSIST_MODEL,
   DEFAULT_CHAT_MODEL,
-  CHAT_API_PLATFORM,
-  CHAT_API_BASE_URL,
   CHAT_HISTORY_FOLDER_NAME,
+  DETECT_MODELS,
+  DEFAULT_SELECTED_DETECT_MODELS,
+  getDetectModel,
+  normalizeSelectedDetectModels,
   DEFAULT_DETECTION_TEMPLATES,
   MAX_DETECTION_TEMPLATES,
   MAX_DETECT_IMAGES_PER_BATCH,
@@ -439,6 +441,8 @@ export default function App() {
   const chatSeqRef = useRef(1);
   const [detectTemplates, setDetectTemplates] = useState(() => normalizeDetectionTemplates(DEFAULT_DETECTION_TEMPLATES));
   const [activeDetectTemplateId, setActiveDetectTemplateId] = useState(null);
+  // 检测模型多选：勾两个就把同一批用例各跑一遍，记录里按模型分段，方便对比两条链路的判准。
+  const [selectedDetectModels, setSelectedDetectModels] = useState(DEFAULT_SELECTED_DETECT_MODELS);
   const [uiLanguage, setUiLanguage] = useState(DEFAULT_UI_LANGUAGE);
   const [taskMode, setTaskMode] = useState(DEFAULT_TASK_MODE);
   const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_BASE_URL);
@@ -694,6 +698,10 @@ export default function App() {
         if (saved.qwenPromptExtendMode === "direct" || saved.qwenPromptExtendMode === "agent") {
           setQwenPromptExtendMode(saved.qwenPromptExtendMode);
         }
+        // 检测模型选择：normalize 会丢掉已下线的 id，空了回到默认（老用户没有这个字段，也走默认）。
+        if (Array.isArray(saved.selectedDetectModels)) {
+          setSelectedDetectModels(normalizeSelectedDetectModels(saved.selectedDetectModels));
+        }
         if (typeof saved.proxyUrl === "string" && saved.proxyUrl.trim()) setProxyUrl(saved.proxyUrl);
         if (typeof saved.uiLanguage === "string") setUiLanguage(normalizeUiLanguage(saved.uiLanguage));
         if (typeof saved.nextSeq === "number" && Number.isFinite(saved.nextSeq)) seqRef.current = saved.nextSeq;
@@ -733,6 +741,7 @@ export default function App() {
       qwenPromptExtend,
       qwenPromptExtendMode,
       groupPlatforms,
+      selectedDetectModels,
       proxyUrl,
       uiLanguage,
       nextSeq: seqRef.current,
@@ -740,7 +749,7 @@ export default function App() {
     try {
       localStorage.setItem(LOCAL_STATE_KEY, JSON.stringify(state));
     } catch {}
-  }, [historyLimit, selectedModels, modelCounts, prompt, taskMode, comparePrompts, compareCount, styleThemes, styleReferenceImages, apiBaseUrl, lastEditedCount, aspectRatio, qwenPromptExtend, qwenPromptExtendMode, groupPlatforms, proxyUrl, uiLanguage]);
+  }, [historyLimit, selectedModels, modelCounts, prompt, taskMode, comparePrompts, compareCount, styleThemes, styleReferenceImages, apiBaseUrl, lastEditedCount, aspectRatio, qwenPromptExtend, qwenPromptExtendMode, groupPlatforms, selectedDetectModels, proxyUrl, uiLanguage]);
 
   useEffect(() => {
     if (selectedAtlasItems.length > 0) return;
@@ -2986,7 +2995,15 @@ export default function App() {
   // 以后容易有人从这个闭包快照里读 rating/status，拿到的是发起时的旧值。
   const runChatItem = useCallback(
     async (recordId, itemId, promptText, payload = {}) => {
-      const { image = "", text = "", expected = "", resultField = DEFAULT_DETECT_RESULT_FIELD, compare = [] } = payload;
+      const {
+        image = "",
+        text = "",
+        expected = "",
+        resultField = DEFAULT_DETECT_RESULT_FIELD,
+        compare = [],
+        // 每个小组自带模型 id（多选检测时同一批用例会跑多个模型）。缺省回到原来那个。
+        modelId = DEFAULT_CHAT_MODEL,
+      } = payload;
       const patchItem = (patch) =>
         setChatMessages((prev) =>
           prev.map((m) =>
@@ -2999,10 +3016,24 @@ export default function App() {
               : m
           )
         );
-      // qwen3-vl-30b-a3b-instruct 是百炼的视觉语言模型（读图+出文字），走百炼 compatible-mode。
-      const chatKey = getApiKeyForPlatform(apiKeys, CHAT_API_PLATFORM);
+      // 平台 / 兼容路径都从注册表取：百炼走 /compatible-mode/v1/...，LiteLLM 中继走 /v1/...。
+      const detectModel = getDetectModel(modelId);
+      if (!detectModel) {
+        patchItem({ status: "error", error: `Unknown detection model: ${modelId}` });
+        return;
+      }
+      // 没有视觉通道的模型（gemma4 是私有化部署的文本模型）收不了图，直接标掉，
+      // 不发请求 —— 否则上游会把 base64 当普通文本吃掉，返回一段看不出问题的胡话。
+      if (image && !detectModel.vision) {
+        patchItem({ status: "error", error: t("detect.modelNoVision", { model: detectModel.name }) });
+        return;
+      }
+      const chatKey = getApiKeyForPlatform(apiKeys, detectModel.platform);
       if (!chatKey) {
-        patchItem({ status: "error", error: t("chat.missingKey") });
+        patchItem({
+          status: "error",
+          error: t("detect.missingPlatformKey", { platform: detectModel.platform }),
+        });
         return;
       }
       // 用例在上、检测指令在下（顺序见 buildDetectionRequestText，有单测盯着）。
@@ -3011,11 +3042,12 @@ export default function App() {
       // 而同批其余请求正常。这类瞬时鉴权错误不是真的坏 Key，客户端重试一次即可恢复。
       const callOnce = () =>
         callChatCompletion(proxyUrl.trim(), {
-          model: DEFAULT_CHAT_MODEL,
+          model: detectModel.id,
           messages: [buildChatUserMessage(requestText, image ? [image] : [])],
           apiKey: chatKey,
-          apiPlatform: CHAT_API_PLATFORM,
-          apiBaseUrl: CHAT_API_BASE_URL,
+          apiPlatform: detectModel.platform,
+          apiBaseUrl: getDefaultApiBaseUrl(detectModel.platform),
+          targetPath: detectModel.targetPath,
         });
       try {
         let outputText;
@@ -3080,8 +3112,11 @@ export default function App() {
     // compare 随记录快照，重跑时按记录里的值判定。
     const compareFields = Array.isArray(chatCompareFields) ? chatCompareFields : [];
     const baseTime = Date.now();
-    const recordId = baseTime + Math.floor(Math.random() * 1000);
-    const makeItem = (index, extra) => ({
+    // 勾了几个模型就发几条记录（一条记录一个模型）。这样每张卡的错误率、模版统计、
+    // 导出和重跑都还是「一个模型一套结论」，两个模型并排放就是对比视图。
+    // 若混在一条记录里，卡头的错误率会把两条链路的红标加在一起，失去对比意义。
+    const runModels = normalizeSelectedDetectModels(selectedDetectModels);
+    const makeItem = (recordId, index, extra) => ({
       id: `${recordId}-${index}-${Math.floor(Math.random() * 100000)}`,
       image: "",
       text: "",
@@ -3097,54 +3132,68 @@ export default function App() {
       fields: [],
       ...extra,
     });
-    // 三路分支，「只有指令」的兜底放最后（无图无用例时仍跑一个纯文本小组）。
-    const items = textCases.length
-      ? textCases.map((c, index) =>
-          makeItem(index, { text: c.text, expected: c.expected || "", note: c.note || "" })
-        )
-      : images.length
-      ? images.map((img, index) => makeItem(index, { image: img }))
-      : [makeItem(0)];
-    const record = {
-      id: recordId,
-      seq: chatSeqRef.current,
-      createdAt: baseTime,
-      model: DEFAULT_CHAT_MODEL,
-      templateId,
-      templateTitle,
-      resultField,
-      compareFields,
-      prompt: promptText,
-      items,
-      folderSyncedAt: null,
-    };
-    chatSeqRef.current += 1;
-    setChatMessages((prev) => [record, ...prev]);
+    // 每个模型一条记录，同一批输入各跑一遍。
+    const plans = runModels.map((modelId, modelIndex) => {
+      const recordId = baseTime + modelIndex * 1000 + Math.floor(Math.random() * 1000);
+      // 三路分支，「只有指令」的兜底放最后（无图无用例时仍跑一个纯文本小组）。
+      const items = textCases.length
+        ? textCases.map((c, index) =>
+            makeItem(recordId, index, { text: c.text, expected: c.expected || "", note: c.note || "" })
+          )
+        : images.length
+        ? images.map((img, index) => makeItem(recordId, index, { image: img }))
+        : [makeItem(recordId, 0)];
+      return {
+        modelId,
+        record: {
+          id: recordId,
+          seq: chatSeqRef.current + modelIndex,
+          createdAt: baseTime,
+          model: modelId,
+          templateId,
+          templateTitle,
+          resultField,
+          compareFields,
+          prompt: promptText,
+          items,
+          folderSyncedAt: null,
+        },
+      };
+    });
+    chatSeqRef.current += plans.length;
+    // 新记录排在最前，并保持选择顺序（第一个勾的模型在最上面）。
+    setChatMessages((prev) => [...plans.map((p) => p.record), ...prev]);
     // 发送后保留输入图与提示词在输入框，方便微调后再次检测。
     setChatSending(true);
     try {
       // 单轮检测：每个小组独立，不携带上下文。
       // 限并发跑，避免一次几十张图同时打上游导致突发限流/冷启动（首个请求偶发 401）。
+      // 并发在「所有模型的所有小组」上统一排队，而不是每个模型各开 6 条 ——
+      // 勾两个模型时后者会把并发翻倍，正好撞上我们想避开的突发限流。
       const CONCURRENCY = 6;
+      const queue = plans.flatMap((plan) =>
+        plan.record.items.map((it) => ({ plan, item: it }))
+      );
       let cursor = 0;
       const runNext = async () => {
-        while (cursor < items.length) {
-          const it = items[cursor];
+        while (cursor < queue.length) {
+          const { plan, item } = queue[cursor];
           cursor += 1;
-          await runChatItem(recordId, it.id, promptText, {
-            image: it.image,
-            text: it.text,
-            expected: it.expected,
+          await runChatItem(plan.record.id, item.id, promptText, {
+            image: item.image,
+            text: item.text,
+            expected: item.expected,
             resultField,
             compare: compareFields,
+            modelId: plan.modelId,
           });
         }
       };
-      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, runNext));
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, runNext));
     } finally {
       setChatSending(false);
     }
-  }, [chatSending, proxyUrl, chatEditor, chatImages, chatTextCases, chatResultField, chatCompareFields, detectTemplates, activeDetectTemplateId, runChatItem]);
+  }, [chatSending, proxyUrl, chatEditor, chatImages, chatTextCases, chatResultField, chatCompareFields, detectTemplates, activeDetectTemplateId, selectedDetectModels, runChatItem]);
 
   // 检测图片上传/删除/编辑：复用 workspace 的 InputImagesModal / PromptImageEditorModal。
   const appendChatImageFiles = useCallback(async (files) => {
@@ -3281,6 +3330,9 @@ export default function App() {
         expected: item.expected,
         resultField: record.resultField || DEFAULT_DETECT_RESULT_FIELD,
         compare: Array.isArray(record.compareFields) ? record.compareFields : [],
+        // 重跑用记录自己快照的模型，不读当前勾选 —— 否则改过选择后重跑一条，
+        // 卡头写着 A 模型、结果其实是 B 跑的。
+        modelId: record.model || DEFAULT_CHAT_MODEL,
       });
     },
     [chatMessages, proxyUrl, runChatItem]
@@ -3995,9 +4047,76 @@ export default function App() {
             <div style={S.modelTemplateGrid}>
               <div style={S.modelsPanel}>
                 <div style={S.modelsHeadRow}>
-                  <label style={{ ...S.label, marginBottom: 0 }}>{t("workspace.models")}</label>
-                  <span style={{ fontFamily: mono, fontSize: 12, color: "#c4c4cc" }}>{DEFAULT_CHAT_MODEL}</span>
+                  <label style={{ ...S.label, marginBottom: 0 }}>
+                    {t("workspace.models")}{" "}
+                    <span style={{ color: "#888", fontWeight: 400 }}>
+                      ({selectedDetectModels.length}/{DETECT_MODELS.length})
+                    </span>
+                  </label>
+                  <span style={{ fontFamily: mono, fontSize: 11, color: "#71717a" }}>
+                    {t("detect.modelsHint")}
+                  </span>
                 </div>
+                {/* 检测模型多选：勾两个就把同一批用例各跑一遍，结果并排成两张卡做对比。
+                    没配 Key 的模型照常可勾（点了会在小组上报缺 Key），但 chip 上灰一点做提示。 */}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
+                  {DETECT_MODELS.map((model) => {
+                    const selected = selectedDetectModels.includes(model.id);
+                    const hasKey = !!getApiKeyForPlatform(apiKeys, model.platform);
+                    // 最后一个不让取消：一个都不勾的话点检测什么也不会发生。
+                    const isLastSelected = selected && selectedDetectModels.length === 1;
+                    return (
+                      <button
+                        key={model.id}
+                        type="button"
+                        onClick={() =>
+                          setSelectedDetectModels((prev) => {
+                            const base = normalizeSelectedDetectModels(prev);
+                            if (!base.includes(model.id)) return [...base, model.id];
+                            if (base.length === 1) return base;
+                            return base.filter((id) => id !== model.id);
+                          })
+                        }
+                        disabled={isLastSelected}
+                        title={
+                          hasKey
+                            ? `${model.name} · ${model.platform}${model.vision ? "" : ` · ${t("detect.modelTextOnly")}`}`
+                            : t("detect.missingPlatformKey", { platform: model.platform })
+                        }
+                        style={{
+                          ...S.modelChip,
+                          background: selected ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.03)",
+                          borderColor: selected ? "#facc15" : "rgba(255,255,255,0.08)",
+                          cursor: isLastSelected ? "default" : "pointer",
+                          opacity: hasKey ? 1 : 0.55,
+                        }}
+                      >
+                        <span style={S.chipName} title={model.name}>
+                          {model.shortName || model.name}
+                        </span>
+                        {!model.vision && (
+                          <span style={{ fontFamily: mono, fontSize: 9, color: "#a1a1aa", marginLeft: 4 }}>
+                            T
+                          </span>
+                        )}
+                        {selected && <span style={S.check}>✓</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+                {/* 勾了无视觉通道的模型又传了图：请求会被跳过，提前讲清楚。 */}
+                {chatImages.length > 0 &&
+                selectedDetectModels.some((id) => getDetectModel(id)?.vision === false) ? (
+                  <p style={{ fontFamily: mono, fontSize: 11, color: "#fbbf24", marginTop: 6, lineHeight: 1.5 }}>
+                    {t("detect.visionWarning", {
+                      models: selectedDetectModels
+                        .map((id) => getDetectModel(id))
+                        .filter((m) => m && !m.vision)
+                        .map((m) => m.shortName || m.name)
+                        .join(", "),
+                    })}
+                  </p>
+                ) : null}
                 {/* 统计看板：填满模型行下方的空白 */}
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8, marginTop: 4 }}>
                   {[

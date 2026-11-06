@@ -1,9 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { IMAGE_MODELS, mapModelIdForLumina } from "../config/appConfig";
+import {
+  DETECT_MODELS,
+  DEFAULT_SELECTED_DETECT_MODELS,
+  IMAGE_MODELS,
+  getDetectModel,
+  mapModelIdForLumina,
+  normalizeSelectedDetectModels,
+} from "../config/appConfig";
 import {
   callBailianImageAPI,
   generateImage,
   getApiConfigForModel,
+  getApiConfigForPlatform,
+  normalizeApiKeys,
   getModelPlatformCandidates,
   buildDetectionExport,
   buildDetectionRequestText,
@@ -421,7 +430,78 @@ describe("image API platform routing", () => {
       comet: "old-comet",
       bailian: "new-bailian",
       lumina: "new-lumina",
+      // litellm 没出现在任一来源里，归一化后是空串（LiteLLM 中继 Key 未配置）。
+      litellm: "",
     });
+  });
+});
+
+describe("detection model registry", () => {
+  it("routes each detection model to its own platform and compatible path", () => {
+    // 两家的 OpenAI 兼容端点前缀不同，走错会 404。
+    expect(getDetectModel("qwen3-vl-30b-a3b-instruct")).toMatchObject({
+      platform: "bailian",
+      targetPath: "/compatible-mode/v1/chat/completions",
+      vision: true,
+    });
+    expect(getDetectModel("gemma4-26b-a4b")).toMatchObject({
+      platform: "litellm",
+      targetPath: "/v1/chat/completions",
+      // Gemma 4 是多模态谱系，图片小组照常发出去。
+      vision: true,
+    });
+  });
+
+  it("returns null for an unknown detection model", () => {
+    expect(getDetectModel("not-a-model")).toBeNull();
+  });
+
+  it("drops retired ids and never yields an empty selection", () => {
+    // 一个都不勾时点检测什么也不会发生，所以空集合要回落到默认。
+    expect(normalizeSelectedDetectModels(["not-a-model"])).toEqual(DEFAULT_SELECTED_DETECT_MODELS);
+    expect(normalizeSelectedDetectModels([])).toEqual(DEFAULT_SELECTED_DETECT_MODELS);
+    expect(normalizeSelectedDetectModels(null)).toEqual(DEFAULT_SELECTED_DETECT_MODELS);
+  });
+
+  it("keeps valid ids in order and de-duplicates", () => {
+    expect(
+      normalizeSelectedDetectModels([
+        "gemma4-26b-a4b",
+        "qwen3-vl-30b-a3b-instruct",
+        "gemma4-26b-a4b",
+      ])
+    ).toEqual(["gemma4-26b-a4b", "qwen3-vl-30b-a3b-instruct"]);
+  });
+
+  it("gives every detection model a platform the key store knows", () => {
+    const keyed = normalizeApiKeys({});
+    for (const model of DETECT_MODELS) {
+      expect(Object.keys(keyed)).toContain(model.platform);
+    }
+  });
+});
+
+describe("litellm relay platform", () => {
+  it("resolves the relay base url and key", () => {
+    // gemma4 系列只能从这个公网中继进；直连地址是集群内网。
+    expect(getApiConfigForPlatform("litellm", { litellm: "relay-key" })).toEqual({
+      apiPlatform: "litellm",
+      apiBaseUrl: "https://litellm-business-relay.vast-internal.com",
+      apiKey: "relay-key",
+    });
+  });
+
+  it("accepts the legacy and env-style aliases for the relay key", () => {
+    expect(normalizeApiKeys({ LITELLM_API_KEY: "sk-env" }).litellm).toBe("sk-env");
+    expect(normalizeApiKeys({ relayKey: "sk-relay" }).litellm).toBe("sk-relay");
+    expect(normalizeApiKeys({ litellm: "Bearer sk-bare" }).litellm).toBe("sk-bare");
+  });
+
+  it("keeps the relay key out of the other platforms", () => {
+    const keys = normalizeApiKeys({ litellm: "relay-key" });
+    expect(keys.bailian).toBe("");
+    expect(keys.comet).toBe("");
+    expect(keys.lumina).toBe("");
   });
 });
 

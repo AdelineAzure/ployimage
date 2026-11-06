@@ -128,10 +128,13 @@ export const DEFAULT_ASPECT_RATIO = "auto";
 export const DEFAULT_QWEN_PROMPT_EXTEND = true;
 export const DEFAULT_QWEN_PROMPT_EXTEND_MODE = "direct";
 export const DEFAULT_API_PLATFORM = "comet";
+// litellm = LiteLLM Business Relay（OpenAI 兼容网关）。私有化部署模型（gemma4 系列等）
+// 只挂在集群内网，浏览器和 Worker 都到不了 *.infer.itripo3d.com:8000，必须走这个公网中继。
 export const DEFAULT_API_BASE_URLS = {
   comet: "https://api.cometapi.com",
   bailian: "https://dashscope.aliyuncs.com",
   lumina: "https://lumina.tripo3d.com",
+  litellm: "https://litellm-business-relay.vast-internal.com",
 };
 export const DEFAULT_API_BASE_URL = DEFAULT_API_BASE_URLS[DEFAULT_API_PLATFORM];
 export const DEFAULT_API_KEY = "";
@@ -139,7 +142,11 @@ export const DEFAULT_API_KEYS = {
   comet: DEFAULT_API_KEY,
   bailian: DEFAULT_API_KEY,
   lumina: DEFAULT_API_KEY,
+  litellm: DEFAULT_API_KEY,
 };
+// 所有平台的枚举，单一事实来源：Key 归一化、合并、设置面板都从这里取，
+// 新增平台时不用再去各处补数组。
+export const API_PLATFORMS = ["comet", "bailian", "lumina", "litellm"];
 export const DEFAULT_GPT_ASSIST_MODEL = "gpt-5.6-sol";
 export const DEFAULT_BAILIAN_ASSIST_MODEL = "qwen-plus";
 // ─── 对话（Chat）Tab ───
@@ -150,6 +157,56 @@ export const CHAT_API_PLATFORM = "bailian";
 export const CHAT_API_BASE_URL = DEFAULT_API_BASE_URLS.bailian;
 export const CHAT_API_TARGET_PATH = "/compatible-mode/v1/chat/completions";
 export const CHAT_HISTORY_FOLDER_NAME = "chat-history";
+
+// ─── 检测模型注册表 ───
+// 检测 tab 可多选模型：勾两个就把同一批用例分别跑一遍，用来对比两条链路的判准。
+// 每个模型自带平台 / 兼容路径，因为两家的 OpenAI 兼容端点前缀不同：
+//   bailian → /compatible-mode/v1/chat/completions
+//   litellm → /v1/chat/completions
+// vision=false 的模型不能收图：图片检测时会被跳过并在卡片上注明。
+export const DETECT_MODELS = [
+  {
+    id: "qwen3-vl-30b-a3b-instruct",
+    name: "Qwen3-VL 30B-A3B",
+    shortName: "Qwen3-VL",
+    provider: "Alibaba",
+    platform: "bailian",
+    targetPath: "/compatible-mode/v1/chat/completions",
+    vision: true,
+  },
+  {
+    // 私有化部署（阿里云自托管 vLLM），只能从 LiteLLM Business Relay 这个公网中继进。
+    // 直连地址 http://gemma4-26b-a4b.infer.itripo3d.com:8000/v1 是集群内网，浏览器到不了。
+    // 网关对上游错误不做 fallback，报错会原样返回。
+    id: "gemma4-26b-a4b",
+    name: "Gemma 4 26B-A4B",
+    shortName: "Gemma4 26B",
+    provider: "Google",
+    platform: "litellm",
+    targetPath: "/v1/chat/completions",
+    // VLM：Gemma 4 除最小的纯文本档外都带视觉编码器，26B-A4B 属多模态谱系。
+    // 飞书文档只记了「普通/流式翻译」验收，那是验收范围，不是能力上限。
+    // 仍未端到端实测过读图；若该 vLLM 部署没把视觉塔开出来（纯文本配置 /
+    // --limit-mm-per-prompt image=0），图片小组会从上游报错回来。
+    // 实测脚本：scripts/probe-litellm-vision.mjs
+    vision: true,
+  },
+];
+
+export const DETECT_MODEL_IDS = DETECT_MODELS.map((m) => m.id);
+// 默认只勾原来那个，保持老用户行为不变；想对比时自己再勾上 Gemma4。
+export const DEFAULT_SELECTED_DETECT_MODELS = [DEFAULT_CHAT_MODEL];
+
+export function getDetectModel(modelId) {
+  return DETECT_MODELS.find((m) => m.id === modelId) || null;
+}
+
+// 校验持久化/外部传入的检测模型选择：丢掉已下线的 id，空了就回到默认。
+export function normalizeSelectedDetectModels(value) {
+  const list = Array.isArray(value) ? value : [];
+  const picked = Array.from(new Set(list.filter((id) => DETECT_MODEL_IDS.includes(id))));
+  return picked.length ? picked : [...DEFAULT_SELECTED_DETECT_MODELS];
+}
 // ─── 批量检测模版（独立于图像生成模版）───
 // 检测时把选中模版的正文作为发送给文本模型的检测提示词，红/绿标结果按模版统计错误率。
 export const DETECTION_TEMPLATE_FILE_NAME = "detection-templates.json";

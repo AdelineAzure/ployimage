@@ -1,6 +1,7 @@
 import JSZip from "jszip";
 import {
   API_CONFIG_FILE_NAME,
+  API_PLATFORMS,
   ASPECT_RATIO_OPTIONS,
   DEFAULT_API_BASE_URL,
   DEFAULT_API_BASE_URLS,
@@ -118,10 +119,12 @@ export function normalizeApiBaseUrl(value) {
   }
 }
 
+// litellm = LiteLLM Business Relay，私有化部署模型（gemma4 系列）的唯一公网入口。
 export function normalizeApiPlatform(value) {
   if (value === "bailian") return "bailian";
   if (value === "comet") return "comet";
   if (value === "lumina") return "lumina";
+  if (value === "litellm") return "litellm";
   return DEFAULT_API_PLATFORM;
 }
 
@@ -150,6 +153,11 @@ export function normalizeApiKeys(value) {
     comet: normalizeApiKey(source.comet || source.cometKey || source.cometapiKey || source.COMETAPI_KEY || ""),
     bailian: normalizeApiKey(source.bailian || source.bailianKey || source.dashscopeKey || source.DASHSCOPE_API_KEY || ""),
     lumina: normalizeApiKey(source.lumina || source.luminaKey || source.LUMINA_API_KEY || ""),
+    // LiteLLM Business Relay 的 SK（网关自己的 key，不是下游模型的 key —— 私有化
+     // 部署模型那一跳是 not-required，由网关内部处理）。
+    litellm: normalizeApiKey(
+      source.litellm || source.litellmKey || source.relayKey || source.LITELLM_API_KEY || ""
+    ),
   };
 }
 
@@ -159,7 +167,7 @@ export function mergeApiKeys(...sources) {
   return sources.reduce(
     (merged, source) => {
       const normalized = normalizeApiKeys(source);
-      for (const platform of ["comet", "bailian", "lumina"]) {
+      for (const platform of API_PLATFORMS) {
         if (normalized[platform]) merged[platform] = normalized[platform];
       }
       return merged;
@@ -4394,6 +4402,9 @@ export async function callChatCompletion(proxyUrl, options = {}) {
     apiKey,
     apiPlatform = CHAT_API_PLATFORM,
     apiBaseUrl,
+    // 兼容路径随模型来：百炼是 /compatible-mode/v1/...，LiteLLM 中继是 /v1/...。
+    // 不传时保持原来的百炼默认，老调用点行为不变。
+    targetPath = CHAT_API_TARGET_PATH,
     signal,
   } = options;
   const platform = normalizeApiPlatform(apiPlatform);
@@ -4404,7 +4415,7 @@ export async function callChatCompletion(proxyUrl, options = {}) {
   }
   const data = await postJsonWithRetry(
     proxyUrl,
-    CHAT_API_TARGET_PATH,
+    targetPath || CHAT_API_TARGET_PATH,
     { model, stream: false, messages },
     {
       apiPlatform: platform,

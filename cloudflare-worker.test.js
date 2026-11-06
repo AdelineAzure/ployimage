@@ -78,4 +78,70 @@ describe("Cloudflare Worker Bailian forwarding", () => {
     expect(request.headers.Authorization).toBe("Bearer lumina-key");
     expect(JSON.parse(new TextDecoder().decode(request.body))).toEqual(payload);
   });
+
+  // 私有化部署模型（gemma4-26b-a4b）只能从 LiteLLM Business Relay 这个公网中继进，
+  // 直连地址 *.infer.itripo3d.com:8000 是集群内网，Worker 也到不了。
+  it("forwards LiteLLM relay chat requests with the relay key", async () => {
+    const upstreamFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", upstreamFetch);
+    const payload = {
+      model: "gemma4-26b-a4b",
+      stream: false,
+      messages: [{ role: "user", content: "case text" }],
+    };
+
+    const response = await worker.fetch(
+      new Request("https://worker.example/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Target-Path": "/v1/chat/completions",
+          "X-Upstream-Base": "https://litellm-business-relay.vast-internal.com",
+          "X-Api-Key": "relay-key",
+        },
+        body: JSON.stringify(payload),
+      }),
+      {},
+    );
+
+    expect(response.status).toBe(200);
+    const [url, request] = upstreamFetch.mock.calls[0];
+    expect(url).toBe("https://litellm-business-relay.vast-internal.com/v1/chat/completions");
+    expect(request.headers.Authorization).toBe("Bearer relay-key");
+    expect(JSON.parse(new TextDecoder().decode(request.body))).toEqual(payload);
+  });
+
+  // X-Api-Platform 缺省时平台靠 base 推断：中继域名必须落到 litellm，
+  // 否则会去读 COMETAPI_KEY 这个错的 env key。
+  it("infers the litellm platform from the relay base and uses LITELLM_API_KEY", async () => {
+    const upstreamFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ choices: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", upstreamFetch);
+
+    const response = await worker.fetch(
+      new Request("https://worker.example/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Target-Path": "/v1/chat/completions",
+          "X-Upstream-Base": "https://litellm-business-relay.vast-internal.com",
+        },
+        body: JSON.stringify({ model: "gemma4-26b-a4b", messages: [] }),
+      }),
+      { LITELLM_API_KEY: "env-relay-key", COMETAPI_KEY: "env-comet-key" },
+    );
+
+    expect(response.status).toBe(200);
+    const [, request] = upstreamFetch.mock.calls[0];
+    expect(request.headers.Authorization).toBe("Bearer env-relay-key");
+  });
 });

@@ -5,6 +5,7 @@ import {
   DEFAULT_DETECT_RESULT_FIELD,
   DEFAULT_GPT_ASSIST_SEND_PROMPT_IMAGE,
   DEFAULT_GPT_ASSIST_SEND_PROMPT_TEXT,
+  API_PLATFORMS,
   INPUT_IMAGE_EDITOR_COLORS,
   MAX_COMPARE_PROMPTS,
   MAX_INPUT_IMAGES_PER_BATCH,
@@ -30,7 +31,7 @@ import {
 import { S } from "../../styles/appStyles";
 import { TokenPromptInput } from "../workspace/promptControls";
 
-const PLATFORM_LABELS = { comet: "Comet", lumina: "Lumina", bailian: "Bailian" };
+const PLATFORM_LABELS = { comet: "Comet", lumina: "Lumina", bailian: "Bailian", litellm: "LiteLLM" };
 
 export function SettingsModal({ show, onClose, proxyUrl, setProxyUrl, uiLanguage, setUiLanguage, groupPlatforms, setGroupPlatforms }) {
   const { t } = useI18n();
@@ -109,10 +110,9 @@ export function ApiKeyModal({
   if (!show) return null;
   const normalizedCurrentKeys = normalizeApiKeys(apiKeys);
   const normalizedDraftKeys = normalizeApiKeys(draftApiKeys);
-  const isDirty =
-    normalizedDraftKeys.comet !== normalizedCurrentKeys.comet ||
-    normalizedDraftKeys.bailian !== normalizedCurrentKeys.bailian ||
-    normalizedDraftKeys.lumina !== normalizedCurrentKeys.lumina;
+  const isDirty = API_PLATFORMS.some(
+    (platform) => normalizedDraftKeys[platform] !== normalizedCurrentKeys[platform]
+  );
   return (
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.settingsModal} onClick={(e) => e.stopPropagation()}>
@@ -139,6 +139,15 @@ export function ApiKeyModal({
           style={S.proxyInput}
           value={normalizedDraftKeys.bailian}
           onChange={(e) => setDraftApiKeys((prev) => ({ ...normalizeApiKeys(prev), bailian: e.target.value }))}
+          placeholder="sk-..."
+        />
+        {/* LiteLLM Business Relay 的 SK：私有化部署模型（gemma4-26b-a4b）只能从这个
+            公网中继进，直连地址是集群内网，浏览器到不了。 */}
+        <label style={{ ...S.fieldLabel, marginTop: 14 }}>{t("api.litellmLabel")}</label>
+        <input
+          style={S.proxyInput}
+          value={normalizedDraftKeys.litellm}
+          onChange={(e) => setDraftApiKeys((prev) => ({ ...normalizeApiKeys(prev), litellm: e.target.value }))}
           placeholder="sk-..."
         />
         <div style={S.apiModalActions}>
