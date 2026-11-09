@@ -142,6 +142,79 @@ describe("Cloudflare Worker Bailian forwarding", () => {
 
     expect(response.status).toBe(200);
     const [, request] = upstreamFetch.mock.calls[0];
-    expect(request.headers.Authorization).toBe("Bearer env-relay-key");
+  expect(request.headers.Authorization).toBe("Bearer env-relay-key");
+  });
+
+  // 鉴权重试曾经永远用第二次的响应覆盖第一次：进到重试分支时状态必是 4xx，
+  // 旧条件里的 !resp.ok 恒为真。于是 LiteLLM 真正的「key 不在验证表里」被盖成
+  // 裸 key 触发的「Ensure Key has `Bearer ` prefix」，把人往"加前缀"的错路上带。
+  it("keeps the first auth error when the fallback scheme also fails", async () => {
+    const REAL = "Authentication Error, Invalid proxy server token passed.";
+  const MASKING = "Authentication Error, Malformed API Key passed in. Ensure Key has `Bearer ` prefix.";
+    const upstreamFetch = vi.fn(async (_url, init) => {
+ // Bearer = 我们认定正确的格式，它的报错才是真实原因；裸 key 的报错是噪声。
+      const bare = !String(init.headers.Authorization || "").startsWith("Bearer ");
+      return new Response(JSON.stringify({ error: { message: bare ? MASKING : REAL } }), {
+     status: 401,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", upstreamFetch);
+
+    const response = await worker.fetch(
+      new Request("https://worker.example/", {
+     method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Target-Path": "/v1/chat/completions",
+          "X-Upstream-Base": "https://litellm-business-relay.vast-internal.com",
+ "X-Api-Key": "sk-not-in-table",
+        },
+ body: JSON.stringify({ model: "gemma4-26b-a4b", messages: [] }),
+      }),
+      {},
+    );
+
+    // 两次都试过（Bearer + 裸 key），但返回的必须是第一次那条有诊断价值的。
+    expect(upstreamFetch).toHaveBeenCalledTimes(2);
+    expect(response.status).toBe(401);
+    const body = await response.text();
+    expect(body).toContain("Invalid proxy server token");
+    expect(body).not.toContain("Ensure Key has");
+  });
+
+  it("adopts the fallback scheme when it actually succeeds", async () => {
+    const upstreamFetch = vi.fn(async (_url, init) => {
+ const bare = !String(init.headers.Authorization || "").startsWith("Bearer ");
+      // 裸 key 成功这一路必须仍然生效，别为修掩盖问题把回退本身废掉。
+      return bare
+        ? new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+ status: 200,
+   headers: { "content-type": "application/json" },
+        })
+   : new Response(JSON.stringify({ error: { message: "invalid api key" } }), {
+          status: 401,
+            headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", upstreamFetch);
+
+    const response = await worker.fetch(
+      new Request("https://worker.example/", {
+    method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+    "X-Target-Path": "/v1beta/models/gemini-2.5-flash-image:generateContent",
+          "X-Upstream-Base": "https://api.cometapi.com",
+          "X-Api-Key": "goog-key",
+        },
+        body: JSON.stringify({ contents: [] }),
+      }),
+      {},
+    );
+
+    expect(upstreamFetch).toHaveBeenCalledTimes(2);
+    expect(response.status).toBe(200);
+ expect(await response.text()).toContain("ok");
   });
 });

@@ -150,7 +150,12 @@ export default {
       if ([400, 401, 403].includes(resp.status) && authError && fallbackAuth !== primaryAuth) {
         const retry = await forward(fallbackAuth);
         const retryData = await retry.text();
-        if (retry.ok || !resp.ok) {
+        // 只在换鉴权格式真的成功时才采用重试结果；两次都失败时保留**首次**的报错。
+        // primaryAuth 是我们认定正确的格式，它的错误才指向真实原因。
+        // 旧写法 `retry.ok || !resp.ok` 里 !resp.ok 恒为真（进到这里状态必是 4xx），
+        // 等于永远拿重试结果覆盖 —— LiteLLM 的「key 不在验证表里」会被盖成裸 key
+        // 触发的「Ensure Key has `Bearer ` prefix」，把人往「加前缀」的错路上带。
+        if (retry.ok) {
           resp = retry;
           data = retryData;
         }
