@@ -55,13 +55,25 @@ describe("conditional criteria", () => {
     expect(r.total).toBe(7.3);
   });
 
-  it("fails an image outright when a key criterion scores 0 or 1, even above the pass mark", () => {
+  it("fails an image outright only when a key criterion scores 0; 1 is barely usable", () => {
     const { active } = resolveCaseCriteria(headSet, headSet.cases[0]);
-    const r = computeImageScore(active, gpt({ angle: 3, complete: 3, bg: 2, longHair: 1 }));
-    expect(r.total).toBeGreaterThan(6);
-    expect(r.status).toBe("keyFail");
-    expect(r.keyFailed).toEqual(["longHair"]);
-    expect(r.passed).toBe(false);
+    const zero = computeImageScore(active, gpt({ angle: 3, complete: 3, bg: 2, longHair: 0 }));
+    expect(zero.status).toBe("keyFail");
+    expect(zero.keyFailed).toEqual(["longHair"]);
+    expect(zero.passed).toBe(false);
+    const one = computeImageScore(active, gpt({ angle: 3, complete: 3, bg: 2, longHair: 1 }));
+    expect(one.total).toBeGreaterThan(6);
+    expect(one.status).toBe("pass");
+  });
+
+  it("keeps per-level descriptions and feeds them to the judge", () => {
+    const set = normalizeEvalSet({ criteria: [{ id: "a", desc: "A", levels: { 0: "缺失", 3: "完全一致", 7: "x", 1: " " } }] });
+    expect(set.criteria[0].levels).toEqual({ 0: "缺失", 3: "完全一致" });
+    const text = buildJudgeMessages(set.criteria)[1].content[0].text;
+    expect(text).toContain("0 分：缺失");
+    expect(text).toContain("3 分：完全一致");
+    const prev = normalizeEvalSet({ criteria: [{ id: "a", desc: "A" }] });
+    expect(diffCriteria(prev.criteria, set.criteria).needsJudge).toEqual(["a"]);
   });
 
   it("honours per-case skip and extra criteria", () => {

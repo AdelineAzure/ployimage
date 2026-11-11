@@ -11,7 +11,8 @@ export const REFERENCE_ACCEPT_RATIO = 0.7;
 // 模型能力每格至少这么多张图才参与比较。
 export const MIN_CELL_SAMPLES = 10;
 // 关键项得分 ≤ 这个值，整张图不及格。
-export const KEY_FAIL_MAX = 1;
+// 关键项只有 0 分才算不可用：1 分 = 勉强可用，不直接判死。
+export const KEY_FAIL_MAX = 0;
 export const MAX_EVAL_SETS = 10;
 export const MAX_CASES_PER_SET = 10;
 export const DEFAULT_JUDGE_MODEL = "gpt-5.6-sol";
@@ -48,7 +49,19 @@ export function normalizeCriterion(raw, index = 0) {
     // when：用例带其中任一标签时才生效；空 = 对所有图生效。
     when,
     key: src.key === true,
+    // levels：每一档长什么样，{ "0": "…", "1": "…", "2": "…", "3": "…" }；没写的档用通用含义。
+    levels: normalizeLevels(src.levels),
   };
+}
+
+function normalizeLevels(raw) {
+  if (!raw || typeof raw !== "object") return {};
+  const out = {};
+  for (const k of ["0", "1", "2", "3"]) {
+    const v = raw[k];
+    if (typeof v === "string" && v.trim()) out[k] = v.trim();
+  }
+  return out;
 }
 
 export function normalizeCase(raw, index = 0) {
@@ -166,7 +179,7 @@ export function diffCriteria(prevCriteria = [], nextCriteria = []) {
   for (const c of nextCriteria) {
     const old = prev.get(c.id);
     if (!old) { added.push(c.id); continue; }
-    if ((old.desc || "") !== (c.desc || "") || JSON.stringify(old.when || []) !== JSON.stringify(c.when || [])) changed.push(c.id);
+    if ((old.desc || "") !== (c.desc || "") || JSON.stringify(old.when || []) !== JSON.stringify(c.when || []) || JSON.stringify(old.levels || {}) !== JSON.stringify(c.levels || {})) changed.push(c.id);
     else if (old.weight !== c.weight || old.key !== c.key) reweighted.push(c.id);
   }
   const nextIds = new Set(nextCriteria.map((c) => c.id));
@@ -190,11 +203,15 @@ export function staleItemIds(activeCriteria, items = {}, criteriaVersions = {}) 
 // ─── 裁判 ───
 
 export function buildJudgeMessages(activeCriteria, { promptText = "", referenceImage = "", outputImage = "" } = {}) {
-  const lines = activeCriteria.map((c) => `- ${c.id}: ${c.desc}`).join("\n");
+  const lines = activeCriteria.map((c) => {
+    const lv = ["0", "1", "2", "3"].filter((k) => c.levels?.[k]).map((k) => `    ${k} 分：${c.levels[k]}`);
+    return [`- ${c.id}: ${c.desc}`, ...lv].join("\n");
+  }).join("\n");
   const system = [
     "你是生图结果的评分员。用户给你一张参考图（输入图）和一张生成图，以及一组评分标准。",
     "逐条判断生成图是否满足标准。每条只给 0、1、2、3 四档之一：",
-    "0 = 没做到；1 = 大部分没做到；2 = 基本做到但有明显瑕疵；3 = 完全做到。",
+    "通用含义：0 = 不可用或缺失；1 = 勉强可用；2 = 有小偏差但能用；3 = 几乎看不出差别（少给）。",
+    "某条标准写了各档说明时，以该条的说明为准。",
     "先写理由再给分，理由要具体指出图中哪里做到或没做到，一句话即可。",
     "需要和输入图比较的标准（如保持原图角度、材质、比例），必须对照参考图判断。",
     "只输出 JSON，不要任何其它文字：{\"items\":[{\"id\":\"…\",\"reason\":\"…\",\"score\":0}]}，",
@@ -202,7 +219,7 @@ export function buildJudgeMessages(activeCriteria, { promptText = "", referenceI
   ].join("\n");
   const text = [
     promptText ? `生成时使用的提示词：\n${promptText}\n` : "",
-    `评分标准（id: 描述）：\n${lines}`,
+    `评分标准（id: 描述，以及各档说明）：\n${lines}`,
     "",
     "第一张图是参考图（输入），第二张图是生成图（输出）。",
   ].join("\n");
