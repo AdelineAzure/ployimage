@@ -254,8 +254,8 @@ export function useTaskQueue({ turns, setTurns, apiKeys, groupPlatforms, history
         if (cancelled) return;
         savingToFolderRef.current.add(turn.id);
         try {
-          await saveTurnToLocalFolder(historyDirHandle, turn);
-          setTurns((prev) => prev.map((item) => (item.id === turn.id ? { ...item, folderSyncedAt: Date.now(), folderSyncError: null } : item)));
+          const saved = await saveTurnToLocalFolder(historyDirHandle, turn);
+          setTurns((prev) => prev.map((item) => (item.id === turn.id ? { ...item, ...(saved || null), folderSyncedAt: Date.now(), folderSyncError: null } : item)));
           setHistoryFolderMsg(t("history.wroteLocal", { seq: turn.seq }));
         } catch (err) {
           setTurns((prev) =>

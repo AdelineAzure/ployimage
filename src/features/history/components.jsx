@@ -23,6 +23,8 @@ import {
   proxyFetchImageAsDataUrl,
 } from "../../services/appCore";
 import { mono, S } from "../../styles/appStyles";
+import { ScoreBadge, lowScoreFrame, useEvalScores } from "../eval/scoreContext";
+import { PanelTabs, ScorePanel } from "../eval/ScorePanel";
 import { getPromptPreviewText, PromptTextWithChips } from "../workspace/promptControls";
 
 export function ImageActionBar({
@@ -529,7 +531,20 @@ export function ImagePreviewModal({ src, onClose, onSplit }) {
   const [colorSamples, setColorSamples] = useState([]);
   const [activeColorSampleId, setActiveColorSampleId] = useState("");
   const [promptPanelOpen, setPromptPanelOpen] = useState(false);
-  const [infoPanelOpen, setInfoPanelOpen] = useState(false);
+  // 左侧停靠位：信息面板和评分面板共用，一次只显示一个（null = 收起）。
+  const [dockPanel, setDockPanel] = useState(() => (src?.openScore ? "score" : null));
+  const infoPanelOpen = dockPanel === "info";
+  const setInfoPanelOpen = (next) => setDockPanel((cur) => {
+    const open = typeof next === "function" ? next(cur === "info") : next;
+    return open ? "info" : cur === "info" ? null : cur;
+  });
+  const evalScores = useEvalScores();
+  const scoreView = evalScores?.viewForImageKey?.(activePreview?.imageKey) || null;
+  const [scoreBusy, setScoreBusy] = useState(false);
+  const scoreOpen = dockPanel === "score" && !!scoreView;
+  // 换了一张预览（或从角标 / 看板点进来）时，按 openScore 打开评分面板。
+  useEffect(() => { if (src?.openScore) setDockPanel("score"); }, [src]);
+  const dockOpen = (infoPanelOpen && !!meta) || scoreOpen;
   const [toastText, setToastText] = useState("");
 
   const clampScale = useCallback((value) => Math.max(1, Math.min(8, Number(value) || 1)), []);
@@ -741,17 +756,37 @@ export function ImagePreviewModal({ src, onClose, onSplit }) {
           maxWidth: isComparePreview ? 1480 : 1360,
           display: "flex",
           alignItems: "stretch",
-          gap: infoPanelOpen && !!meta ? 12 : 0,
+          gap: dockOpen ? 12 : 0,
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        {infoPanelOpen && !!meta && (
-          <PreviewInfoPanel
-            meta={meta}
-            docked
-            onClose={() => setInfoPanelOpen(false)}
-            onCopyPrompt={() => handlePromptCopy(meta.promptText || promptText)}
-          />
+        {dockOpen && (
+          <div style={{ flex: "0 0 320px", width: 320, height: "100%", minHeight: 0, display: "flex", flexDirection: "column" }}>
+            <PanelTabs active={dockPanel} onChange={setDockPanel} hasInfo={!!meta} hasScore={!!scoreView} />
+            <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+              {infoPanelOpen && !!meta && (
+                <PreviewInfoPanel
+                  meta={meta}
+                  docked
+                  onClose={() => setDockPanel(null)}
+                  onCopyPrompt={() => handlePromptCopy(meta.promptText || promptText)}
+                />
+              )}
+              {scoreOpen && (
+                <ScorePanel
+                  view={scoreView}
+                  busy={scoreBusy}
+                  onClose={() => setDockPanel(null)}
+                  onSetHuman={(critId, level) => evalScores.setHumanScore(activePreview.imageKey, critId, level)}
+                  onRejudge={async () => {
+                    setScoreBusy(true);
+                    try { await evalScores.judgeImageKey(activePreview.imageKey); } finally { setScoreBusy(false); }
+                  }}
+                  onEditCriteria={() => { evalScores.openCriteriaEditor(scoreView.setId); onClose?.(); }}
+                />
+              )}
+            </div>
+          </div>
         )}
         <div ref={stageRef} style={{ position: "relative", flex: 1, minWidth: 0, height: "100%" }}>
         <button onClick={onClose} style={{ ...S.closeBtn, position: "absolute", top: 12, right: 12, zIndex: 10 }}>✕</button>
@@ -776,6 +811,25 @@ export function ImagePreviewModal({ src, onClose, onSplit }) {
               aria-label={t("viewer.infoPanel")}
             >
               ⓘ
+            </button>
+          )}
+          {!!scoreView && (
+            <button
+              type="button"
+              style={{
+                ...S.viewerColorPickerBtn,
+                width: "auto",
+                padding: "0 9px",
+                gap: 4,
+                cursor: "pointer",
+                fontSize: 12,
+                ...(scoreOpen ? S.viewerColorPickerBtnActive : null),
+              }}
+              onClick={() => setDockPanel((cur) => (cur === "score" ? null : "score"))}
+              title={t("eval.tabScore")}
+              aria-label={t("eval.tabScore")}
+            >
+              ★ {scoreView.total ?? "—"}
             </button>
           )}
           <button
@@ -1303,6 +1357,9 @@ export function ImageCard({
   compact = false,
 }) {
   const { t } = useI18n();
+  // 评测分数：按 imageKey（turnId:modelId:promptKey:index）查；没有评测或没打过分时为 null，卡片和原来一样。
+  const evalScores = useEvalScores();
+  const scoreView = evalScores?.viewForImageKey?.(previewPayload?.imageKey) || null;
   const [src, setSrc] = useState(img);
   const [triedProxy, setTriedProxy] = useState(false);
 
@@ -1322,7 +1379,7 @@ export function ImageCard({
   }, [src, triedProxy]);
 
   return (
-    <div style={{ ...S.imgCard, ...(compact ? S.imgCardCompact : null), ...(selected ? S.imgCardSelected : null) }}>
+    <div style={{ ...S.imgCard, ...(compact ? S.imgCardCompact : null), ...(selected ? S.imgCardSelected : null), ...lowScoreFrame(scoreView) }}>
       {showSelect && (
         <button
           type="button"
@@ -1340,6 +1397,13 @@ export function ImageCard({
         </button>
       )}
       {!!label && <div style={{ ...S.imageThemeTag, ...(compact ? S.imageThemeTagCompact : null) }}>{label}</div>}
+      {/* 分数角标：左上角；有主题标签时排在它下面，不挡住标签。 */}
+      <ScoreBadge
+        view={scoreView}
+        compact={compact}
+        offsetTop={label ? (compact ? 24 : 34) : compact ? 4 : 8}
+        onClick={scoreView ? () => onPreview(previewPayload && typeof previewPayload === "object" ? { ...previewPayload, outputSrc: src, openScore: true } : src) : undefined}
+      />
       {typeof onSplit === "function" && (
         <button
           type="button"

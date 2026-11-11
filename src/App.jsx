@@ -10,6 +10,10 @@ import { AtlasThumbnailModal } from "./features/atlas/AtlasThumbnailModal";
 import { CanvasPage } from "./features/canvas/CanvasPage";
 import { HelpPage } from "./features/help/HelpPage";
 import { ImagePreviewModal, TurnPanel, buildTurnPreviewItems, normalizePreviewPayload } from "./features/history/components";
+import { EvalPage } from "./features/eval/EvalPage";
+import { EvalScoreContext } from "./features/eval/scoreContext";
+import { useEvalData } from "./features/eval/useEvalData";
+import { buildEvalRunTurns } from "./services/evalCore";
 import { ApiKeyModal, DetectTemplateEditorModal, DetectTextCasesModal, GptAssistModal, InputImagesModal, PromptImageEditorModal, SelectionLimitModal, SettingsModal, StyleTemplateEditorModal, TemplateEditorModal } from "./features/settings/components";
 import { SpriteSplitModal } from "./features/split/SpriteSplitModal";
 import { useTaskQueue } from "./features/tasks/useTaskQueue";
@@ -89,6 +93,7 @@ const {
   NANO_PRO_OFFICIAL_MODEL_ID,
   NANO_PRO_LEGACY_MODEL_IDS,
   DEFAULT_UI_LANGUAGE,
+  UI_LANGUAGE_PREF_VERSION,
 } = AppConfig;
 
 const {
@@ -703,7 +708,7 @@ export default function App() {
           setSelectedDetectModels(normalizeSelectedDetectModels(saved.selectedDetectModels));
         }
         if (typeof saved.proxyUrl === "string" && saved.proxyUrl.trim()) setProxyUrl(saved.proxyUrl);
-        if (typeof saved.uiLanguage === "string") setUiLanguage(normalizeUiLanguage(saved.uiLanguage));
+        if (typeof saved.uiLanguage === "string" && saved.uiLanguagePref === UI_LANGUAGE_PREF_VERSION) setUiLanguage(normalizeUiLanguage(saved.uiLanguage));
         if (typeof saved.nextSeq === "number" && Number.isFinite(saved.nextSeq)) seqRef.current = saved.nextSeq;
       } else {
         const s = getRuntimeConfig().proxyUrl;
@@ -744,6 +749,7 @@ export default function App() {
       selectedDetectModels,
       proxyUrl,
       uiLanguage,
+      uiLanguagePref: UI_LANGUAGE_PREF_VERSION,
       nextSeq: seqRef.current,
     };
     try {
@@ -3115,7 +3121,9 @@ export default function App() {
     // 勾了几个模型就发几条记录（一条记录一个模型）。这样每张卡的错误率、模版统计、
     // 导出和重跑都还是「一个模型一套结论」，两个模型并排放就是对比视图。
     // 若混在一条记录里，卡头的错误率会把两条链路的红标加在一起，失去对比意义。
-    const runModels = normalizeSelectedDetectModels(selectedDetectModels);
+    // 按注册表顺序跑：结果卡片的上下顺序和 chip 的左右顺序一致，不随勾选先后变。
+    const picked = normalizeSelectedDetectModels(selectedDetectModels);
+    const runModels = DETECT_MODELS.map((m) => m.id).filter((id) => picked.includes(id));
     const makeItem = (recordId, index, extra) => ({
       id: `${recordId}-${index}-${Math.floor(Math.random() * 100000)}`,
       image: "",
@@ -3541,13 +3549,14 @@ export default function App() {
   }, [detectTemplates, chatMessages]);
   // 检测看板汇总：全部检测记录的总数/红/绿/待判 + 运行中，以及当前选中模版单独一列。
   const detectOverview = useMemo(() => {
-    const all = { total: 0, red: 0, green: 0, pending: 0, running: 0 };
+    const all = { total: 0, red: 0, green: 0, yellow: 0, pending: 0, running: 0 };
     for (const m of chatMessages) {
       for (const it of m.items || []) {
         all.total += 1;
         if (it.status === "loading") all.running += 1;
         if (it.rating === "red") all.red += 1;
         else if (it.rating === "green") all.green += 1;
+        else if (it.rating === "yellow") all.yellow += 1;
         else all.pending += 1;
       }
     }
@@ -3614,12 +3623,53 @@ export default function App() {
     ? t("common.savedAt", { time: formatUiTime(gptAssistSavedAt, uiLanguage) })
     : t("common.saved");
 
+  // 评测：读当前任务文件夹的 eval/，给卡片角标、详情评分面板、Eval tab 用同一份数据。
+  const evalData = useEvalData({ rootHandle: historyDirHandle, turns, apiKeys, proxyUrl: proxyUrl.trim(), t });
+  const evalContextValue = useMemo(() => ({
+    viewForImageKey: evalData.viewForImageKey,
+    setHumanScore: evalData.setHumanScore,
+    judgeImageKey: evalData.judgeImageKey,
+    openCriteriaEditor: (setId) => { evalData.openCriteriaEditor(setId); setActivePage("eval"); },
+  }), [evalData.viewForImageKey, evalData.setHumanScore, evalData.judgeImageKey, evalData.openCriteriaEditor]);
+
+  // 开始一轮：评测集里每张参考图一个 turn，和 Enqueue Task 走同一个队列、同样落盘。
+  const startEvalRun = useCallback(async ({ cases, variants }) => {
+    if (!proxyUrl.trim()) { setShowSettings(true); return; }
+    const withImages = [];
+    for (const c of cases) {
+      const referenceImage = await evalData.readSetImage(c.setId, c.image);
+      if (referenceImage) withImages.push({ ...c, referenceImage });
+    }
+    const queued = buildEvalRunTurns({
+      cases: withImages,
+      promptVariants: variants,
+      modelIds: selectedModels,
+      modelCounts,
+      startSeq: seqRef.current,
+      modelName: (id) => IMAGE_MODELS.find((m) => m.id === id)?.name || id,
+      baseTurn: {
+        apiBaseUrl: resolveApiBaseUrl(apiBaseUrl),
+        apiKeys: normalizeApiKeys(apiKeys),
+        groupPlatforms: normalizeGroupPlatforms(groupPlatforms),
+        aspectRatio: normalizeAspectRatio(aspectRatio),
+        qwenPromptExtend,
+        qwenPromptExtendMode,
+        proxyUrl: proxyUrl.trim(),
+      },
+    });
+    if (!queued.length) return;
+    seqRef.current += queued.length;
+    setTurns((prev) => [...[...queued].reverse(), ...prev]);
+    evalData.setMessage(t("eval.runQueued", { count: queued.length }));
+  }, [proxyUrl, evalData, selectedModels, modelCounts, apiBaseUrl, apiKeys, groupPlatforms, aspectRatio, qwenPromptExtend, qwenPromptExtendMode, t]);
+
   const openPreviewImage = useCallback((payload) => {
     if (!payload) {
       setPreviewImage(null);
       return;
     }
-    const normalized = normalizePreviewPayload(payload);
+    // openScore：从评分角标或看板点进来时，直接打开评分面板。normalize 会丢掉这个字段，这里补回去。
+    const normalized = { ...normalizePreviewPayload(payload), openScore: !!payload?.openScore };
     if (!normalized.outputSrc) return;
     if (normalized.imageKey) {
       const galleryIndex = previewGalleryItems.findIndex((item) => item.imageKey === normalized.imageKey);
@@ -3709,6 +3759,7 @@ export default function App() {
 
   return (
     <I18nContext.Provider value={{ uiLanguage, t }}>
+    <EvalScoreContext.Provider value={evalContextValue}>
     <div style={{ ...S.root, fontWeight: uiLanguage === "zh" ? 360 : undefined }}>
       <div style={S.bgGrain} />
       <header style={S.header}>
@@ -3767,6 +3818,13 @@ export default function App() {
               onClick={() => setActivePage("chat")}
             >
               {t("nav.chat")}
+            </button>
+            <button
+              type="button"
+              style={{ ...S.modeTab, ...(activePage === "eval" ? S.modeTabActive : null) }}
+              onClick={() => setActivePage("eval")}
+            >
+              {t("nav.eval")}
             </button>
             {SHOW_CANVAS_TAB && (
               <button
@@ -3857,6 +3915,27 @@ export default function App() {
             {...splitConsoleProps}
           />
         </div>
+        {activePage === "eval" && (
+          <EvalPage
+            ev={evalData}
+            folderName={historyDirName}
+            onPickFolder={() => handlePickHistoryFolder({ source: "manual" })}
+            selectedModels={selectedModels}
+            comparePrompts={comparePrompts.slice(0, compareCount)}
+            singlePrompt={prompt || ""}
+            onStartRun={startEvalRun}
+            onOpenImage={(row) => openPreviewImage({
+              imageKey: row.imageKey,
+              outputSrc: row.entry.image,
+              inputSrc: row.entry.turn.referenceImage || "",
+              modelName: row.entry.modelName,
+              promptText: row.entry.promptText,
+              promptKey: row.entry.promptKey,
+              promptLabel: row.entry.promptLabel,
+              openScore: true,
+            })}
+          />
+        )}
         <div style={activePage === "chat" ? undefined : { display: "none" }}>
           {/* 输入区：左侧检测指令输入框（复用 workspace 输入框样式），右侧检测模版面板 */}
           <section style={{ marginBottom: 24 }}>
@@ -4059,7 +4138,7 @@ export default function App() {
                 </div>
                 {/* 检测模型多选：勾两个就把同一批用例各跑一遍，结果并排成两张卡做对比。
                     没配 Key 的模型照常可勾（点了会在小组上报缺 Key），但 chip 上灰一点做提示。 */}
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
+                <div style={{ display: "grid", gridTemplateColumns: `repeat(${DETECT_MODELS.length}, minmax(0, 1fr))`, gap: 8, marginTop: 4 }}>
                   {DETECT_MODELS.map((model) => {
                     const selected = selectedDetectModels.includes(model.id);
                     const hasKey = !!getApiKeyForPlatform(apiKeys, model.platform);
@@ -4091,7 +4170,7 @@ export default function App() {
                           opacity: hasKey ? 1 : 0.55,
                         }}
                       >
-                        <span style={S.chipName} title={model.name}>
+                        <span style={{ ...S.chipName, maxWidth: "none" }} title={model.name}>
                           {model.shortName || model.name}
                         </span>
                         {!model.vision && (
@@ -4118,11 +4197,12 @@ export default function App() {
                   </p>
                 ) : null}
                 {/* 统计看板：填满模型行下方的空白 */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 8, marginTop: 4 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(0, 1fr))", gap: 8, marginTop: 4 }}>
                   {[
                     { label: t("detect.statTotal"), value: detectOverview.all.total, color: "#e4e4e7" },
                     { label: t("detect.statGreen"), value: detectOverview.all.green, color: "#86efac" },
                     { label: t("detect.statRed"), value: detectOverview.all.red, color: "#fca5a5" },
+                    { label: t("detect.statYellow"), value: detectOverview.all.yellow, color: "#fde047" },
                     { label: t("detect.statPending"), value: detectOverview.all.pending, color: "#a1a1aa" },
                   ].map((cell) => (
                     <div key={cell.label} style={{ border: "1px solid rgba(255,255,255,0.07)", borderRadius: 8, padding: "10px 12px", background: "rgba(255,255,255,0.02)" }}>
@@ -4995,6 +5075,7 @@ export default function App() {
         }
       `}</style>
     </div>
+    </EvalScoreContext.Provider>
     </I18nContext.Provider>
   );
 }

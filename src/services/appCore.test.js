@@ -22,6 +22,8 @@ import {
   mergeApiKeys,
   normalizeCompareText,
   parseDetectionTextCases,
+  parseJsonFromText,
+  normalizeDetectRating,
   pickOpenAiImageSizeFromDimensions,
   shouldRetryApiFailure,
 } from "./appCore";
@@ -444,10 +446,11 @@ describe("detection model registry", () => {
       targetPath: "/compatible-mode/v1/chat/completions",
       vision: true,
     });
+    // 接入说明：国内网关 Lumina 上已注册 gemma4，Lumina 的 key 直接可用（2026-11-10 实测 200）。
+    // 海外中继是另一套 master key，同一个 key 在那边 401。
     expect(getDetectModel("gemma4-26b-a4b")).toMatchObject({
-      platform: "litellm",
+      platform: "lumina",
       targetPath: "/v1/chat/completions",
-      // Gemma 4 是多模态谱系，图片小组照常发出去。
       vision: true,
     });
   });
@@ -502,6 +505,51 @@ describe("litellm relay platform", () => {
     expect(keys.bailian).toBe("");
     expect(keys.comet).toBe("");
     expect(keys.lumina).toBe("");
+  });
+});
+
+describe("parseJsonFromText (detection card rendering)", () => {
+  it("parses a ```json fenced object as returned by the detection models", () => {
+    const out = "```json\n{\n  \"Subject\": \"戴着橙色帽子的卡通小女孩\",\n  \"SubjectTag\": \"角色\",\n  \"Tags\": [\"画风过于扁平\"]\n}\n```";
+    expect(parseJsonFromText(out)).toEqual({
+      Subject: "戴着橙色帽子的卡通小女孩",
+      SubjectTag: "角色",
+      Tags: ["画风过于扁平"],
+    });
+  });
+
+  it("returns null for plain prose so the card shows the raw text", () => {
+    expect(parseJsonFromText("这张图适合生成 3D")).toBeNull();
+  });
+});
+
+describe("detection ratings", () => {
+  it("keeps green, yellow and red, and drops anything else", () => {
+    // 存盘和读盘都过这个函数。黄标若不在白名单里，刷新页面后就会静默丢失。
+    expect(normalizeDetectRating("green")).toBe("green");
+    expect(normalizeDetectRating("yellow")).toBe("yellow");
+    expect(normalizeDetectRating("red")).toBe("red");
+    expect(normalizeDetectRating("amber")).toBeNull();
+    expect(normalizeDetectRating(undefined)).toBeNull();
+  });
+
+  it("does not count yellow as wrong in the export summary", () => {
+    // 黄 = 存疑，不进错误率分母：拿不准的样本不该把错误率往任何一边拉。
+    const payload = buildDetectionExport({
+      prompt: "p",
+      items: [
+        { text: "a", rating: "green" },
+        { text: "b", rating: "yellow" },
+        { text: "c", rating: "red" },
+      ],
+    });
+    expect(payload.summary).toMatchObject({ total: 3, correct: 1, wrong: 1, wrongRate: 50 });
+    // onlyWrong 只导红标，黄标不混进去。
+    const wrongOnly = buildDetectionExport(
+      { prompt: "p", items: [{ text: "b", rating: "yellow" }, { text: "c", rating: "red" }] },
+      { onlyWrong: true }
+    );
+    expect(wrongOnly.items.map((it) => it.input)).toEqual(["c"]);
   });
 });
 
@@ -1240,5 +1288,17 @@ describe("buildDetectionExport", () => {
     const out = buildDetectionExport({});
     expect(out.items).toEqual([]);
     expect(out.summary.wrongRate).toBe(0);
+  });
+});
+
+describe("normalizeImageValue raw base64", () => {
+  it("treats raw JPEG base64 (starts with /9j/) as an image, not a relative path", async () => {
+    const { normalizeImageValue } = await import("./appCore");
+    const jpeg = "/9j/" + "A".repeat(200);
+    expect(normalizeImageValue(jpeg, "https://lumina.tripo3d.com")).toBe(`data:image/jpeg;base64,${jpeg}`);
+  });
+  it("still resolves short relative paths against the API base", async () => {
+    const { normalizeImageValue } = await import("./appCore");
+    expect(normalizeImageValue("/files/out.png", "https://lumina.tripo3d.com")).toBe("https://lumina.tripo3d.com/files/out.png");
   });
 });

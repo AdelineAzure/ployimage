@@ -608,6 +608,13 @@ export function assistantMessageToText(content) {
     .trim();
 }
 
+// 检测评级：绿 = 正确、黄 = 存疑（待复核）、红 = 错误。
+// 黄标单独计数，不进错误率分母 —— 拿不准的样本不该把正确率或错误率往任何一边拉。
+export const DETECT_RATINGS = ["green", "yellow", "red"];
+export function normalizeDetectRating(value) {
+  return DETECT_RATINGS.includes(value) ? value : null;
+}
+
 export function parseJsonFromText(rawText = "") {
   const raw = String(rawText || "").trim();
   if (!raw) return null;
@@ -1336,6 +1343,12 @@ export function normalizeImageValue(value, apiBaseUrl) {
   if (!v) return null;
   if (v.startsWith("data:image/")) return v;
   if (/^https?:\/\//i.test(v)) return v;
+  // 裸 base64 要在「以 / 开头 = 相对路径」之前判断：JPEG 的 base64 恒以 "/9j/" 开头，
+  // 原来会被当成路径拼到 API 域名后面，变成一个打不开的 URL，图片被存成 .txt。
+  if (v.length > 128 && /^[A-Za-z0-9+/]+={0,2}$/.test(v)) {
+    const mime = v.startsWith("/9j/") ? "image/jpeg" : v.startsWith("UklGR") ? "image/webp" : v.startsWith("R0lGOD") ? "image/gif" : "image/png";
+    return `data:${mime};base64,${v}`;
+  }
   if (v.startsWith("//")) return `https:${v}`;
   if (v.startsWith("/")) {
     const runtimeConfig = getRuntimeConfig();
@@ -4109,6 +4122,8 @@ export async function saveTurnToLocalFolder(rootHandle, turn) {
     selectedModelIds: turn.selectedModelIds || [],
     modelCounts: turn.modelCounts || {},
     status: turn.status || "done",
+    // 评测：这个 turn 是哪个评测集的哪个用例生成的（Eval tab 开始一轮时写入）。
+    ...(turn.evalRef ? { evalRef: turn.evalRef } : null),
     results: [],
   };
 
@@ -4154,6 +4169,8 @@ export async function saveTurnToLocalFolder(rootHandle, turn) {
   }
 
   await writeTextFile(turnDir, "prompt.json", JSON.stringify(manifest, null, 2));
+  // 评测要用「turn 目录名/文件名」定位图片，把实际写下的文件名带回去。
+  return { dirName, resultFiles: manifest.results.map((r) => r.files) };
 }
 
 const SPLIT_HISTORY_FOLDER_NAME = "split-history";
@@ -4541,7 +4558,7 @@ export async function saveChatToLocalFolder(rootHandle, record = {}) {
       outputText: typeof item.outputText === "string" ? item.outputText : "",
       status: item.status || "done",
       error: typeof item.error === "string" ? item.error : null,
-      rating: item.rating === "red" || item.rating === "green" ? item.rating : null,
+      rating: normalizeDetectRating(item.rating),
     });
   }
   const manifest = {
@@ -4613,7 +4630,7 @@ export async function loadChatFromLocalFolder(rootHandle) {
             outputText: typeof rawItem?.outputText === "string" ? rawItem.outputText : "",
             status: rawItem?.status || "done",
             error: typeof rawItem?.error === "string" ? rawItem.error : null,
-            rating: rawItem?.rating === "red" || rawItem?.rating === "green" ? rawItem.rating : null,
+            rating: normalizeDetectRating(rawItem?.rating),
           });
         }
       } else {
@@ -4626,7 +4643,7 @@ export async function loadChatFromLocalFolder(rootHandle) {
           outputText: typeof meta.outputText === "string" ? meta.outputText : "",
           status: meta.status || "done",
           error: typeof meta.error === "string" ? meta.error : null,
-          rating: meta.rating === "red" || meta.rating === "green" ? meta.rating : null,
+          rating: normalizeDetectRating(meta.rating),
         });
       }
       records.push({
@@ -4949,6 +4966,10 @@ export async function loadTurnsFromLocalFolder(rootHandle) {
         proxyUrl: "",
         status: "done",
         results: loadedResults,
+        // 落盘时的文件名，评测分数用「turn 目录名/文件名」定位图片。
+        dirName: entryName,
+        resultFiles: metaResults.map((r) => (Array.isArray(r.files) ? r.files : [])),
+        ...(meta.evalRef && typeof meta.evalRef === "object" ? { evalRef: meta.evalRef } : null),
         folderSyncedAt: Date.now(),
       });
     } catch {

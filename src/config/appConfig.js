@@ -166,29 +166,27 @@ export const CHAT_HISTORY_FOLDER_NAME = "chat-history";
 // vision=false 的模型不能收图：图片检测时会被跳过并在卡片上注明。
 export const DETECT_MODELS = [
   {
+    // 自部署 vLLM（cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit），按飞书「gemma4-26b-a4b 业务方接入说明」接入。
+    // 走国内网关 Lumina：网关和 Key 都复用图像生成在用的 Lumina 配置，不需要再单独申请。
+    // 海外中继（litellm-business-relay）是另一套网关、master key 不同，Lumina 的 key 在那里会 401。
+    id: "gemma4-26b-a4b",
+    name: "Gemma 4 26B-A4B",
+    shortName: "Gemma4 26B",
+    provider: "Google",
+    platform: "lumina",
+    targetPath: "/v1/chat/completions",
+    // VLM，文档实测 + 本地实测（2026-11-10：纯红/纯蓝 PNG 均答对，每张图约 280 token）。
+    vision: true,
+    // 上下文上限 4096 token，是 prompt + 生成 + 图片合计；每张图约 280 token。
+    // 后端单副本 2 卡，两个网关共用，批量跑之前先联系 owner。
+  },
+  {
     id: "qwen3-vl-30b-a3b-instruct",
     name: "Qwen3-VL 30B-A3B",
     shortName: "Qwen3-VL",
     provider: "Alibaba",
     platform: "bailian",
     targetPath: "/compatible-mode/v1/chat/completions",
-    vision: true,
-  },
-  {
-    // 私有化部署（阿里云自托管 vLLM），只能从 LiteLLM Business Relay 这个公网中继进。
-    // 直连地址 http://gemma4-26b-a4b.infer.itripo3d.com:8000/v1 是集群内网，浏览器到不了。
-    // 网关对上游错误不做 fallback，报错会原样返回。
-    id: "gemma4-26b-a4b",
-    name: "Gemma 4 26B-A4B",
-    shortName: "Gemma4 26B",
-    provider: "Google",
-    platform: "litellm",
-    targetPath: "/v1/chat/completions",
-    // VLM：Gemma 4 除最小的纯文本档外都带视觉编码器，26B-A4B 属多模态谱系。
-    // 飞书文档只记了「普通/流式翻译」验收，那是验收范围，不是能力上限。
-    // 仍未端到端实测过读图；若该 vLLM 部署没把视觉塔开出来（纯文本配置 /
-    // --limit-mm-per-prompt image=0），图片小组会从上游报错回来。
-    // 实测脚本：scripts/probe-litellm-vision.mjs
     vision: true,
   },
 ];
@@ -270,4 +268,6 @@ export const DEFAULT_DETECTION_TEMPLATES = Array.from({ length: MAX_DETECTION_TE
 }));
 export const NANO_PRO_OFFICIAL_MODEL_ID = "gemini-3-pro-image";
 export const NANO_PRO_LEGACY_MODEL_IDS = ["nano-banana-pro-all", "gemini-3-pro-preview"];
-export const DEFAULT_UI_LANGUAGE = "en";
+export const DEFAULT_UI_LANGUAGE = "zh";
+// 默认语言改中文后，旧本地状态里自动存下的 "en" 不算用户选择；带上这个版本号的才算。
+export const UI_LANGUAGE_PREF_VERSION = 2;
