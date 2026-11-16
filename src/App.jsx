@@ -3920,6 +3920,8 @@ export default function App() {
             ev={evalData}
             folderName={historyDirName}
             onPickFolder={() => handlePickHistoryFolder({ source: "manual" })}
+            // 重新读取：turn 文件夹也要重读，脚本或其他窗口新写进来的轮次才会出现在看板上。
+            onReload={async () => { if (historyDirHandle) await loadHistoryFromFolder(historyDirHandle); await evalData.reload(); }}
             selectedModels={selectedModels}
             comparePrompts={comparePrompts.slice(0, compareCount)}
             singlePrompt={prompt || ""}

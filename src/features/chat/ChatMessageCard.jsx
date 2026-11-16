@@ -3,6 +3,8 @@ import { S, mono } from "../../styles/appStyles";
 import { useI18n, formatUiDateTime } from "../../i18n";
 import { PromptTextWithChips } from "../workspace/promptControls";
 import { buildDetectionExport } from "../../services/appCore";
+import { JsonFields, parseOutputJson } from "./JsonFields";
+import { DetectImageViewer } from "./DetectImageViewer";
 
 const RATING_RED = "#ef4444";
 const RATING_RED_SOFT = "rgba(239,68,68,0.16)";
@@ -34,13 +36,16 @@ function copyTextToClipboard(text) {
   });
 }
 
+const YELLOW = "#facc15";
+const YELLOW_BORDER = "rgba(250,204,21,0.6)";
+const YELLOW_SOFT = "rgba(250,204,21,0.16)";
 const AMBER = "#f59e0b";
 const AMBER_BORDER = "rgba(245,158,11,0.55)";
 
 // 单个「图片+输出」小组：图上标红/绿角标，下面是输出文字，边框随评级变色。
-function ChatItemGroup({ recordId, item, resultField, onRateItem, onRerunItem }) {
+function ChatItemGroup({ recordId, item, resultField, onRateItem, onRerunItem, onOpenViewer }) {
   const { t } = useI18n();
-  const rating = item?.rating === "red" || item?.rating === "green" ? item.rating : null;
+  const rating = item?.rating === "red" || item?.rating === "green" || item?.rating === "yellow" ? item.rating : null;
   const status = item?.status || "done";
   const image = typeof item?.image === "string" && item.image ? item.image : "";
   // 文本小组：待检测文本顶掉缩略图的位置，下面多一行「期望 / 实际」对照。
@@ -63,6 +68,8 @@ function ChatItemGroup({ recordId, item, resultField, onRateItem, onRerunItem })
       ? { borderColor: RATING_RED, boxShadow: "0 0 0 1px rgba(239,68,68,0.35) inset" }
       : rating === "green"
       ? { borderColor: EMERALD_BORDER, boxShadow: "0 0 0 1px rgba(34,197,94,0.28) inset" }
+      : rating === "yellow"
+      ? { borderColor: YELLOW_BORDER, boxShadow: "0 0 0 1px rgba(250,204,21,0.28) inset" }
       : parseFailed
       ? { borderColor: AMBER_BORDER, boxShadow: "0 0 0 1px rgba(245,158,11,0.28) inset" }
       : { borderColor: "rgba(255,255,255,0.08)" };
@@ -73,6 +80,10 @@ function ChatItemGroup({ recordId, item, resultField, onRateItem, onRerunItem })
       : status === "error"
       ? item?.error || t("chat.error")
       : item?.outputText || "";
+  // 只对已完成的输出解析；加载中/报错时显示的是状态文字，不是模型输出。
+  const outputJson = status === "done" ? parseOutputJson(outputText) : null;
+  // 展开层里可以切回原文：JSON 渲染会隐藏围栏外的说明文字，排查时要能看到模型原话。
+  const [showRaw, setShowRaw] = useState(false);
 
   const [expanded, setExpanded] = useState(false);
   const outputRef = useRef(null);
@@ -80,8 +91,9 @@ function ChatItemGroup({ recordId, item, resultField, onRateItem, onRerunItem })
   // 输出更新后自动滚到底部，检测结论一般在末尾，默认露出最后两行
   useEffect(() => {
     const el = outputRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [outputText, status]);
+    // 纯文本的结论一般在末尾，滚到底；JSON 按字段看，从第一个字段开始。
+    if (el) el.scrollTop = outputJson ? 0 : el.scrollHeight;
+  }, [outputText, status, outputJson]);
 
   return (
     <div
@@ -99,9 +111,11 @@ function ChatItemGroup({ recordId, item, resultField, onRateItem, onRerunItem })
       {image ? (
         <div style={{ position: "relative" }}>
           <img
+            onClick={() => onOpenViewer?.(item.id)}
+            title={t("chat.viewerOpen")}
             src={image}
             alt="input"
-            style={{ width: "100%", borderRadius: 8, display: "block", background: "#0b0b0d", objectFit: "cover", aspectRatio: "1 / 1" }}
+            style={{ width: "100%", borderRadius: 8, display: "block", background: "#0b0b0d", objectFit: "cover", aspectRatio: "1 / 1", cursor: "zoom-in" }}
           />
           {rating ? (
             <span
@@ -112,7 +126,7 @@ function ChatItemGroup({ recordId, item, resultField, onRateItem, onRerunItem })
                 width: 14,
                 height: 14,
                 borderRadius: "50%",
-                background: rating === "red" ? RATING_RED : EMERALD,
+                background: rating === "red" ? RATING_RED : rating === "yellow" ? YELLOW : EMERALD,
                 boxShadow: "0 0 0 2px rgba(0,0,0,0.45)",
               }}
             />
@@ -168,7 +182,7 @@ function ChatItemGroup({ recordId, item, resultField, onRateItem, onRerunItem })
                 width: 14,
                 height: 14,
                 borderRadius: "50%",
-                background: rating === "red" ? RATING_RED : rating === "green" ? EMERALD : AMBER,
+                background: rating === "red" ? RATING_RED : rating === "green" ? EMERALD : rating === "yellow" ? YELLOW : AMBER,
                 boxShadow: "0 0 0 2px rgba(0,0,0,0.45)",
               }}
             />
@@ -239,7 +253,11 @@ function ChatItemGroup({ recordId, item, resultField, onRateItem, onRerunItem })
           cursor: outputText ? "pointer" : "default",
         }}
       >
-        {outputText || (status === "loading" ? t("chat.thinking") : "")}
+        {outputJson ? (
+          <JsonFields data={outputJson} />
+        ) : (
+          outputText || (status === "loading" ? t("chat.thinking") : "")
+        )}
       </div>
 
       {expanded ? (
@@ -304,8 +322,17 @@ function ChatItemGroup({ recordId, item, resultField, onRateItem, onRerunItem })
                 color: status === "error" ? "#fca5a5" : "#e2e8f0",
               }}
             >
-              {outputText}
+              {outputJson && !showRaw ? <JsonFields data={outputJson} /> : outputText}
             </div>
+            {outputJson ? (
+              <button
+                type="button"
+                onClick={() => setShowRaw((v) => !v)}
+                style={{ ...S.turnActionBtn, marginTop: 12, alignSelf: "flex-start" }}
+              >
+                {showRaw ? t("chat.showParsed") : t("chat.showRaw")}
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => setExpanded(false)}
@@ -333,6 +360,22 @@ function ChatItemGroup({ recordId, item, resultField, onRateItem, onRerunItem })
           }}
         >
           <span style={{ color: EMERALD }}>●</span>
+        </button>
+        <button
+          type="button"
+          title={t("chat.rateUnsure")}
+          onClick={() => onRateItem?.(recordId, item.id, rating === "yellow" ? null : "yellow")}
+          style={{
+            ...S.turnActionBtn,
+            flex: 1,
+            padding: "2px 4px",
+            fontSize: 12,
+            ...(rating === "yellow"
+              ? { borderColor: YELLOW_BORDER, background: YELLOW_SOFT, color: "#fef9c3" }
+              : null),
+          }}
+        >
+          <span style={{ color: YELLOW }}>●</span>
         </button>
         <button
           type="button"
@@ -370,6 +413,10 @@ export function ChatMessageCard({ record, onRateItem, onRerunItem, onReuse, onDe
   const [promptExpanded, setPromptExpanded] = useState(false);
 
   const items = Array.isArray(record?.items) ? record.items : [];
+  // 大图查看框只在本条记录的图片小组之间切换。存 id 而不是下标：重跑/评级让列表变化时不会错位。
+  const imageItems = items.filter((it) => typeof it?.image === "string" && it.image);
+  const [viewerItemId, setViewerItemId] = useState(null);
+  const viewerIndex = viewerItemId ? imageItems.findIndex((it) => it.id === viewerItemId) : -1;
   const textItemCount = items.filter((it) => typeof it?.text === "string" && it.text).length;
   const [copiedKind, setCopiedKind] = useState("");
   // 导出「用户输入 + 模型输出」JSON 到剪贴板，供丢给 AI 分析。
@@ -508,9 +555,20 @@ export function ChatMessageCard({ record, onRateItem, onRerunItem, onReuse, onDe
             resultField={record?.resultField || "result"}
             onRateItem={onRateItem}
             onRerunItem={onRerunItem}
+            onOpenViewer={setViewerItemId}
           />
         ))}
       </div>
+      {viewerIndex >= 0 ? (
+        <DetectImageViewer
+          recordId={record.id}
+          items={imageItems}
+          index={viewerIndex}
+          onIndexChange={(next) => setViewerItemId(imageItems[next]?.id || null)}
+          onClose={() => setViewerItemId(null)}
+          onRateItem={onRateItem}
+        />
+      ) : null}
     </section>
   );
 }

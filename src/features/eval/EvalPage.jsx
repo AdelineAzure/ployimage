@@ -560,9 +560,10 @@ function RunBar({ ev, t, selectedModels, comparePrompts, singlePrompt, onStartRu
   );
 }
 
-export function EvalPage({ ev, folderName, onPickFolder, selectedModels, comparePrompts, singlePrompt, onStartRun, onOpenImage }) {
+export function EvalPage({ ev, folderName, onPickFolder, onReload, selectedModels, comparePrompts, singlePrompt, onStartRun, onOpenImage }) {
   const { t } = useI18n();
   const [view, setView] = useState("sets");
+  const [reloading, setReloading] = useState(false);
   useEffect(() => { if (ev.criteriaEditorSetId) setView("sets"); }, [ev.criteriaEditorSetId]);
   if (!ev.rootHandle) {
     return (
@@ -580,7 +581,7 @@ export function EvalPage({ ev, folderName, onPickFolder, selectedModels, compare
         ))}
         <span style={{ flex: 1 }} />
  <span style={{ fontFamily: mono, fontSize: 11, color: "#71717a" }}>{t("eval.folder")}: {folderName}</span>
- <button type="button" style={btn()} onClick={ev.reload}>{ev.loading ? "…" : t("eval.reload")}</button>
+ <button type="button" style={btn()} disabled={reloading} onClick={async () => { setReloading(true); try { await (onReload || ev.reload)(); } finally { setReloading(false); } }}>{ev.loading || reloading ? "…" : t("eval.reload")}</button>
       </div>
       {!!ev.message && <div style={{ fontFamily: mono, fontSize: 11, color: GOLD }}>{ev.message}</div>}
       {view === "sets" && (
