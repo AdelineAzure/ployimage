@@ -31,7 +31,7 @@ import {
 import { S } from "../../styles/appStyles";
 import { TokenPromptInput } from "../workspace/promptControls";
 
-const PLATFORM_LABELS = { comet: "Comet", lumina: "Lumina", bailian: "Bailian", litellm: "LiteLLM" };
+const PLATFORM_LABELS = { comet: "Comet", lumina: "Lumina", bailian: "Bailian", litellm: "LiteLLM", aigai: "AIG", minimax: "MiniMax" };
 
 export function SettingsModal({ show, onClose, proxyUrl, setProxyUrl, uiLanguage, setUiLanguage, groupPlatforms, setGroupPlatforms }) {
   const { t } = useI18n();
@@ -149,6 +149,22 @@ export function ApiKeyModal({
           value={normalizedDraftKeys.litellm}
           onChange={(e) => setDraftApiKeys((prev) => ({ ...normalizeApiKeys(prev), litellm: e.target.value }))}
           placeholder="sk-..."
+        />
+        {/* AIG 生图平台（openai.aig-ai.com）：Seedream 5.5 只在这个平台上，Lumina 还没上。 */}
+        <label style={{ ...S.fieldLabel, marginTop: 14 }}>{t("api.aigaiLabel")}</label>
+        <input
+          style={S.proxyInput}
+          value={normalizedDraftKeys.aigai}
+          onChange={(e) => setDraftApiKeys((prev) => ({ ...normalizeApiKeys(prev), aigai: e.target.value }))}
+          placeholder="sk-..."
+        />
+        {/* MiniMax 开放平台（api.minimax.io）：H3-Image 文生图 / 图生图。 */}
+        <label style={{ ...S.fieldLabel, marginTop: 14 }}>{t("api.minimaxLabel")}</label>
+        <input
+          style={S.proxyInput}
+          value={normalizedDraftKeys.minimax}
+          onChange={(e) => setDraftApiKeys((prev) => ({ ...normalizeApiKeys(prev), minimax: e.target.value }))}
+          placeholder="eyJ... 或 sk-..."
         />
         <div style={S.apiModalActions}>
           <span style={S.apiModalState}>{saveStateText}</span>

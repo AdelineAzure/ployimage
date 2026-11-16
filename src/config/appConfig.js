@@ -4,6 +4,16 @@ const SEEDREAM_MODELS = [
   // Seedream — /v1/images/generations (豆包生图)，单独一行。
   { id: "doubao-seedream-4-5-251128", name: "Seedream 4.5", shortName: "Seed 4.5", provider: "ByteDance", apiType: "images", badge: "NEW", platforms: ["comet", "lumina"] },
   { id: "doubao-seedream-5-0-260128", name: "Seedream 5.0 Lite", shortName: "Seed 5", provider: "ByteDance", apiType: "images", badge: "NEW", platforms: ["comet", "lumina"] },
+  // Seedream 5.5（国内首发）：只在 AIG 平台（openai.aig-ai.com）上，Lumina 还没上这个模型。
+  // 走原厂路由 /v1/images/api/v3/images/generations，仅单图输出，禁止传组图参数。
+  { id: "doubao-seedream-5-5-261028", name: "Seedream 5.5", shortName: "Seed 5.5", provider: "ByteDance", apiType: "aigai", badge: "NEW", platforms: ["aigai"] },
+];
+
+const MINIMAX_MODELS = [
+  // MiniMax H3-Image：官方开放平台 api.minimax.io，文生图 /v1/images/generations、
+  // 图生图 /v1/images/edits（参考图 1–16 张）。尺寸用 aspect_ratio + area 或 size。
+  { id: "MiniMax-H3-Image", name: "MiniMax H3", shortName: "H3", provider: "MiniMax", apiType: "minimax", badge: "NEW", platforms: ["minimax"] },
+  { id: "MiniMax-H3-Image-Highspeed", name: "MiniMax H3 快速", shortName: "H3 fast", provider: "MiniMax", apiType: "minimax", badge: "NEW", platforms: ["minimax"] },
 ];
 
 const NANO_MODELS = [
@@ -32,6 +42,7 @@ const BAILIAN_IMAGE_MODELS = [
 
 export const IMAGE_MODEL_ROWS = [
   SEEDREAM_MODELS,
+  MINIMAX_MODELS,
   NANO_MODELS,
   GPT_MODELS,
   BAILIAN_IMAGE_MODELS,
@@ -50,12 +61,17 @@ export const MODEL_GROUPS = [
   { key: "gpt", labelKey: "settings.groupGpt", platforms: ["lumina", "comet"], defaultPlatform: "lumina" },
   // Wan + Qwen 都是百炼模型，只有 bailian 一个平台，无可选项。
   { key: "wanQwen", labelKey: "settings.groupWanQwen", platforms: ["bailian"], defaultPlatform: "bailian" },
+  // Seedream 5.5 和 MiniMax 各自只有一个平台，没有回退可选。
+  { key: "aigai", labelKey: "settings.groupAigai", platforms: ["aigai"], defaultPlatform: "aigai" },
+  { key: "minimax", labelKey: "settings.groupMinimax", platforms: ["minimax"], defaultPlatform: "minimax" },
 ];
 
 // 把单个模型映射到它所属的分组 key。
 export function getModelGroupKey(model) {
   if (!model) return "seedream";
   if (model.apiType === "bailian") return "wanQwen";
+  if (model.apiType === "aigai") return "aigai";
+  if (model.apiType === "minimax") return "minimax";
   if (model.apiType === "gemini") return "nano";
   const id = String(model.id || "");
   if (model.provider === "OpenAI" && /^gpt-image-/i.test(id)) return "gpt";
@@ -135,6 +151,9 @@ export const DEFAULT_API_BASE_URLS = {
   bailian: "https://dashscope.aliyuncs.com",
   lumina: "https://lumina.tripo3d.com",
   litellm: "https://litellm-business-relay.vast-internal.com",
+  // AIG 生图平台：BaseURL 固定 /v1/images 前缀，再接原厂路由。
+  aigai: "https://openai.aig-ai.com",
+  minimax: "https://api.minimax.io",
 };
 export const DEFAULT_API_BASE_URL = DEFAULT_API_BASE_URLS[DEFAULT_API_PLATFORM];
 export const DEFAULT_API_KEY = "";
@@ -143,10 +162,12 @@ export const DEFAULT_API_KEYS = {
   bailian: DEFAULT_API_KEY,
   lumina: DEFAULT_API_KEY,
   litellm: DEFAULT_API_KEY,
+  aigai: DEFAULT_API_KEY,
+  minimax: DEFAULT_API_KEY,
 };
 // 所有平台的枚举，单一事实来源：Key 归一化、合并、设置面板都从这里取，
 // 新增平台时不用再去各处补数组。
-export const API_PLATFORMS = ["comet", "bailian", "lumina", "litellm"];
+export const API_PLATFORMS = ["comet", "bailian", "lumina", "litellm", "aigai", "minimax"];
 export const DEFAULT_GPT_ASSIST_MODEL = "gpt-5.6-sol";
 export const DEFAULT_BAILIAN_ASSIST_MODEL = "qwen-plus";
 // ─── 对话（Chat）Tab ───

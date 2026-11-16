@@ -1302,3 +1302,32 @@ describe("normalizeImageValue raw base64", () => {
     expect(normalizeImageValue("/files/out.png", "https://lumina.tripo3d.com")).toBe("https://lumina.tripo3d.com/files/out.png");
   });
 });
+
+import { getAigaiImageSize, normalizeApiPlatform as normPlat, getDefaultApiBaseUrl as defBase } from "./appCore";
+import { IMAGE_MODELS as ALL_MODELS, getModelGroupKey as groupKey, API_PLATFORMS as PLATS } from "../config/appConfig";
+describe("aigai / minimax platforms", () => {
+  it("registers both platforms with their base urls", () => {
+    expect(PLATS).toContain("aigai");
+    expect(PLATS).toContain("minimax");
+    expect(normPlat("aigai")).toBe("aigai");
+    expect(normPlat("minimax")).toBe("minimax");
+    expect(normPlat("nope")).toBe("comet");
+    expect(defBase("aigai")).toBe("https://openai.aig-ai.com");
+    expect(defBase("minimax")).toBe("https://api.minimax.io");
+  });
+  it("registers the new models on their own platform and group", () => {
+    const s55 = ALL_MODELS.find((m) => m.id === "doubao-seedream-5-5-261028");
+    expect(s55).toBeTruthy();
+    expect(s55.platforms).toEqual(["aigai"]);
+    expect(groupKey(s55)).toBe("aigai");
+    const h3 = ALL_MODELS.find((m) => m.id === "MiniMax-H3-Image");
+    expect(h3.platforms).toEqual(["minimax"]);
+    expect(groupKey(h3)).toBe("minimax");
+    expect(ALL_MODELS.some((m) => m.id === "MiniMax-H3-Image-Highspeed")).toBe(true);
+  });
+  it("maps aspect ratios to explicit sizes for Seedream 5.5", () => {
+    expect(getAigaiImageSize("16:9")).toBe("2560x1440");
+    expect(getAigaiImageSize("1:1")).toBe("2048x2048");
+    expect(getAigaiImageSize("auto")).toBe("2K");
+  });
+});

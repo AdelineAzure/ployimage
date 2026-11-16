@@ -125,6 +125,8 @@ export function normalizeApiPlatform(value) {
   if (value === "comet") return "comet";
   if (value === "lumina") return "lumina";
   if (value === "litellm") return "litellm";
+  if (value === "aigai") return "aigai";
+  if (value === "minimax") return "minimax";
   return DEFAULT_API_PLATFORM;
 }
 
@@ -5877,6 +5879,96 @@ export async function callImagesAPI(proxyUrl, model, prompt, imageBase64, option
   return finalizeImagesApiResponse(proxyUrl, data, apiBaseUrl);
 }
 
+// ─── AIG 平台：Seedream 5.5 ───
+// BaseURL https://openai.aig-ai.com/v1/images + 原厂路由 /api/v3/images/generations。
+// 仅单图输出；禁止传 sequential_image_generation*（传了直接报错）。
+// size 支持档位 1K/1.5K/2K，也支持显式 宽x高；这里按选定比例换算成显式宽高。
+export function getAigaiImageSize(aspectRatio = DEFAULT_ASPECT_RATIO) {
+  const ratio = normalizeAspectRatio(aspectRatio);
+  // 2K 档位（约 400 万像素）下各比例的宽高，和 Seedream 官方 2K 档一致。
+  const map = {
+    "1:1": "2048x2048",
+    "4:3": "2304x1728",
+    "3:4": "1728x2304",
+    "16:9": "2560x1440",
+    "9:16": "1440x2560",
+  };
+  return map[ratio] || "2K";
+}
+
+export async function callAigaiImageAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
+  const { signal, count = 1 } = options;
+  const apiPlatform = normalizeApiPlatform(options.apiPlatform);
+  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl, apiPlatform);
+  const apiKey = normalizeApiKey(options.apiKey);
+  const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs)
+    .slice(0, 10)
+    .map((image) => normalizeImageValue(image, apiBaseUrl))
+    .filter(Boolean);
+  const body = {
+    model: model.id,
+    prompt: prompt || "Generate a creative image",
+    size: getAigaiImageSize(options.aspectRatio),
+    response_format: "b64_json",
+    output_format: "png",
+    watermark: false,
+  };
+  // 多图融合：单张传字符串、多张传数组，两种写法上游都接受。
+  if (imageInputs.length === 1) body.image = imageInputs[0];
+  else if (imageInputs.length > 1) body.image = imageInputs;
+  // 仅单图输出，n>1 时由调用方串行多次请求。
+  const data = await postJsonWithRetry(proxyUrl, "/v1/images/api/v3/images/generations", body, {
+    signal,
+    maxAttempts: 3,
+    baseDelayMs: 1200,
+    apiBaseUrl,
+    apiKey,
+    apiPlatform,
+  });
+  const images = await finalizeImagesApiResponse(proxyUrl, data, apiBaseUrl);
+  return images.slice(0, Math.max(1, Number(count) || 1));
+}
+
+// ─── MiniMax H3-Image ───
+// 文生图 /v1/images/generations；图生图 /v1/images/edits（参考图 1–16 张，
+// 走 images[].image_url，支持 data URI）。尺寸两种写法二选一：
+// aspect_ratio + area，或 size=宽x高；同时传会 400。
+export async function callMinimaxImageAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
+  const { signal, count = 1 } = options;
+  const apiPlatform = normalizeApiPlatform(options.apiPlatform);
+  const apiBaseUrl = resolveApiBaseUrl(options.apiBaseUrl, apiPlatform);
+  const apiKey = normalizeApiKey(options.apiKey);
+  const imageInputs = normalizeImageInputs(imageBase64, options.imageInputs);
+  const editImages = imageInputs.length
+    ? (await resolveEditImageDataUrls(proxyUrl, imageInputs, apiBaseUrl)).slice(0, 16)
+    : [];
+  const ratio = normalizeAspectRatio(options.aspectRatio);
+  const body = {
+    model: model.id,
+    prompt: prompt || "Generate a creative image",
+    n: Math.min(Math.max(1, Number(count) || 1), 10),
+    response_format: "b64_json",
+    output_format: "png",
+  };
+  // auto 时不传尺寸，让上游跟随参考图；否则用 比例 + 面积档位（不能和 size 同时传）。
+  if (ratio !== "auto") {
+    body.aspect_ratio = ratio;
+    body.area = "2K";
+  }
+  const targetPath = editImages.length ? "/v1/images/edits" : "/v1/images/generations";
+  if (editImages.length) body.images = editImages.map((url) => ({ image_url: url }));
+  const data = await postJsonWithRetry(proxyUrl, targetPath, body, {
+    signal,
+    maxAttempts: 3,
+    baseDelayMs: 1200,
+    apiBaseUrl,
+    apiKey,
+    apiPlatform,
+  });
+  const images = await finalizeImagesApiResponse(proxyUrl, data, apiBaseUrl);
+  return images.slice(0, Math.max(1, Number(count) || 1));
+}
+
 export async function callBailianImageAPI(proxyUrl, model, prompt, imageBase64, options = {}) {
   const { signal, count = 1 } = options;
   const apiPlatform = normalizeApiPlatform(options.apiPlatform);
@@ -6305,12 +6397,13 @@ export async function generateImage(proxyUrl, model, prompt, imageBase64, option
   const primaryImage = imageInputs[0] || "";
   const expandedPrompt = expandPlaceholderValues(prompt || "");
   if (!isModelAvailableOnPlatform(model, apiPlatform)) {
-    const platformLabel = apiPlatform === "bailian" ? "百炼" : apiPlatform === "lumina" ? "Lumina" : "Comet";
+    const platformLabel = apiPlatform === "bailian" ? "百炼" : apiPlatform === "lumina" ? "Lumina"
+      : apiPlatform === "aigai" ? "AIG" : apiPlatform === "minimax" ? "MiniMax" : "Comet";
     throw new Error(`${model?.name || model?.id || "当前模型"} 当前不支持 ${platformLabel} 平台`);
   }
   const promptWithAspectRatio =
     // Lumina, Gemini and Bailian carry aspect ratio structurally.
-    model.apiType === "gemini" || model.apiType === "bailian" || apiPlatform === "lumina"
+    model.apiType === "gemini" || model.apiType === "bailian" || model.apiType === "aigai" || model.apiType === "minimax" || apiPlatform === "lumina"
       ? expandedPrompt.trim()
       : mergePromptWithAspectRatio(expandedPrompt, aspectRatio, model);
   const nextOptions = { ...options, apiPlatform, aspectRatio, imageInputs };
@@ -6331,6 +6424,17 @@ export async function generateImage(proxyUrl, model, prompt, imageBase64, option
     }
     case "images":
       return callImagesAPI(proxyUrl, model, promptWithAspectRatio, primaryImage, { ...nextOptions, count: requested });
+    case "aigai": {
+      // 仅单图输出：要多张就串行多次请求。
+      const all = [];
+      for (let index = 0; index < requested; index += 1) {
+        const one = await callAigaiImageAPI(proxyUrl, model, promptWithAspectRatio, primaryImage, { ...nextOptions, count: 1 });
+        if (Array.isArray(one) && one.length) all.push(...one.slice(0, 1));
+      }
+      return all;
+    }
+    case "minimax":
+      return callMinimaxImageAPI(proxyUrl, model, promptWithAspectRatio, primaryImage, { ...nextOptions, count: requested });
     case "bailian": {
       if (isQwenImage3Model(model) && !isQwenImage3ProModel(model) && requested > 1) {
         const all = [];

@@ -115,6 +115,10 @@ export default {
             ? "LUMINA_API_KEY"
             : apiPlatform === "litellm"
             ? "LITELLM_API_KEY"
+            : apiPlatform === "aigai"
+            ? "AIGAI_API_KEY"
+            : apiPlatform === "minimax"
+            ? "MINIMAX_API_KEY"
             : "COMETAPI_KEY";
         return json({ error: `API key missing. Provide X-Api-Key or configure ${envName}.` }, 400);
       }
@@ -125,6 +129,8 @@ export default {
         apiPlatform === "comet" ||
         apiPlatform === "lumina" ||
         apiPlatform === "litellm" ||
+        apiPlatform === "aigai" ||
+        apiPlatform === "minimax" ||
         !isGemini;
       const primaryAuth = prefersBearer ? `Bearer ${apiKey}` : apiKey;
       const fallbackAuth = prefersBearer ? apiKey : `Bearer ${apiKey}`;
@@ -201,6 +207,8 @@ function normalizeApiPlatform(value) {
   if (value === "comet") return "comet";
   if (value === "lumina") return "lumina";
   if (value === "litellm") return "litellm";
+  if (value === "aigai") return "aigai";
+  if (value === "minimax") return "minimax";
   return "comet";
 }
 
@@ -211,6 +219,8 @@ function inferApiPlatformFromBase(value) {
   // vast 网关以后也可能挂 tripo3d 后缀，先精确匹配中继名字更稳。
   if (/litellm-business-relay/i.test(value || "")) return "litellm";
   if (/tripo3d\.com/i.test(value || "")) return "lumina";
+  if (/aig-ai\.com/i.test(value || "")) return "aigai";
+  if (/api\.minimax\.(io|chat)/i.test(value || "")) return "minimax";
   return "comet";
 }
 
@@ -223,6 +233,12 @@ function getFallbackApiKey(env, apiPlatform) {
   }
   if (apiPlatform === "litellm") {
     return normalizeApiKey(env.LITELLM_API_KEY || env.RELAY_API_KEY || "");
+  }
+  if (apiPlatform === "aigai") {
+    return normalizeApiKey(env.AIGAI_API_KEY || "");
+  }
+  if (apiPlatform === "minimax") {
+    return normalizeApiKey(env.MINIMAX_API_KEY || "");
   }
   return normalizeApiKey(env.COMETAPI_KEY || env.COMET_API_KEY || "");
 }
