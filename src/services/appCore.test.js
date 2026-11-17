@@ -432,8 +432,10 @@ describe("image API platform routing", () => {
       comet: "old-comet",
       bailian: "new-bailian",
       lumina: "new-lumina",
-      // litellm 没出现在任一来源里，归一化后是空串（LiteLLM 中继 Key 未配置）。
+      // litellm / aigai / minimax 没出现在任一来源里，归一化后是空串（Key 未配置）。
       litellm: "",
+      aigai: "",
+      minimax: "",
     });
   });
 });
@@ -1329,5 +1331,20 @@ describe("aigai / minimax platforms", () => {
     expect(getAigaiImageSize("16:9")).toBe("2560x1440");
     expect(getAigaiImageSize("1:1")).toBe("2048x2048");
     expect(getAigaiImageSize("auto")).toBe("2K");
+  });
+});
+
+import { normalizeApiKeys as normKeys, mergeApiKeys as mergeKeys } from "./appCore";
+describe("api key normalization covers every platform", () => {
+  it("keeps aigai and minimax keys instead of dropping them", () => {
+    // 回归：normalizeApiKeys 漏了新平台时，设置面板里填的 key 会被归一化成空，
+    // isDirty 永远 false，保存按钮一直置灰。
+    const out = normKeys({ aigai: " sk-aig ", minimax: "mm-key" });
+    expect(out.aigai).toBe("sk-aig");
+    expect(out.minimax).toBe("mm-key");
+    for (const platform of PLATS) expect(out).toHaveProperty(platform);
+  });
+  it("merges the new platforms too", () => {
+    expect(mergeKeys({ aigai: "a" }, { minimax: "m" })).toMatchObject({ aigai: "a", minimax: "m" });
   });
 });

@@ -160,6 +160,8 @@ export function normalizeApiKeys(value) {
     litellm: normalizeApiKey(
       source.litellm || source.litellmKey || source.relayKey || source.LITELLM_API_KEY || ""
     ),
+    aigai: normalizeApiKey(source.aigai || source.aigaiKey || source.AIGAI_API_KEY || ""),
+    minimax: normalizeApiKey(source.minimax || source.minimaxKey || source.MINIMAX_API_KEY || ""),
   };
 }
 
