@@ -5196,8 +5196,23 @@ export async function loadApiConfigFromLocalFolder(rootHandle) {
         rawObject?.apiKeys?.lumina ||
         rawObject?.apiKeys?.luminaKey ||
         (legacyPlatform === "lumina" ? legacyKey : ""),
+      litellm:
+        rawObject?.litellmKey ||
+        rawObject?.apiKeys?.litellm ||
+        rawObject?.apiKeys?.litellmKey ||
+        (legacyPlatform === "litellm" ? legacyKey : ""),
+      aigai:
+        rawObject?.aigaiKey ||
+        rawObject?.apiKeys?.aigai ||
+        rawObject?.apiKeys?.aigaiKey ||
+        (legacyPlatform === "aigai" ? legacyKey : ""),
+      minimax:
+        rawObject?.minimaxKey ||
+        rawObject?.apiKeys?.minimax ||
+        rawObject?.apiKeys?.minimaxKey ||
+        (legacyPlatform === "minimax" ? legacyKey : ""),
     });
-    if (!normalizedKeys.comet && !normalizedKeys.bailian && !normalizedKeys.lumina) {
+    if (!Object.values(normalizedKeys).some(Boolean)) {
       return recoverApiKeysFromTurns();
     }
     return {
@@ -5227,10 +5242,16 @@ export async function saveApiConfigToLocalFolder(rootHandle, apiKeys) {
         cometKey: normalizedKeys.comet,
         bailianKey: normalizedKeys.bailian,
         luminaKey: normalizedKeys.lumina,
+        litellmKey: normalizedKeys.litellm,
+        aigaiKey: normalizedKeys.aigai,
+        minimaxKey: normalizedKeys.minimax,
         apiKeys: {
           comet: normalizedKeys.comet,
           bailian: normalizedKeys.bailian,
           lumina: normalizedKeys.lumina,
+          litellm: normalizedKeys.litellm,
+          aigai: normalizedKeys.aigai,
+          minimax: normalizedKeys.minimax,
         },
         // Keep legacy single-key fields so old folders remain readable by older builds.
         apiKey: normalizedKeys.comet || normalizedKeys.lumina,
