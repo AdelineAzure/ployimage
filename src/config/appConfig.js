@@ -9,12 +9,6 @@ const SEEDREAM_MODELS = [
   { id: "doubao-seedream-5-5-261028", name: "Seedream 5.5", shortName: "Seed 5.5", provider: "ByteDance", apiType: "aigai", badge: "NEW", platforms: ["aigai"] },
 ];
 
-const MINIMAX_MODELS = [
-  // MiniMax H3-Image：官方开放平台 api.minimax.io，文生图 /v1/images/generations、
-  // 图生图 /v1/images/edits（参考图 1–16 张）。尺寸用 aspect_ratio + area 或 size。
-  { id: "MiniMax-H3-Image", name: "MiniMax H3", shortName: "H3", provider: "MiniMax", apiType: "minimax", badge: "NEW", platforms: ["minimax"] },
-  { id: "MiniMax-H3-Image-Highspeed", name: "MiniMax H3 快速", shortName: "H3 fast", provider: "MiniMax", apiType: "minimax", badge: "NEW", platforms: ["minimax"] },
-];
 
 const NANO_MODELS = [
   // NanoBanana 系列：本质调用 Gemini 图像模型
@@ -28,6 +22,11 @@ const GPT_MODELS = [
   // gpt-image-1 / gpt-image-1-mini 才使用 /v1/images/edits (multipart)
   { id: "gpt-image-1.5", name: "GPT‑1.5 Image", shortName: "GPT-1.5", provider: "OpenAI", apiType: "images", badge: "HOT", platforms: ["comet", "lumina"] },
   { id: "gpt-image-2", name: "GPT‑2 Image", shortName: "GPT-2", provider: "OpenAI", apiType: "images", badge: "NEW", platforms: ["comet", "lumina"] },
+  // MiniMax H3-Image：官方开放平台 api.minimax.io，文生图 /v1/images/generations、
+  // 图生图 /v1/images/edits（参考图 1–16 张）。尺寸用 aspect_ratio + area 或 size。
+  // Highspeed 参数和限制与 H3 相同，是速度优先版本；正式评测用 H3。
+  { id: "MiniMax-H3-Image", name: "MiniMax H3", shortName: "H3", provider: "MiniMax", apiType: "minimax", badge: "NEW", platforms: ["minimax"] },
+  { id: "MiniMax-H3-Image-Highspeed", name: "MiniMax H3 快速", shortName: "H3 fast", provider: "MiniMax", apiType: "minimax", platforms: ["minimax"] },
 ];
 
 const BAILIAN_IMAGE_MODELS = [
@@ -42,7 +41,6 @@ const BAILIAN_IMAGE_MODELS = [
 
 export const IMAGE_MODEL_ROWS = [
   SEEDREAM_MODELS,
-  MINIMAX_MODELS,
   NANO_MODELS,
   GPT_MODELS,
   BAILIAN_IMAGE_MODELS,
